@@ -81,7 +81,7 @@ class Game {
       'input-nickname', 'avatar-picker', 'difficulty-picker', 'aicount-picker',
       'theme-picker', 'rounds-picker', 'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
-      'board-canvas', 'fx-layer', 'hud-turn-name', 'hud-market', 'player-cards',
+      'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer', 'hud-turn-name', 'hud-market', 'player-cards',
       'rank-list', 'kline-canvas', 'log-list', 'btn-roll', 'btn-assets',
       'btn-mortgage', 'btn-endturn', 'dice-tray', 'toast-layer',
       'btn-sound', 'btn-anim', 'btn-theme', 'btn-menu',
@@ -1103,12 +1103,17 @@ class Game {
     const state = this.state;
     if (!state || !this.renderer) return;
 
-    const ctx = this.el['board-canvas'].getContext('2d');
-    const shake = this.effects.shakeOffset();
-    ctx.save();
-    ctx.translate(shake.x, shake.y);
-    this.background.draw(ctx, now);
-    ctx.restore();
+    // 背景层绘制到独立的 #stage-bg（覆盖整个 stage）
+    const bgCanvas = this.el['stage-bg'];
+    if (bgCanvas) {
+      const bctx = bgCanvas.getContext('2d');
+      const shake = this.effects.shakeOffset();
+      bctx.save();
+      bctx.imageSmoothingEnabled = false;
+      bctx.translate(shake.x, shake.y);
+      this.background.draw(bctx, now);
+      bctx.restore();
+    }
 
     this.mover.update();
     this.effects.update();
@@ -1127,16 +1132,59 @@ class Game {
     drawKline(this.el['kline-canvas'], state, now);
   }
 
+  /**
+   * 尺寸适配。
+   *
+   * 棋盘画布按「棋盘容器（#board-wrap）」的实测尺寸绘制 —— 该容器位于
+   * 三栏 Grid 的中栏，天然避开了左右两侧 HUD 面板，因此棋盘永不被遮挡。
+   * 背景层（#stage-bg）仍按整个 stage 的尺寸绘制，保持天际线视差覆盖全屏。
+   */
   onResize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    if (this.renderer) {
-      this.renderer.resize(w, h, dpr);
-      this.background.resize(w, h);
-    } else {
+    if (!this.renderer) {
       this.drawSetupBg();
+      return;
     }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const wrap = this.el['board-wrap'];
+
+    // 棋盘容器实测尺寸（CSS 像素）
+    let bw = 0;
+    let bh = 0;
+    if (wrap) {
+      const r = wrap.getBoundingClientRect();
+      bw = Math.floor(r.width);
+      bh = Math.floor(r.height);
+    }
+    // 容器尚未布局完成（例如 hidden 状态下首次进入）时退回窗口尺寸
+    if (bw < 80 || bh < 80) {
+      bw = Math.floor(window.innerWidth);
+      bh = Math.floor(window.innerHeight);
+    }
+    this.renderer.resize(bw, bh, dpr);
+
+    // 背景层：覆盖整个 stage
+    const stage = document.getElementById('stage');
+    const sw = stage ? Math.floor(stage.clientWidth) : window.innerWidth;
+    const sh = stage ? Math.floor(stage.clientHeight) : window.innerHeight;
+    this.background.resize(Math.max(1, sw), Math.max(1, sh));
+    this.resizeStageBg(sw, sh);
+  }
+
+  /** 让背景 canvas 的内部像素尺寸与 CSS 尺寸一致 */
+  resizeStageBg(w, h) {
+    const cv = this.el['stage-bg'];
+    if (!cv) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pw = Math.max(1, Math.floor(w * dpr));
+    const ph = Math.max(1, Math.floor(h * dpr));
+    if (cv.width !== pw || cv.height !== ph) {
+      cv.width = pw;
+      cv.height = ph;
+    }
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   /* ==================== HUD ==================== */

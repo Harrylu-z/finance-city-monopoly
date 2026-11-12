@@ -506,9 +506,13 @@ export const GROUP_CELLS = {
  * 这四个索引必须随棋盘重排同步更新，并满足：
  *   1) 指向普通机构格（不能是特殊格 / 监管格 / 清算所自身）；
  *   2) 分散在地图不同方位，避免每次都跳到同一个角落。
- * 当前对应：招商银行(13) / 华泰证券(29) / 中国人保(44) / 深交所(61)。
+ *   3) 传送步数必须为 1 ~ BOARD_SIZE-1 之间的正数，且落点精确等于目标。
+ *
+ * 当前对应（清算所在 index 18）：
+ *   广发证券(8) / 券商组(23) / 大家保险(39) / 平安信托(55)
+ * —— 分别落在四个区段（0/1/2/3），跳往四个完全不同的方位。
  */
-export const CLEARING_TARGETS = [13, 29, 44, 61];
+export const CLEARING_TARGETS = [8, 23, 39, 55];
 
 /** 事件卡池 —— 中国金融风小事件 */
 export const EVENT_CARDS = [
@@ -610,9 +614,23 @@ export function validateBoard() {
     if (t === clearingIdx) {
       errors.push(`清算所目标 ${t} 不能是清算所自身`);
     }
+    // 传送步数必须落在 1 ~ BOARD_SIZE-1，落点必须精确等于目标
+    const delta = (t - clearingIdx + BOARD_SIZE) % BOARD_SIZE;
+    const steps = delta > 0 ? delta : BOARD_SIZE;
+    if (steps < 1 || steps >= BOARD_SIZE) {
+      errors.push(`清算所目标 ${t} 传送步数异常：${steps}`);
+    }
+    if ((clearingIdx + steps) % BOARD_SIZE !== t) {
+      errors.push(`清算所目标 ${t} 传送落点错误`);
+    }
   }
   if (new Set(CLEARING_TARGETS).size !== CLEARING_TARGETS.length) {
     errors.push('清算所目标存在重复');
+  }
+  // 目标必须分散在至少 3 个区段，避免每次都跳向同一侧
+  const quarters = new Set(CLEARING_TARGETS.map((t) => Math.floor(t / (BOARD_SIZE / 4))));
+  if (quarters.size < 3) {
+    errors.push(`清算所目标分布过于集中（仅 ${quarters.size} 个区段）`);
   }
 
   return errors;

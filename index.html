@@ -96,9 +96,10 @@
   <!-- ============ 主游戏界面 ============ -->
   <section id="game-screen" class="screen" hidden>
     <div id="stage" class="stage">
-      <canvas id="board-canvas" class="board-canvas" aria-label="棋盘"></canvas>
-      <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+      <!-- 背景层：始终铺满整个 stage（天际线视差） -->
+      <canvas id="stage-bg" class="stage-bg" aria-hidden="true"></canvas>
 
+      <!-- 顶部条：回合信息 + 图标按钮 -->
       <div id="hud-top" class="hud hud-top">
         <div class="hud-turn pixel-panel">
           <span id="hud-turn-label" class="hud-turn-label">当前回合</span>
@@ -113,8 +114,18 @@
         </div>
       </div>
 
+      <!-- 左栏：玩家信息 -->
       <div id="player-cards" class="player-cards"></div>
 
+      <!-- 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） -->
+      <div id="board-wrap" class="board-wrap">
+        <canvas id="board-canvas" class="board-canvas" aria-label="棋盘"></canvas>
+        <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+        <div id="dice-tray" class="dice-tray" aria-live="polite"></div>
+        <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
+      </div>
+
+      <!-- 右栏：资产排行 + 行情灯带 -->
       <div id="hud-right" class="hud hud-right">
         <div class="rank-panel pixel-panel">
           <h3 class="panel-title">资产排行</h3>
@@ -126,6 +137,7 @@
         </div>
       </div>
 
+      <!-- 底部条：回合播报 + 动作按钮 -->
       <div id="hud-bottom" class="hud hud-bottom">
         <div class="log-panel pixel-panel">
           <h3 class="panel-title">回合播报</h3>
@@ -139,8 +151,6 @@
         </div>
       </div>
 
-      <div id="dice-tray" class="dice-tray" aria-live="polite"></div>
-      <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
     </div>
   </section>
 

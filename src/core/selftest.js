@@ -735,7 +735,24 @@ export function runAll() {
     }
     // 目标与起点相同 → 走满一圈
     assert(computeTeleportSteps(5, 5, BOARD_SIZE) === BOARD_SIZE, '同位置应走满一圈');
-    return '正反方向瞬移均正确';
+
+    // 真实数据驱动：清算所的每一个跳转目标都必须能算出正步数
+    const clearIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'clearing');
+    assert(clearIdx >= 0, '应存在清算所格');
+    for (const target of CLEARING_TARGETS) {
+      const cell = BOARD_CELLS[target];
+      assert(cell && cell.type === 'institution' && !cell.regulator,
+        `清算所目标 ${target}（${cell && cell.name}）应为普通机构格`);
+      assert(target !== clearIdx, '清算所目标不能是清算所自身');
+      const steps = computeTeleportSteps(clearIdx, target, BOARD_SIZE);
+      assert(steps > 0 && steps < BOARD_SIZE, `清算所瞬移步数异常：${clearIdx} → ${target} = ${steps}`);
+      const landed = (clearIdx + steps) % BOARD_SIZE;
+      assert(landed === target, `清算所瞬移落点错误：${clearIdx} + ${steps} ≠ ${target}`);
+    }
+    // 清算所目标必须分散在地图不同方位（至少覆盖 3 个不同区段）
+    const quarters = new Set(CLEARING_TARGETS.map((t) => Math.floor(t / (BOARD_SIZE / 4))));
+    assert(quarters.size >= 3, `清算所目标分布过于集中（仅 ${quarters.size} 个区段）`);
+    return '正反方向瞬移均正确 · 清算所 4 个目标全部有效';
   });
 
   /* ---------- AI 决策 ---------- */

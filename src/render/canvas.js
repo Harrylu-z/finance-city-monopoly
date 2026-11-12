@@ -28,9 +28,16 @@ export class BoardRenderer {
     this.scale = 2;
   }
 
+  /**
+   * 调整画布尺寸。
+   *
+   * @param {number} w  CSS 像素宽（棋盘容器可用宽度）
+   * @param {number} h  CSS 像素高（棋盘容器可用高度）
+   * @param {number} dpr 设备像素比
+   */
   resize(w, h, dpr = 1) {
-    this.canvas.width = Math.floor(w * dpr);
-    this.canvas.height = Math.floor(h * dpr);
+    this.canvas.width = Math.max(1, Math.floor(w * dpr));
+    this.canvas.height = Math.max(1, Math.floor(h * dpr));
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     this.ctx.imageSmoothingEnabled = false;
@@ -40,20 +47,32 @@ export class BoardRenderer {
     this.computeLayout();
   }
 
+  /**
+   * 计算棋盘几何布局。
+   *
+   * 棋盘容器（#board-wrap）已经是「不遮挡」的区域，因此这里不再为
+   * HUD 预留上下留白 —— 直接在可用矩形内把 9×7 棋盘居中。
+   * 格子宽高按固定 9:7 比例推导，避免被容器压扁。
+   */
   computeLayout() {
-    const margin = 16;
-    const topReserve = 86;
-    const bottomReserve = 140;
-
-    const availW = this.w - margin * 2;
-    const availH = this.h - topReserve - bottomReserve;
+    const margin = 12;
+    const availW = Math.max(1, this.w - margin * 2);
+    const availH = Math.max(1, this.h - margin * 2);
 
     const cols = BOARD_SHAPE.cols;
     const rows = BOARD_SHAPE.rows;
 
     // 单元格宽高可以不同 —— 适配 9×7 的横向长方形棋盘
-    const cellW = Math.floor(availW / cols);
-    const cellH = Math.floor(availH / rows);
+    let cellW = Math.floor(availW / cols);
+    let cellH = Math.floor(availH / rows);
+
+    // 9:7 是棋盘的天然比例：若容器比例不匹配，按比例收缩，避免格子被拉长
+    const naturalCell = cellW / (cols / rows);
+    if (cellH > naturalCell) cellH = Math.floor(naturalCell);
+    else cellW = Math.floor(cellH * (cols / rows));
+
+    cellW = Math.max(12, cellW);
+    cellH = Math.max(12, cellH);
 
     // 整数倍缩放：保证立绘完整显示且不糊
     const s = Math.max(1, Math.min(3, Math.floor(Math.min(cellW / 2, cellH) / 32) || 1));
@@ -64,7 +83,7 @@ export class BoardRenderer {
     const boardW = cols * cellW;
     const boardH = rows * cellH;
     this.boardX = Math.floor((this.w - boardW) / 2);
-    this.boardY = topReserve + Math.floor((availH - boardH) / 2);
+    this.boardY = Math.floor((this.h - boardH) / 2);
 
     this.layout = { cols, rows, cellW, cellH, boardX: this.boardX, boardY: this.boardY };
   }

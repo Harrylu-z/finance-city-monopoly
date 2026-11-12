@@ -7,7 +7,7 @@
 **零构建 · 纯静态 · 原生 ES Modules** —— 克隆下来用 Python 起个服务器就能玩，
 也可以一键丢到 GitHub Pages / Vercel / Netlify。
 
-![技术栈](https://img.shields.io/badge/build-none-blue) ![依赖](https://img.shields.io/badge/dependencies-0-green) ![测试](https://img.shields.io/badge/self--test-49%20passed-brightgreen)
+![技术栈](https://img.shields.io/badge/build-none-blue) ![依赖](https://img.shields.io/badge/dependencies-0-green) ![测试](https://img.shields.io/badge/self--test-50%20passed-brightgreen)
 
 ---
 
@@ -492,7 +492,7 @@ Canvas 生成的 480×300 PNG 分享图，包含：
 │  rules.js      状态机 / 回合流程 / 结算         │
 │  ai.js         AI 性格与决策                   │
 │  rng.js        Mulberry32 确定性随机            │
-│  selftest.js   49 项规则自检                   │
+│  selftest.js   50 项规则自检                   │
 │  scheduler.js  非节流调度器                    │
 │  palette.js    32 色统一调色板                  │
 ├─────────────────────────────────────────────┤
@@ -604,7 +604,7 @@ UI 不做任何二次计算，避免"排名看到的"和"下钻看到的"对不�
 
 ## 测试
 
-### 浏览器内自检（49 项）
+### 浏览器内自检（50 项）
 
 菜单 → `规则引擎自检`，或直接：
 

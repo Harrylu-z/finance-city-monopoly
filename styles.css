@@ -41,6 +41,10 @@
   --border: 2px solid var(--c-ink);
   --shadow-hard: 4px 4px 0 var(--c-ink);
   --shadow-soft: 2px 2px 0 var(--c-ink);
+
+  /* ---- 布局 ---- */
+  /* 左右侧栏宽度（玩家信息 / 资产排行+行情） */
+  --side-w: 200px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -264,13 +268,51 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 }
 
 /* ============================================================
-   游戏舞台
+   游戏舞台 —— 三栏网格布局
+   ------------------------------------------------------------
+   方案 A：CSS Grid 三栏（玩家信息 | 棋盘 | 排行+行情），
+   各面板不再绝对定位覆盖在棋盘上，棋盘永远完整可见。
+   背景 canvas 单独铺满整个 stage（天际线视差），
+   棋盘 canvas 只占中栏，由 JS 按 #board-wrap 实测尺寸绘制。
    ============================================================ */
 #game-screen { background: var(--c-ink); }
-.stage { position: absolute; inset: 0; overflow: hidden; }
+
+.stage {
+  position: absolute; inset: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: var(--side-w) minmax(0, 1fr) var(--side-w);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top   top    top"
+    "left  board  right"
+    "bottom bottom bottom";
+  gap: 8px;
+  padding: 8px;
+}
+
+/* 背景层：铺满整个 stage */
+.stage-bg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 中栏棋盘容器 —— JS 按其尺寸计算棋盘画布 */
+.board-wrap {
+  grid-area: board;
+  position: relative;
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+  z-index: 1;
+}
+
 .board-canvas {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
+  display: block;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -328,11 +370,11 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 /* ============================================================
    HUD
    ============================================================ */
-.hud { position: absolute; z-index: 10; pointer-events: none; }
+.hud { z-index: 10; pointer-events: none; }
 .hud > * { pointer-events: auto; }
 
 .hud-top {
-  top: 8px; left: 10px; right: 10px;
+  grid-area: top;
   display: flex; justify-content: space-between; align-items: flex-start;
   gap: 10px;
 }
@@ -356,13 +398,15 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 .hud-market.is-bear { background: var(--c-jade); color: var(--c-ink); }
 .hud-actions { display: flex; gap: 6px; }
 
-/* 玩家卡片 */
+/* 玩家卡片（左栏） */
 .player-cards {
-  position: absolute;
-  top: 60px; left: 10px;
+  grid-area: left;
   z-index: 10;
   display: flex; flex-direction: column; gap: 6px;
-  width: 176px;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  pointer-events: auto;
 }
 .pcard {
   background: var(--c-navy);
@@ -371,6 +415,7 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
   padding: 5px 7px;
   display: flex; align-items: center; gap: 7px;
   cursor: pointer;
+  flex: none;
 }
 .pcard.is-active { box-shadow: 3px 3px 0 var(--c-gold); }
 .pcard.is-dead { opacity: .45; filter: grayscale(1); }
@@ -389,11 +434,14 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 }
 .pcard-bar i { display: block; height: 100%; }
 
-/* 右侧面板 */
+/* 右侧面板（右栏） */
 .hud-right {
-  top: 60px; right: 10px;
-  width: 196px;
+  grid-area: right;
+  z-index: 10;
+  width: 100%;
+  min-height: 0;
   display: flex; flex-direction: column; gap: 8px;
+  pointer-events: auto;
 }
 .rank-list { padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
 .rank-item {
@@ -408,8 +456,10 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 
 /* 底部 */
 .hud-bottom {
-  bottom: 10px; left: 10px; right: 10px;
+  grid-area: bottom;
+  z-index: 10;
   display: flex; align-items: flex-end; gap: 10px;
+  pointer-events: auto;
 }
 .log-panel {
   flex: 1;
@@ -448,14 +498,15 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 
 .action-bar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
-/* 骰子托盘 */
+/* 骰子托盘 —— 位于棋盘容器内，固定显示在棋盘上方偏中的位置 */
 .dice-tray {
   position: absolute;
-  bottom: 140px; left: 50%;
-  transform: translateX(-50%);
+  top: 34%;
+  left: 50%;
   z-index: 12;
   display: flex; gap: 10px;
   pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 .die {
   width: 44px; height: 44px;
@@ -476,9 +527,9 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
   100% { transform: scale(1, 1); }
 }
 
-/* Toast */
+/* Toast（位于 #board-wrap 内，坐标相对棋盘区域） */
 .toast-layer {
-  position: absolute; top: 96px; left: 50%;
+  position: absolute; top: 8px; left: 50%;
   transform: translateX(-50%);
   z-index: 30;
   display: flex; flex-direction: column; gap: 6px;
@@ -759,43 +810,57 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 /* ============================================================
    响应式
    ============================================================ */
-@media (max-width: 1080px) {
-  .hud-right { width: 160px; }
-  .player-cards { width: 150px; }
+@media (max-width: 1240px) {
+  :root { --side-w: 172px; }
   .log-panel { max-width: 340px; }
 }
 
-@media (max-width: 780px) {
+/* 窄屏：三栏 → 上下两段（棋盘在上、HUD 在下），棋盘始终完整可见 */
+@media (max-width: 900px) {
   .setup-body { grid-template-columns: 1fr; }
   .setup-col + .setup-col { border-left: none; border-top: 2px solid var(--c-ink); }
   .logo-text h1 { font-size: 20px; }
   .logo-canvas { width: 96px; height: 48px; }
 
-  .hud-right { display: none; }
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "top"
+      "left"
+      "board"
+      "bottom";
+    gap: 6px;
+    padding: 6px;
+  }
   .player-cards {
-    top: 54px; left: 8px; right: 8px;
-    width: auto;
     flex-direction: row;
     overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
   }
-  .pcard { flex: none; min-width: 132px; }
+  .pcard { flex: none; min-width: 128px; }
+  /* 窄屏收起右栏：排行改为底部播报区上方的横向条 */
+  .hud-right { display: none; }
   .hud-bottom {
     flex-direction: column;
     align-items: stretch;
-    bottom: 8px; left: 8px; right: 8px;
+    gap: 6px;
   }
   .log-panel { max-width: none; }
-  .log-list { height: 74px; }
-  .action-bar { justify-content: center; }
+  .log-list { height: 58px; }
+  .action-bar { justify-content: center; flex-wrap: wrap; }
   .pixel-btn-lg { font-size: 13px; padding: 10px 14px; }
-  .dice-tray { bottom: 178px; }
-  .toast-layer { top: 118px; }
+  .toast-layer { top: 6px; }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 560px) {
+  :root { --side-w: 0px; }
   .pixel-btn-lg { font-size: 12px; padding: 9px 11px; }
-  .log-list { height: 60px; font-size: 11px; }
+  .log-list { height: 46px; font-size: 11px; }
   .pcard { min-width: 112px; }
+  .hud-turn { padding: 5px 9px; gap: 7px; }
+  .hud-turn-name { font-size: 13px; }
 }
 
 /* 降低特效（用户关闭动画时） */
