@@ -220,7 +220,15 @@ export function settleOnCell(state, player, cellIndex) {
       player.stats.rentsPaid += rent;
       owner.stats.rentsCollected += rent;
       if (rent > owner.stats.largestRent) owner.stats.largestRent = rent;
-      results.push({ kind: 'rent-paid', cellIndex, cell, rent, from: player.id, to: owner.id, ownerName: owner.name, buffMult });
+      results.push({
+        kind: 'rent-paid', cellIndex, cell, rent,
+        from: player.id, to: owner.id, ownerName: owner.name, buffMult,
+        // 弹窗展示用：基础租金、机构等级、归属人配色、市场系数说明
+        baseRent: cell.rent[inst.level] ?? cell.rent[0] ?? rent,
+        level: inst.level,
+        ownerColorIndex: owner.colorIndex,
+        marketNote: marketNoteFor(state.market),
+      });
       emit(state, 'rent-paid', { from: player.id, to: owner.id, rent, cellIndex });
     }
   } else {
@@ -231,6 +239,32 @@ export function settleOnCell(state, player, cellIndex) {
   return results;
 }
 
+/**
+ * 市场周期 → 租金系数说明（用于交租弹窗）。
+ */
+export function marketNoteFor(market) {
+  if (market === 'bull') return ' × 牛市 1.2';
+  if (market === 'bear') return ' × 熊市 0.8';
+  return '';
+}
+
+/**
+ * 发放「经过起点」的货币发行补贴。
+ *
+ * 规则（改动后）：
+ *   · **只要经过起点格就能拿到补贴** —— 不要求「恰好停在起点」；
+ *   · 绕圈跨过起点（索引 0）时同样发放；
+ *   · 同一圈内不重复发放（用 _startBonusGranted 标记去重）。
+ *
+ * 返回结算条目数组（空数组表示本圈已发过，不再重复发放）。
+ */
+export function grantStartPass(state, player, cell) {
+  if (player._startBonusGranted) return [];
+  player.cash += CONFIG.startBonus;
+  player._startBonusGranted = true;
+  return [{ kind: 'start-bonus', amount: CONFIG.startBonus, cell: cell || null }];
+}
+
 /** 特殊格结算 */
 function settleSpecial(state, player, cell) {
   const results = [];
@@ -238,19 +272,16 @@ function settleSpecial(state, player, cell) {
 
   switch (sp.id) {
     case 'start': {
-      // 起点补贴由调用方（经过起点时）统一发放，避免重复计息
-      if (!player._startBonusGranted) {
-        player.cash += CONFIG.startBonus;
-        player._startBonusGranted = true;
-        results.push({ kind: 'start-bonus', amount: CONFIG.startBonus, cell });
-      }
+      // 起点补贴由 grantStartPass 统一发放（带去重标记），避免重复计息
+      const granted = grantStartPass(state, player, cell);
+      if (granted) results.push(...granted);
       // 持有中国人民银行 —— 每圈开始获得额外流动性投放
       const regBonus = globalRegulatorEffects(state).roundBonus || 0;
       if (regBonus > 0) {
         player.cash += regBonus;
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell });
       }
-      // 绕圈后可申请央行贷款
+      // 经过起点后可申请央行贷款（每圈限一次）
       if (player.loanCountThisRound < CONFIG.maxLoansPerRound) {
         results.push({ kind: 'loan-offer', cell, tiers: CONFIG.loanTiers });
       }

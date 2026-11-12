@@ -467,7 +467,10 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
   display: flex; flex-direction: column;
 }
 .log-list {
-  height: 108px;
+  /* 播报栏加长 —— 位于 stage 的 bottom 行，网格会自动压缩棋盘区，
+     因此不会覆盖地图；再用 max-height 兜底，极端矮窗口也不会顶穿布局。 */
+  height: clamp(150px, 26vh, 300px);
+  max-height: 300px;
   overflow-y: auto;
   padding: 6px 8px;
   font-size: 12px;

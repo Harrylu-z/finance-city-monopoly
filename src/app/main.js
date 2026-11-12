@@ -13,6 +13,7 @@ import {
   rollDice, movePlayer, settleOnCell, resolvePurchase, upgradeInstitution,
   mortgageInstitution, redeemInstitution, endTurn, checkBankruptcy, rankPlayers,
   applyEventCard, applyTrapCard, takeCentralLoan, repayLoan, issueBond,
+  grantStartPass,
 } from '../core/rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities, aiName,
@@ -28,14 +29,18 @@ import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog, showMenuDialog,
   showLoanDialog, showBondDialog, showTrapDialog, showBuffPanel,
-  showPlayerDetailDialog,
+  showPlayerDetailDialog, showRentDialog,
 } from './dialogs.js';
 import { showTutorial } from './tutorial.js';
 import { openShareDialog, parseShareUrl } from './share.js';
 import { saveRecord, saveSettings, loadSettings } from './persist.js';
 import { AVATARS, getAvatarIcon } from '../art/avatars.js';
-import { PALETTE } from '../core/palette.js';
+import { getInstitutionSprite } from '../art/buildings.js';
+import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
 import { delay, interval } from '../core/scheduler.js';
+
+/** 集团 → 建筑造型索引（与 render/canvas.js 保持一致） */
+const GROUP_INDEX_BY_GROUP = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
 class Game {
   constructor() {
@@ -577,6 +582,8 @@ class Game {
     const from = player.position;
     const path = [];
     for (let i = 1; i <= steps; i++) path.push((from + i) % BOARD_SIZE);
+    // 记录本次移动经过的格子 —— 用于判定「是否经过起点格」（不只是落在起点）
+    this._lastPath = path.slice();
 
     let stepTick = 0;
     const stepTimer = interval(120, () => {
@@ -604,15 +611,52 @@ class Game {
   afterMove(player, passedStart) {
     const state = this.state;
 
-    if (passedStart) {
-      // 起点补贴由 settleOnCell 统一发放（带去重标记），此处仅记录日志与特效
-      player._startBonusGranted = false;
-      const c = this.cellCenter(player.position);
-      const results = settleOnCell(state, player, player.position);
+    // ===== 起点经过判定 =====
+    // 规则：只要「经过」起点格就能拿补贴 + 可选贷款，不必恰好停在起点。
+    //   · 落在起点格            → landedOnStart
+    //   · 移动路径跨过起点格    → passedOverStart（绕圈时最常见）
+    const landedOnStart = player.position === 0;
+    const path = this._lastPath || [];
+    const passedOverStart = path.length > 0 && path.some((idx) => idx === 0) && !landedOnStart;
+
+    if (landedOnStart || passedOverStart || passedStart) {
+      // 绕圈跨过起点（未落在起点）→ 允许再次发放下一圈补贴
+      if (passedStart && !landedOnStart) {
+        player._startBonusGranted = false;
+      }
+      const startCell = state.board[0];
+      const results = [];
+
+      // 1) 发放补贴 —— 经过起点即得（落点恰好是起点时，此处发过，
+      //    后续 settleOnCell 内的再次调用会被去重标记挡掉）
+      const bonusResults = grantStartPass(state, player, startCell);
+      results.push(...bonusResults);
+
+      // 2) 持有央行 → 每圈流动性投放
+      const regBonus = globalRegulatorEffects(state).roundBonus || 0;
+      if (regBonus > 0) {
+        player.cash += regBonus;
+        results.push({ kind: 'pbc-bonus', amount: regBonus, cell: startCell });
+      }
+
+      // 3) 贷款机会（每圈限一次）
+      if (player.loanCountThisRound < CONFIG.maxLoansPerRound) {
+        results.push({ kind: 'loan-offer', cell: startCell, tiers: CONFIG.loanTiers });
+      }
+
+      // 4) 落点若是起点格，仍需走正常结算（起点自身是特殊格）
+      //    注意 settleOnCell 内部也会产出 loan-offer，这里要剔除以免弹两次
+      if (landedOnStart) {
+        const cellResults = settleOnCell(state, player, player.position);
+        results.push(...cellResults.filter((r) => r.kind !== 'loan-offer'));
+      }
+
       this.handleSettlement(player, results);
-      if (player._startBonusGranted) {
+
+      if (bonusResults.length) {
+        const c = this.cellCenter(0);
         log(state, player.isAI ? 'ai' : 'good',
-          `${player.name} 经过陆家嘴金融中心，获得货币发行补贴 ￥${CONFIG.startBonus}`, '补贴');
+          `${player.name} ${passedOverStart ? '经过' : '抵达'}陆家嘴金融中心，获得货币发行补贴 ￥${CONFIG.startBonus}`, '补贴');
         this.sfx.buy();
         this.effects.floatUp(c.x, c.y, { count: 6, colors: [PALETTE.gold, PALETTE.amberLt] });
       }
@@ -660,6 +704,24 @@ class Game {
           this.effects.triggerShake();
           this.shakeScreen();
           this.floatText(`-￥${r.rent}`, c, PALETTE.redLt);
+          // 踩到他人机构 —— 弹出交租确认窗（AI 不弹，避免打断观战节奏）
+          if (!player.isAI) {
+            this.busy = false;
+            showRentDialog(player, {
+              cellName: r.cell.name,
+              ownerName: r.ownerName,
+              rent: r.rent,
+              baseRent: r.baseRent ?? r.rent,
+              buffMult: r.buffMult,
+              marketNote: r.marketNote || '',
+              levelLabel: r.level != null ? levelLabel(r.level) : '',
+              sprite: this.institutionSprite(r.cell, r.level ?? r.cell.tier, r.ownerColorIndex),
+            }, () => {
+              this.busy = true;
+              this.continueAfterSettlement(player);
+            });
+            return;
+          }
           break;
         }
         case 'charge': {
@@ -1282,6 +1344,22 @@ class Game {
   cellCenter(index) {
     const r = this.renderer.cellRect(index);
     return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+  }
+
+  /**
+   * 取机构立绘精灵（供交租弹窗展示）。
+   * 找不到时返回 null —— 弹窗会自动跳过图片区，不影响主流程。
+   */
+  institutionSprite(cell, level, ownerColorIndex) {
+    try {
+      const gi = GROUP_INDEX_BY_GROUP[cell.group] ?? 0;
+      const ownerColor = ownerColorIndex != null
+        ? PLAYER_COLORS[ownerColorIndex % PLAYER_COLORS.length].main
+        : null;
+      return getInstitutionSprite(cell, level, ownerColor, gi);
+    } catch {
+      return null;
+    }
   }
 
   floatText(text, pos, color) {

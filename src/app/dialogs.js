@@ -291,6 +291,83 @@ export function showMetroDialog(onChoose) {
   return openModal({ title: '地铁 · 通勤枢纽', body, dismissible: false, actions: [] });
 }
 
+/**
+ * 交租弹窗 —— 踩到他人机构时弹出。
+ *
+ * 玩家不能选择「不付」（租金是硬规则），但弹窗会明确展示：
+ *   · 机构名与归属人、所属集团；
+ *   · 租金构成（基础租金 × 集团系数 × 市场周期 × 事件 × Buff）；
+ *   · 交租后的现金余额。
+ */
+export function showRentDialog(player, info, onClose) {
+  const body = document.createElement('div');
+
+  const banner = document.createElement('div');
+  banner.className = 'winner-banner';
+  banner.style.color = PALETTE.redLt;
+  banner.textContent = '支付管理费';
+  body.appendChild(banner);
+
+  const t = document.createElement('div');
+  t.className = 'modal-text';
+  t.innerHTML = `你踏足了 <span class="hl">${info.cellName}</span>，
+    该机构由 <span class="hl-red">${info.ownerName}</span> 持有。`;
+  body.appendChild(t);
+
+  // 机构缩略图 + 归属色
+  const pic = document.createElement('div');
+  pic.className = 'modal-grid';
+  pic.style.gridTemplateColumns = 'auto 1fr';
+  pic.style.alignItems = 'center';
+  pic.style.gap = '12px';
+
+  const spriteWrap = document.createElement('div');
+  if (info.sprite) {
+    const cv = document.createElement('canvas');
+    cv.width = info.sprite.width;
+    cv.height = info.sprite.height;
+    cv.style.imageRendering = 'pixelated';
+    cv.style.width = `${info.sprite.width * 3}px`;
+    cv.style.height = `${info.sprite.height * 3}px`;
+    const cctx = cv.getContext('2d');
+    cctx.imageSmoothingEnabled = false;
+    cctx.drawImage(info.sprite, 0, 0);
+    spriteWrap.appendChild(cv);
+  }
+  pic.appendChild(spriteWrap);
+
+  const detail = document.createElement('div');
+  detail.className = 'modal-text';
+  const buffNote = info.buffMult && info.buffMult !== 1
+    ? ` <span class="hl">（含集团加成 ×${info.buffMult}）</span>`
+    : '';
+  const levelNote = info.levelLabel ? ` · ${info.levelLabel}` : '';
+  detail.innerHTML = `
+    <div>归属：<span class="hl">${info.ownerName}</span>${levelNote}</div>
+    <div>机构：${info.cellName}</div>
+    <div style="margin-top:6px">管理费 <span class="hl-red">￥${info.rent}</span>${buffNote}</div>
+    <div class="dim" style="margin-top:4px">
+      基础租金 ￥${info.baseRent} × 集团系数 × 行情系数${info.marketNote || ''}
+    </div>
+  `;
+  pic.appendChild(detail);
+  body.appendChild(pic);
+
+  const cash = document.createElement('div');
+  cash.className = 'modal-text';
+  cash.style.marginTop = '10px';
+  cash.innerHTML = `交租后现金 <span class="hl-red">￥${player.cash}</span>
+    <span class="dim">（已扣除 ￥${info.rent}）</span>`;
+  body.appendChild(cash);
+
+  return openModal({
+    title: '交租 · 他人机构',
+    body,
+    dismissible: false,
+    actions: [{ text: '确认支付', primary: true, onClick: onClose }],
+  });
+}
+
 /** 事件卡弹窗 */
 export function showEventCardDialog(card, effect, onClose) {
   const body = document.createElement('div');
