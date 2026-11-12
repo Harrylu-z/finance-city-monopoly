@@ -5,6 +5,7 @@
 import {
   BOARD_CELLS, BOARD_SIZE, BOARD_SHAPE, GROUP_CELLS, REGULATOR_CELLS,
   UPGRADABLE_CELLS, REGULATORS, TRAP_CARDS, SPECIAL, validateBoard, LEVELS,
+  CLEARING_TARGETS,
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,

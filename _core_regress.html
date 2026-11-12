@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>快速核心回归</title>
+</head>
+<body>
+<script type="module">
+const lines = [];
+const log = (s) => lines.push(s);
+const flush = () => { document.title = 'F|' + lines.join(' ⏎ '); };
+try {
+  // 直接跑核心层：不含 UI/动画的快速多局对局，验证 rules.js 的 stats 改动
+  const rules = await import('/src/core/rules.js');
+  const eco = await import('/src/core/economy.js');
+  const ai = await import('/src/core/ai.js');
+  const { makeRng } = await import('/src/core/rng.js');
+
+  log('=== 核心层快速回归（20 局 × 最多 400 回合）===');
+  let totalAcq = 0, totalUpg = 0, totalAcqSp = 0, totalUpgSp = 0;
+  let totalRentC = 0, totalRentP = 0, gamesOver = 0, bankruptCount = 0;
+  const finOk = [];
+
+  for (let gi = 0; gi < 20; gi++) {
+    const rng = makeRng('core-' + gi);
+    const personalities = ai.assignPersonalities(rng, 3);
+    const players = [
+      { id: 0, name: '你', isAI: false, avatar: 0, colorIndex: 0 },
+      { id: 1, name: 'AI甲', isAI: true, avatar: 1, colorIndex: 1, personality: personalities[0] },
+      { id: 2, name: 'AI乙', isAI: true, avatar: 2, colorIndex: 2, personality: personalities[1] },
+      { id: 3, name: 'AI丙', isAI: true, avatar: 3, colorIndex: 3, personality: personalities[2] },
+    ];
+    const state = rules.createState({
+      seed: 'core-' + gi, players, diceCount: 2, cash: 1600,
+      market: 'normal', difficulty: 'normal',
+    });
+    state.maxTurns = 400;
+
+    let guard = 0;
+    while (state.phase !== 'gameover' && guard < 400) {
+      guard++;
+      const p = state.players[state.currentPlayerIndex];
+      if (!p.bankrupt) {
+        const { dice } = rules.rollDice(state, p);
+        rules.movePlayer(state, p, dice.reduce((a, b) => a + b, 0));
+        const res = rules.settleOnCell(state, p, p.position);
+        for (const r of res) {
+          if (r.kind === 'purchase-offer') {
+            const d = ai.decide(state, p, 'purchase', { cellIndex: r.cellIndex });
+            state.pending = {
+              kind: 'purchase', cellIndex: r.cellIndex,
+              price: r.price, level: r.level, playerId: p.id,
+            };
+            rules.resolvePurchase(state, p, d.action === 'buy');
+          }
+          if (r.kind === 'loan-offer') {
+            const tier = eco.CONFIG.loanTiers[0];
+            rules.takeCentralLoan(state, p, tier.id);
+          }
+        }
+        if (state.pending && state.pending.kind === 'purchase') state.pending = null;
+        if (state.pending) state.pending = null;
+        // AI 经济动作（注意：decide 可能返回 action:'idle'，此时没有 cellIndex）
+        const plan = ai.planTurn(state, p);
+        if (plan.wantUpgrade) {
+          const d = ai.decide(state, p, 'upgrade');
+          if (d.action === 'upgrade' && typeof d.cellIndex === 'number') {
+            rules.upgradeInstitution(state, p, d.cellIndex);
+          }
+        }
+        if (plan.wantMortgage) {
+          const d = ai.decide(state, p, 'mortgage');
+          if (d.action === 'mortgage' && typeof d.cellIndex === 'number') {
+            rules.mortgageInstitution(state, p, d.cellIndex);
+          }
+        }
+        rules.checkBankruptcy(state, p);
+      }
+      rules.endTurn(state);
+    }
+
+    if (state.phase === 'gameover') gamesOver++;
+    for (const p of state.players) {
+      const s2 = p.stats;
+      totalAcq += s2.acquisitions; totalUpg += s2.upgrades;
+      totalAcqSp += s2.acquisitionSpend; totalUpgSp += s2.upgradeSpend;
+      totalRentC += s2.rentsCollected; totalRentP += s2.rentsPaid;
+      if (p.bankrupt) bankruptCount++;
+      // 校验 stats 与实际资产的一致性
+      const m = eco.financialMetrics(p, state);
+      if (m.netWorth !== m.assets - m.debt) finOk.push('netWorth mismatch ' + p.name);
+      if (m.debtRatio < 0 || m.debtRatio > 100) finOk.push('debtRatio out of range ' + p.name);
+      if (m.institutionCount !== p.institutions.length) finOk.push('instCount mismatch ' + p.name);
+      // 收购花费应等于实际支付总额
+      if (s2.acquisitions > 0 && s2.acquisitionSpend <= 0) finOk.push('acqSpend not tracked ' + p.name);
+      if (s2.upgrades > 0 && s2.upgradeSpend <= 0) finOk.push('upgSpend not tracked ' + p.name);
+    }
+    if (gi === 0) {
+      log(`第 1 局: round=${state.round} turn=${state.turnNumber} phase=${state.phase}`);
+      for (const p of state.players) {
+        const s2 = p.stats;
+        log(`  ${p.name} bk=${p.bankrupt} cash=${p.cash} inst=${p.institutions.length} `
+          + `acq=${s2.acquisitions} upg=${s2.upgrades} acqSp=${s2.acquisitionSpend} `
+          + `upgSp=${s2.upgradeSpend} rentC=${s2.rentsCollected} rentP=${s2.rentsPaid} `
+          + `redeemSp=${s2.redeemSpend} loans=${p.loans.length} bonds=${p.bonds.length}`);
+      }
+    }
+  }
+
+  log(`对局结束 ${gamesOver}/20 局，破产玩家共 ${bankruptCount} 个`);
+  log(`累计: 收购=${totalAcq} 升级=${totalUpg} 收购花费=${totalAcqSp} 升级花费=${totalUpgSp} 收租=${totalRentC} 付租=${totalRentP}`);
+  log(`stats 一致性问题: ${finOk.length === 0 ? '无' : finOk.slice(0, 10).join(' | ')}`);
+  log(finOk.length === 0 ? 'CORE_REGRESSION_PASS' : 'CORE_REGRESSION_FAIL');
+} catch (e) {
+  log('FATAL ' + (e && e.stack ? e.stack : e));
+}
+flush();
+</script>
+</body>
+</html>

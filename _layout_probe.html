@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>layout probe</title></head><body>
+<script type="module">
+// 复刻 board.js 的 LAYOUT 与解析逻辑，仅做只读分析
+const S = {
+  start: 'start', clearing: 'clearing', crossborder: 'crossborder',
+  metro: 'metro', tax: 'tax', charity: 'charity', event: 'event',
+  market: 'market', audit: 'audit', risk: 'risk', refinance: 'refinance',
+  rating: 'rating', commodity: 'commodity', roadshow: 'roadshow',
+};
+const LAYOUT = [
+  S.start, 'b0', 'b1', S.event, 'b2', 'b3', 'b4', S.tax,
+  'b5', 'b6', 'b7', S.audit, 'b8', 'b9', 'b10', 'P',
+  'r0', 'r1', 'r2', S.clearing, 'r3', 'r4', 'r5', S.metro,
+  'r6', 'r7', 'r8', 'r9', 'r10', 'C', 'i0', 'i1', 'i2',
+  S.rating, 'i3', 'i4', 'i5', S.commodity, 'i6', 'i7', 'i8',
+  S.risk, 'i9', 'i10', 'N', 'a0', 'a1', S.roadshow,
+  'a2', 'a3', 'a4', S.crossborder, 'a5', 'a6', 'a7', S.charity,
+  'a8', 'a9', 'a10', S.refinance, 'F', 'a11', S.market,
+];
+const REG = { P: '中国人民银行', C: '中国证监会', N: '金融监管总局', F: '金融稳定委员会' };
+const SPECIAL_NAME = {
+  start: '起点', event: '财经快讯', tax: '合规成本', audit: '监管抽查',
+  clearing: '清算所', metro: '地铁', rating: '信用评级', commodity: '要素市场',
+  risk: '风险警示', roadshow: '投资者路演', crossborder: '跨境互联',
+  charity: '慈善公益捐赠', refinance: '再融资窗口', market: '市场周期',
+};
+const out = ['len=' + LAYOUT.length];
+out.push('功能格索引:');
+LAYOUT.forEach((slot, i) => {
+  const isReg = REG[slot];
+  const isSpec = SPECIAL_NAME[slot];
+  if (isReg) out.push(`  #${i} REG ${isReg}`);
+  else if (isSpec) out.push(`  #${i} SPEC ${isSpec}`);
+});
+// 相邻检查
+const functional = (s) => !!REG[s] || !!SPECIAL_NAME[s];
+const adj = [];
+for (let i = 0; i < LAYOUT.length; i++) {
+  const a = LAYOUT[i], b = LAYOUT[(i + 1) % LAYOUT.length];
+  if (functional(a) && functional(b)) adj.push(`#${i}(${REG[a] || SPECIAL_NAME[a]}) -> #${(i+1)%LAYOUT.length}(${REG[b] || SPECIAL_NAME[b]})`);
+}
+out.push('相邻冲突: ' + (adj.length ? adj.join(' ; ') : '无'));
+document.title = 'L|' + out.join(' ⏎ ');
+</script></body></html>

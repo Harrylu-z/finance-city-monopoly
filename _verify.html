@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>临时验证页 · 资产排行下钻</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  #verify-out {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(10,13,24,.97); color: #f2e6cf;
+    font-family: monospace; font-size: 12px; line-height: 1.55;
+    padding: 16px; overflow: auto; white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<div id="verify-out">loading game DOM...</div>
+<script type="module">
+// 把 index.html 的 body 骨架注入当前页，然后加载主游戏模块 —— 复用真实 DOM 结构
+const html = await (await fetch('/index.html')).text();
+const doc = new DOMParser().parseFromString(html, 'text/html');
+const app = doc.getElementById('app');
+document.body.insertBefore(app, document.getElementById('verify-out'));
+// 复用 index.html 里的内联 <script type="module" src="src/app/main.js"> 不会被 DOMParser 执行，
+// 这里手动加载。
+await import('/src/app/main.js');
+await new Promise(r => setTimeout(r, 300));
+
+const out = document.getElementById('verify-out');
+const lines = [];
+function log(s) { lines.push(s); out.textContent = lines.join('\n'); }
+function section(t) { lines.push(''); log('=== ' + t + ' ==='); }
+function report(text) {
+  try {
+    fetch('http://127.0.0.1:8123/result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) { /* ignore */ }
+}
+
+const errs = [];
+window.addEventListener('error', e => errs.push(String(e.message)));
+window.addEventListener('unhandledrejection', e => errs.push('rej: ' + String(e.reason)));
+const origErr = console.error.bind(console);
+console.error = (...a) => { errs.push('console.error: ' + a.map(String).join(' ')); origErr(...a); };
+
+(async () => {
+  try {
+    if (!window.__game) throw new Error('window.__game 未就绪');
+    log('主游戏模块加载 OK，window.__game 已就绪');
+
+    // ---------- 1. selftest ----------
+    section('1. selftest runAll()');
+    const st = await import('/src/core/selftest.js');
+    const res = st.runAll();
+    const fails = res.filter(r => !r.pass);
+    log(`总计 ${res.length} 项，通过 ${res.length - fails.length}，失败 ${fails.length}`);
+    for (const f of fails) log('FAIL: ' + f.name + ' :: ' + f.detail);
+    for (const r of res.filter(x => x.name.includes('财务指标'))) {
+      log((r.pass ? 'PASS ' : 'FAIL ') + r.name + ' — ' + r.detail);
+    }
+
+    // ---------- 2. autoplay 完整对局回归 ----------
+    section('2. autoplay 完整对局回归');
+    const g = window.__game;
+    g.beginGame({
+      seed: 'regress-1', difficulty: 'normal', aiCount: 3, diceCount: 2,
+      cash: 'standard', market: 'normal', nickname: '回归', avatar: 0, rounds: 'standard',
+    });
+    await new Promise(r => setTimeout(r, 400));
+    const s = document.createElement('script');
+    s.src = '/tools/autoplay.js';
+    document.head.appendChild(s);
+    await new Promise(r => setTimeout(r, 900));
+    const hasAuto = typeof window.__autoPlay === 'function';
+    log('autoplay 脚本加载: ' + (hasAuto ? 'OK' : '失败'));
+    if (hasAuto) {
+      try {
+        const apOut = await window.__autoPlay(window.__game, 300);
+        log('autoplay 返回: ' + JSON.stringify(apOut));
+      } catch (e) {
+        log('autoplay 抛错: ' + (e && e.stack ? e.stack : e));
+      }
+    }
+    const state = g.state;
+    log(`对局状态: round=${state.round} turn=${state.turnNumber} phase=${state.phase}`);
+    for (const p of state.players) {
+      const st2 = p.stats || {};
+      log(`  ${p.name} | bankrupt=${p.bankrupt} cash=${p.cash} inst=${p.institutions.length}`
+        + ` | acq=${st2.acquisitions} upg=${st2.upgrades} acqSpend=${st2.acquisitionSpend}`
+        + ` upgSpend=${st2.upgradeSpend} rentC=${st2.rentsCollected} rentP=${st2.rentsPaid}`
+        + ` redeemSpend=${st2.redeemSpend}`);
+    }
+    const anySpend = state.players.some(p => (p.stats.acquisitionSpend || 0) > 0 || (p.stats.upgradeSpend || 0) > 0);
+    log('stats 花费字段有累加: ' + anySpend);
+
+    // ---------- 3. 边界：破产玩家下钻 ----------
+    section('3. 边界：破产玩家下钻');
+    const { financialMetrics } = await import('/src/core/economy.js');
+    let bank = state.players.find(p => p.bankrupt);
+    if (!bank) {
+      bank = JSON.parse(JSON.stringify(state.players[0]));
+      bank.bankrupt = true;
+      bank.institutions = [];
+      log('（本局无玩家破产，使用构造的破产玩家）');
+    }
+    const mb = financialMetrics(bank, state);
+    log(`破产玩家 ${bank.name}: assets=${mb.assets} debt=${mb.debt} netWorth=${mb.netWorth} bankrupt=${mb.bankrupt}`);
+    g.openPlayerDetail(bank, 99);
+    const openedB = !document.getElementById('modal-root').hidden;
+    const rowsB = document.querySelectorAll('#modal-box .fin-row').length;
+    const headB = document.querySelector('#modal-box .fin-head-name')?.textContent;
+    log(`破产玩家下钻: opened=${openedB} 指标行数=${rowsB} head=${headB}`);
+    document.getElementById('modal-backdrop').click();
+    log('关闭后 hidden=' + document.getElementById('modal-root').hidden);
+
+    // ---------- 4. 边界：无机构玩家 ----------
+    section('4. 边界：无机构玩家下钻');
+    const empty = JSON.parse(JSON.stringify(state.players[0]));
+    empty.bankrupt = false;
+    empty.institutions = [];
+    empty.cash = 1600;
+    empty.loans = [];
+    empty.bonds = [];
+    empty.subscribedBonds = [];
+    const me = financialMetrics(empty, state);
+    log(`无机构玩家: assets=${me.assets} netWorth=${me.netWorth} debt=${me.debt} avgLevel=${me.avgLevel} rentIncome=${me.rentIncome} instCount=${me.institutionCount}`);
+    g.openPlayerDetail(empty, 1);
+    const rowsE = document.querySelectorAll('#modal-box .fin-row').length;
+    log(`无机构玩家下钻指标行数=${rowsE}`);
+    document.getElementById('modal-backdrop').click();
+
+    // ---------- 5. 布局 ----------
+    section('5. 布局与窄视口');
+    g.updateHUD();
+    document.querySelectorAll('#rank-list .rank-item')[0].click();
+    const box = document.getElementById('modal-box');
+    const grid = box.querySelector('.fin-grid');
+    log('宽视口 grid 列: ' + getComputedStyle(grid).gridTemplateColumns);
+    const r0 = box.getBoundingClientRect();
+    log(`宽视口 modal: ${r0.width|0} x ${r0.height|0} 溢出X=${box.scrollWidth > box.clientWidth} 溢出Y=${box.scrollHeight > box.clientHeight}`);
+    const ratio = box.querySelector('.fin-ratio-note');
+    if (ratio) log('比例说明: ' + ratio.textContent.trim());
+    document.getElementById('modal-backdrop').click();
+
+    // ---------- 6. 键盘可达性 ----------
+    section('6. 键盘可达性');
+    const row = document.querySelectorAll('#rank-list .rank-item')[0];
+    log(`排行行 role=${row.getAttribute('role')} tabindex=${row.getAttribute('tabindex')} class="${row.className}"`);
+    log('含 .rank-drill 箭头: ' + !!row.querySelector('.rank-drill'));
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const kbOpened = !document.getElementById('modal-root').hidden;
+    log('Enter 键触发下钻: ' + kbOpened);
+    document.getElementById('modal-backdrop').click();
+
+    // ---------- 7. 菜单入口 ----------
+    section('7. 菜单入口');
+    g.el['btn-menu'].click();
+    const items = [...document.querySelectorAll('#modal-box .menu-list .pixel-btn')].map(b => b.textContent);
+    log('菜单项: ' + JSON.stringify(items));
+    const finBtn = [...document.querySelectorAll('#modal-box .menu-list .pixel-btn')].find(b => b.textContent === '财务指标总览');
+    if (finBtn) {
+      finBtn.click();
+      const openedM = !document.getElementById('modal-root').hidden;
+      const titleM = document.querySelector('#modal-box .modal-title')?.textContent;
+      log('菜单打开下钻: opened=' + openedM + ' title=' + titleM);
+      document.getElementById('modal-backdrop').click();
+    }
+
+    // ---------- 8. console 错误 ----------
+    section('8. console 错误');
+    log('errors=' + JSON.stringify(errs));
+
+    section('DONE');
+  } catch (e) {
+    log('FATAL: ' + (e && e.stack ? e.stack : e));
+  }
+  report(lines.join('\n'));
+})();
+</script>
+</body>
+</html>

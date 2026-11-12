@@ -7,7 +7,7 @@
 **零构建 · 纯静态 · 原生 ES Modules** —— 克隆下来用 Python 起个服务器就能玩，
 也可以一键丢到 GitHub Pages / Vercel / Netlify。
 
-![技术栈](https://img.shields.io/badge/build-none-blue) ![依赖](https://img.shields.io/badge/dependencies-0-green) ![测试](https://img.shields.io/badge/self--test-44%20passed-brightgreen)
+![技术栈](https://img.shields.io/badge/build-none-blue) ![依赖](https://img.shields.io/badge/dependencies-0-green) ![测试](https://img.shields.io/badge/self--test-49%20passed-brightgreen)
 
 ---
 
@@ -16,6 +16,7 @@
 - [快速开始](#快速开始)
 - [部署](#部署)
 - [玩法说明](#玩法说明)
+    - [资产排行下钻 · 财务指标](#资产排行下钻--财务指标)
 - [棋盘设计](#棋盘设计)
 - [AI 性格系统](#ai-性格系统)
 - [分享与社交](#分享与社交)
@@ -73,40 +74,79 @@ python tools/check-imports.py
 
 项目是**纯静态站点**，产物就是仓库根目录，不需要编译。
 
-### GitHub Pages
+### GitHub Pages（推荐）
+
+仓库已内置 `.github/workflows/deploy.yml`，推送 `main` 后**自动部署**，无需手动操作。
+
+**首次配置（只需一次）：**
+
+1. 仓库页面 → `Settings` → 左侧 `Pages`
+2. `Build and deployment` → `Source` 选 **GitHub Actions**
+3. `Save`
+
+> 之后每次 `git push` 都会自动构建并发布，网址形如
+> `https://<用户名>.github.io/<仓库名>/`
+
+**如果不想用 Actions**，也可以选 `Deploy from a branch`：
+`Source` → `Deploy from a branch` → `Branch` 选 `main` → `Folder` 选 `/ (root)`。
+
+**手动推送步骤（Windows / macOS / Linux 通用）：**
 
 ```bash
-# 1. 在仓库设置里开启 Pages，Source 选 "Deploy from a branch"
-#    Branch 选 main，目录选 / (root)
+# 1. 关联远端
+git remote add origin https://github.com/<用户名>/<仓库名>.git
 
-# 2. 如果你不想让 .py 文件跟着上线，可以加一个 .nojekyll
-touch .nojekyll
+# 2. 推送（GitHub 已要求密码改用 Personal Access Token）
+git push -u origin main
+
+# 3. 触发 Pages 部署（若配置的是 Actions，可手动触发）
+gh workflow run deploy.yml
 ```
 
-或者用 Actions：
+**一键脚本：** 装了 [GitHub CLI](https://cli.github.com) 并执行过 `gh auth login` 后，
 
-```yaml
-# .github/workflows/deploy.yml
-name: Deploy Pages
-on:
-  push: { branches: [main] }
-permissions: { contents: read, pages: write, id-token: write }
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: { name: github-pages, url: ${{ steps.deployment.outputs.page_url }} }
-    steps:
-      - uses: actions/deploy-pages@v4
+```bash
+bash deploy.sh                     # 交互式，询问仓库名
+bash deploy.sh finance-city-monopoly
 ```
+
+脚本会自动完成：初始化仓库 → 创建远端 → 推送 → 开启 Pages → 输出最终网址。
+
+#### 首次部署注意事项
+
+| 项目 | 说明 |
+|---|---|
+| 构建时间 | 首次约 1~2 分钟，之后每次推送约 30 秒 |
+| `.nojekyll` | 仓库已包含，防止 Jekyll 忽略下划线开头的目录 |
+| 路径 | 全部使用相对路径，放在子目录下也能正常运行 |
+| HTTPS | GitHub Pages 自带证书，剪贴板 API 可直接用 |
+
+#### 分享给他人
+
+部署完成后，在**公网地址**上打开游戏，进入 `≡` → `分享战绩`：
+
+| 操作 | 效果 |
+|---|---|
+| `复制链接` | 生成带 seed 的深链接，对方打开即复现同一局棋盘布局与 AI 性格 |
+| `下载分享图` | 480×300 PNG，含四人排名与棋盘归属热力图 |
+| `复制嵌入代码` | iframe 片段，可嵌入博客或个人主页 |
+
+> ⚠️ 深链接里的域名来自**当前访问地址**。本地 `http://localhost:8123`
+> 生成的链接只有你自己能打开 —— 分享前请先在公网地址上重新复制一次。
+
+### 不用 GitHub Pages？也可以
+
+项目零构建、纯静态，任何静态托管都能用：
+
+| 平台 | 操作 |
+|---|---|
+| **Netlify Drop** | 打开 <https://app.netlify.com/drop>，把整个文件夹拖进去，秒出网址，无需注册 |
+| **Vercel** | `npm i -g vercel && vercel --prod` |
+| **Cloudflare Pages** | 连接仓库，构建命令留空，输出目录填 `.` |
+
+### GitHub Actions（可选，仓库已内置）
+
+若想改用 Actions 部署，`.github/workflows/deploy.yml` 内容如下：
 
 ### Vercel
 
@@ -152,6 +192,30 @@ python -m http.server 8000   # 任何静态服务器都行
 | 央行贷款 | 起点弹窗 | 绕圈经过起点后可选档位贷款（与质押融资相互独立） |
 | 发行债券 | 再融资窗口弹窗 | 向其他玩家募资，需 **≥2 人认购**方能成立 |
 | 结束回合 | `结束回合` | 交棒给下一位玩家 |
+
+### 资产排行下钻 · 财务指标
+
+右侧「资产排行」面板的**任意一行都可点击**（含 AI 玩家），打开「财务指标 · 下钻」窗口，
+查看该玩家的完整财务画像。也可从菜单 → `财务指标总览` 打开自己的指标。
+
+窗口分四个板块：
+
+| 板块 | 指标 |
+|---|---|
+| 资产结构 | 总资产、现金、机构市值、质押资产 |
+| 负债与净值 | 总负债、未偿贷款、应付债券、质押融资额、持有债券债权、净资产、资产负债率 / 权益比率 / 权益乘数（带比例条） |
+| 经营指标 | 在营机构、质押机构、监管牌照、机构平均等级、最高等级、每圈管理费收入、圈均摊薄收入 |
+| 现金流与交易统计 | 累计收取 / 支付管理费、管理费净流入、收购次数、升级次数、单笔最高管理费 |
+
+**指标口径**
+
+- **总资产** = 现金 + 机构市值；**已质押的机构按半值计入**（与排行榜排名口径一致）
+- **总负债** = 未偿贷款（含利息）+ 应付债券兑付义务 + 质押融资本金
+- **净资产** = 总资产 − 总负债；**资产负债率 + 权益比率 = 100%**
+- **每圈管理费收入** 按当前市场周期（集团 Buff、事件卡系数一并计入）折算
+- 破产玩家同样可下钻，指标显示其清算后的状态
+
+> 指标由纯函数 `financialMetrics(player, state)` 计算（`src/core/economy.js`），无副作用、可单测。
 
 ### 金融主题文案对照
 
@@ -424,10 +488,11 @@ Canvas 生成的 480×300 PNG 分享图，包含：
 │                （63 格 / 9×7 / 监管机构 / 陷阱卡）│
 │  economy.js    经济公式（纯函数）              │
 │                （Buff / 监管效果 / 贷款 / 债券）   │
+│                （+ financialMetrics 财务指标）  │
 │  rules.js      状态机 / 回合流程 / 结算         │
 │  ai.js         AI 性格与决策                   │
 │  rng.js        Mulberry32 确定性随机            │
-│  selftest.js   44 项规则自检                   │
+│  selftest.js   49 项规则自检                   │
 │  scheduler.js  非节流调度器                    │
 │  palette.js    32 色统一调色板                  │
 ├─────────────────────────────────────────────┤
@@ -458,6 +523,11 @@ Canvas 生成的 480×300 PNG 分享图，包含：
 
 **纯函数经济层。** `economy.js` 里的 `calculateRent` / `upgradeCost` /
 `mortgageValue` / `redeemFee` / `totalAssets` 全部无副作用，可直接单测。
+
+**财务指标单一数据源。** 资产排行下钻窗口的所有指标都来自
+`economy.js` 的 `financialMetrics(player, state)` —— 一个纯函数，
+既供 UI 展示，也被自检逐项校验（口径、负债拆分、质押处理、周期敏感性）。
+UI 不做任何二次计算，避免"排名看到的"和"下钻看到的"对不上。
 
 **非节流调度器。** 浏览器会把后台标签页的 `setTimeout` 节流到最低 1 次/秒，
 并暂停 `requestAnimationFrame`，导致回合流程在切走标签页后卡死。
@@ -534,7 +604,7 @@ Canvas 生成的 480×300 PNG 分享图，包含：
 
 ## 测试
 
-### 浏览器内自检（44 项）
+### 浏览器内自检（49 项）
 
 菜单 → `规则引擎自检`，或直接：
 
@@ -572,6 +642,8 @@ m.runAll();
 - 多种子 50 局快速对局不崩溃
 - **完整 63 格布局的移动 / 绕圈 / 传送步数正确**
 - 总资产 = 现金 + 机构市值
+- **财务指标口径**（总资产与 `totalAssets` 一致 / 负债拆分与资产负债率 /
+  质押机构按半值计入且不计入在营 / 管理费收入随牛熊周期变化 / 全玩家安全计算）
 - RNG 确定性
 - **机构立绘互不相同**（45 家逐像素比对）
 - **建筑等级高度递进**（网点 → 地标）

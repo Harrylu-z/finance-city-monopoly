@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>board probe</title></head><body>
+<script type="module">
+const out = [];
+try {
+  const b = await import('/src/core/board.js');
+  out.push('BOARD OK len=' + b.BOARD_CELLS.length);
+  out.push('specials=' + b.BOARD_CELLS.filter(c => c.type === 'special').map(c => c.special.id).join(','));
+} catch (e) {
+  out.push('BOARD FAIL ' + e.message);
+}
+document.title = 'B|' + out.join(' ⏎ ');
+</script>
+</body></html>

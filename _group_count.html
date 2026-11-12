@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>group counts</title></head><body>
+<script type="module">
+const out = [];
+try {
+  const b = await import('/src/core/board.js');
+  out.push('OK');
+} catch (e) {
+  out.push('import fail (expected) ' + e.message);
+}
+// 静态统计 LAYOUT 里各前缀的数量
+const LAYOUT = [
+  'start', 'b0', 'b1', 'event', 'b2', 'b3', 'b4', 'tax',
+  'b5', 'b6', 'b7', 'audit', 'b8', 'b9', 'b10', 'P',
+  'r0', 'r1', 'r2', 'clearing', 'r3', 'r4', 'r5', 'metro',
+  'r6', 'r7', 'r8', 'r9', 'r10', 'C', 'i0', 'i1', 'i2',
+  'rating', 'i3', 'i4', 'i5', 'commodity', 'i6', 'i7', 'i8',
+  'risk', 'i9', 'i10', 'N', 'a0', 'a1', 'roadshow',
+  'a2', 'a3', 'a4', 'crossborder', 'a5', 'a6', 'a7', 'charity',
+  'a8', 'a9', 'a10', 'refinance', 'F', 'a11', 'market',
+];
+const cnt = { b: 0, r: 0, i: 0, a: 0, other: 0 };
+const others = [];
+for (const s of LAYOUT) {
+  if (/^[bria]\d+$/.test(s)) cnt[s[0]]++;
+  else { cnt.other++; others.push(s); }
+}
+out.push('len=' + LAYOUT.length);
+out.push('b=' + cnt.b + ' r=' + cnt.r + ' i=' + cnt.i + ' a=' + cnt.a + ' other=' + cnt.other);
+out.push('others=' + others.join(','));
+// 每个组的下标范围
+for (const g of ['b','r','i','a']) {
+  const idx = LAYOUT.map((s,i)=>[s,i]).filter(([s])=>s[0]===g && /^\d+$/.test(s.slice(1))).map(([,i])=>i);
+  out.push(g + ' idx: ' + idx.join(','));
+}
+document.title = 'G|' + out.join(' ⏎ ');
+</script></body></html>

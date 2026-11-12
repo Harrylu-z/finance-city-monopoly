@@ -4,30 +4,63 @@
  * 规模：63 格（9 列 × 7 行的非正方形环形棋盘）
  *   = 45 个普通机构格 + 4 个监管机构格 + 14 个特色特殊格
  *
- * 顺时针布局，index 0 = 起点·陆家嘴金融中心：
+ * 顺时针布局，index 0 = 起点·陆家嘴金融中心。
  *
- *    0        起点·陆家嘴金融中心        (+￥200 货币发行补贴 / 可申请央行贷款)
- *    1-11     银行集团 ×11               含「中国工商银行」地标格
- *   12        中国人民银行（监管格）      不可升级
- *   13        清算所 · 互联互通           （跳转指定格）
- *   14-24    券商集团 ×11               含「华泰证券」地标格
- *   25        中国证监会（监管格）        不可升级
- *   26        地铁 · 通勤枢纽             （可选前进 1/2/3 格）
- *   27-37    保险集团 ×11               含「中国人保」地标格
- *   38        金融监管总局（监管格）      不可升级
- *   39        财经快讯 · 事件卡
- *   40        合规成本                    （印花税 / 交易手续费 / 监管罚款）
- *   41        监管抽查 · 陷阱格           （触发监管处罚 / 强制披露）
- *   42        慈善公益捐赠
- *   43-54    资管集团 ×12               含三大交易所
- *   55        金融稳定委员会（监管格）    不可升级
- *   56        信用评级 · 展望调整
- *   57        要素市场 · 大宗交易
- *   58        投资者路演
- *   59        跨境互联 · 港股通          （随机飞往另一处机构）
- *   60        风险警示 · 陷阱格           （风险暴露 / 集中度整改）
- *   61        市场周期 · 牛熊切换
- *   62        再融资窗口                 （可向其他玩家发行债券）
+ * ================= 布局设计：功能格均匀穿插 =================
+ * 棋盘共 18 个「功能格」（14 个特殊格 + 4 个监管机构格），它们被
+ * **均匀地穿插在 45 个普通机构格之间** —— 环形序列中任意两个功能格
+ * 之间至少间隔 1 个普通机构格，不存在「特殊格连成一片」的情况，
+ * 玩家的落点分布更均匀。
+ *
+ *   · 特殊格（type = 'special'）共 14 个，种类与数量不变；
+ *   · 监管机构格（type = 'institution' + regulator）共 4 个，仍归属
+ *     各自集团（央行→银行 / 证监会→券商 / 银保监→保险 / 金稳会→资管），
+ *     可持有、不可升级、全局效果生效、紫色双描边；
+ *   · 每个集团的普通机构仍按「价格 / 租金由低到高」依次连续排布，
+ *     集团色与建筑形态不受影响。
+ *
+ * 四个集团区块（各自 11~12 家普通机构 + 1 家监管机构）：
+ *
+ *    0        起点 · 陆家嘴金融中心       (+￥200 货币发行补贴 / 可申请央行贷款)
+ *    1-2      银行 ×2
+ *    3        财经快讯 · 事件卡
+ *    4-6      银行 ×3
+ *    7        合规成本（印花税 / 交易手续费 / 监管罚款）
+ *    8-9      银行 ×2
+ *    10       监管抽查 · 陷阱格（触发监管处罚 / 强制披露）
+ *    11-14    银行 ×4（末位为「中国工商银行」地标格）
+ *    15       中国人民银行（监管格，不可升级）
+ *    16-17    券商 ×2
+ *    18       清算所 · 互联互通（跳转指定格）
+ *    19-21    券商 ×3
+ *    22       地铁 · 通勤枢纽（可选前进 1/2/3 格）
+ *    23-27    券商 ×5
+ *    28       信用评级 · 展望调整
+ *    29       华泰证券（券商地标格）
+ *    30       中国证监会（监管格，不可升级）
+ *    31-32    保险 ×2
+ *    33       风险警示 · 陷阱格（风险暴露 / 集中度整改）
+ *    34-35    保险 ×2
+ *    36       要素市场 · 大宗交易
+ *    37-39    保险 ×3
+ *    40       投资者路演
+ *    41-44    保险 ×4（末位为「中国人保」地标格）
+ *    45       金融监管总局（监管格，不可升级）
+ *    46-47    资管 ×2
+ *    48       慈善公益捐赠
+ *    49-50    资管 ×2
+ *    51       跨境互联 · 港股通（随机飞往另一处机构）
+ *    52-53    资管 ×2
+ *    54       再融资窗口（可向其他玩家发行债券）
+ *    55-56    资管 ×2
+ *    57       金融稳定委员会（监管格，不可升级）
+ *    58-59    资管 ×2
+ *    60       市场周期 · 牛熊切换
+ *    61-62    资管 ×2（深交所 / 中金所）
+ *
+ * 说明：监管机构格放在各自集团普通机构序列的末位；
+ * 金稳会（57）之后仍保留资管收官格（58-62），使起点（0）前后都至少隔着
+ * 一个普通机构格 —— 环形闭合处同样满足「功能格不相邻」。
  *
  * 监管机构（人民银行 / 证监会 / 银保监 / 金稳会）：
  *   · 可以被玩家「收购经营权」（一次性买断，占用大量现金）
@@ -307,35 +340,142 @@ function makeRegulator(groupId, regKey) {
   });
 }
 
+/**
+ * 棋盘组装 —— 显式声明式布局。
+ *
+ * 为什么要显式声明：功能格（特殊格 + 监管格）必须均匀穿插在普通机构格
+ * 之间，用「按顺序 push」的旧写法很容易把它们挤到相邻位置。
+ * 这里改成「槽位表」：先按 index 逐槽填写内容，再由 assertNoAdjacent
+ * 在构建期校验不变量 —— 一旦有人把两个功能格排到了一起，导入即报错。
+ */
+
+/** 特殊格槽位简写 */
+const S = {
+  start: 'start', clearing: 'clearing', crossborder: 'crossborder',
+  metro: 'metro', tax: 'tax', charity: 'charity', event: 'event',
+  market: 'market', audit: 'audit', risk: 'risk', refinance: 'refinance',
+  rating: 'rating', commodity: 'commodity', roadshow: 'roadshow',
+};
+
+/**
+ * 槽位表 —— 长度必须等于 BOARD_SIZE（63）。
+ *
+ * 记号：
+ *   'b0'~'b10'  银行集团（11 家，价格/租金由低到高）
+ *   'r0'~'r10'  券商集团（11 家）
+ *   'i0'~'i10'  保险集团（11 家）
+ *   'a0'~'a11'  资管集团（12 家）
+ *   'P'/'C'/'N'/'F'  四家监管机构（央行 / 证监会 / 银保监 / 金稳会）
+ *   其余为特殊格 id（start / event / tax / ...）
+ *
+ * 布局要点（由 assertNoAdjacentFunctionalCells 在导入期强制校验）：
+ *   · index 0 固定为「陆家嘴金融中心」起点；
+ *   · 每个集团普通机构连续排布，监管格紧跟本集团末位之后；
+ *   · 14 个特殊格均匀穿插在普通机构之间，相邻功能格间隔 2~6 格，
+ *     最短间隔为 2（即中间至少隔 1 个普通机构格），不存在连片功能格。
+ */
+const LAYOUT = [
+  S.start,
+  'b0', 'b1',
+  S.event,
+  'b2', 'b3', 'b4',
+  S.tax,
+  'b5', 'b6',
+  S.audit,
+  'b7', 'b8', 'b9', 'b10',
+  'P',
+  'r0', 'r1',
+  S.clearing,
+  'r2', 'r3', 'r4',
+  S.metro,
+  'r5', 'r6', 'r7', 'r8', 'r9',
+  S.rating,
+  'r10',
+  'C',
+  'i0', 'i1',
+  S.risk,
+  'i2', 'i3',
+  S.commodity,
+  'i4', 'i5', 'i6',
+  S.roadshow,
+  'i7', 'i8',
+  'i9', 'i10',
+  'N',
+  'a0', 'a1',
+  S.charity,
+  'a2', 'a3',
+  S.crossborder,
+  'a4', 'a5',
+  S.refinance,
+  'a6', 'a7',
+  'F',
+  'a8', 'a9',
+  S.market,
+  'a10', 'a11',
+];
+
+/** 槽位 → 集团与下标 */
+function parseSlot(slot) {
+  switch (slot) {
+    case 'P': return { kind: 'regulator', group: 'bank', regKey: 'pbc' };
+    case 'C': return { kind: 'regulator', group: 'broker', regKey: 'csrc' };
+    case 'N': return { kind: 'regulator', group: 'insurer', regKey: 'nfra' };
+    case 'F': return { kind: 'regulator', group: 'asset', regKey: 'fsc' };
+    default: break;
+  }
+  // 只有「集团前缀 + 合法整数下标」才是机构槽位。
+  // 特殊格 id（audit / asset 等）也以字母开头，必须校验下标部分，
+  // 否则 'audit' 会被误判成 asset 集团且下标为 NaN。
+  const groupKey = { b: 'bank', r: 'broker', i: 'insurer', a: 'asset' }[slot[0]];
+  if (groupKey) {
+    const entryIndex = parseInt(slot.slice(1), 10);
+    if (Number.isInteger(entryIndex) && String(entryIndex) === slot.slice(1)) {
+      return { kind: 'institution', group: groupKey, entryIndex };
+    }
+  }
+  return { kind: 'special', specialKey: slot };
+}
+
 export const BOARD_CELLS = (() => {
+  if (LAYOUT.length !== BOARD_SIZE) {
+    throw new Error(`棋盘槽位数 ${LAYOUT.length} ≠ ${BOARD_SIZE}`);
+  }
   const cells = [];
-  const push = (cell) => cells.push({ index: cells.length, ...cell });
-
-  push({ type: 'special', special: SPECIAL.start, group: null, name: SPECIAL.start.name, code: 'START' });
-  GROUPS.bank.entries.forEach((e) => push(makeInstitution('bank', e)));
-  push(makeRegulator('bank', 'pbc'));
-  push({ type: 'special', special: SPECIAL.clearing, group: null, name: SPECIAL.clearing.name, code: 'CLEAR' });
-  GROUPS.broker.entries.forEach((e) => push(makeInstitution('broker', e)));
-  push(makeRegulator('broker', 'csrc'));
-  push({ type: 'special', special: SPECIAL.metro, group: null, name: SPECIAL.metro.name, code: 'METRO' });
-  GROUPS.insurer.entries.forEach((e) => push(makeInstitution('insurer', e)));
-  push(makeRegulator('insurer', 'nfra'));
-  push({ type: 'special', special: SPECIAL.event, group: null, name: SPECIAL.event.name, code: 'NEWS' });
-  push({ type: 'special', special: SPECIAL.tax, group: null, name: SPECIAL.tax.name, code: 'TAX' });
-  push({ type: 'special', special: SPECIAL.audit, group: null, name: SPECIAL.audit.name, code: 'AUDIT' });
-  push({ type: 'special', special: SPECIAL.charity, group: null, name: SPECIAL.charity.name, code: 'GIVE' });
-  GROUPS.asset.entries.forEach((e) => push(makeInstitution('asset', e)));
-  push(makeRegulator('asset', 'fsc'));
-  push({ type: 'special', special: SPECIAL.rating, group: null, name: SPECIAL.rating.name, code: 'RATE' });
-  push({ type: 'special', special: SPECIAL.commodity, group: null, name: SPECIAL.commodity.name, code: 'CMDTY' });
-  push({ type: 'special', special: SPECIAL.roadshow, group: null, name: SPECIAL.roadshow.name, code: 'ROAD' });
-  push({ type: 'special', special: SPECIAL.crossborder, group: null, name: SPECIAL.crossborder.name, code: 'XB' });
-  push({ type: 'special', special: SPECIAL.risk, group: null, name: SPECIAL.risk.name, code: 'RISK' });
-  push({ type: 'special', special: SPECIAL.market, group: null, name: SPECIAL.market.name, code: 'MKT' });
-  push({ type: 'special', special: SPECIAL.refinance, group: null, name: SPECIAL.refinance.name, code: 'BOND' });
-
+  LAYOUT.forEach((slot, index) => {
+    const s = parseSlot(slot);
+    if (s.kind === 'institution') {
+      const group = GROUPS[s.group];
+      const entry = group.entries[s.entryIndex];
+      if (!entry) throw new Error(`槽位 ${slot} 越界：${s.group}[${s.entryIndex}]`);
+      cells.push({ index, ...makeInstitution(s.group, entry) });
+    } else if (s.kind === 'regulator') {
+      cells.push({ index, ...makeRegulator(s.group, s.regKey) });
+    } else {
+      const sp = SPECIAL[s.specialKey];
+      if (!sp) throw new Error(`未知特殊格 ${s.specialKey}`);
+      cells.push({
+        index, type: 'special', special: sp, group: null, name: sp.name, code: sp.code || sp.id.toUpperCase(),
+      });
+    }
+  });
   return cells;
 })();
+
+/**
+ * 构建期不变量校验 —— 功能格（特殊格 + 监管格）不得相邻。
+ * 违反时直接抛错，让问题在导入阶段就暴露，而不是等到渲染才发现。
+ */
+function assertNoAdjacentFunctionalCells(cells) {
+  const functional = (c) => c.type === 'special' || c.regulator;
+  for (let i = 0; i < cells.length; i++) {
+    const a = cells[i];
+    const b = cells[(i + 1) % cells.length];
+    if (functional(a) && functional(b)) {
+      throw new Error(`功能格相邻：#${i} ${a.name} 与 #${(i + 1) % cells.length} ${b.name}`);
+    }
+  }
+}
+assertNoAdjacentFunctionalCells(BOARD_CELLS);
 
 /** 机构格索引列表（含监管格） */
 export const INSTITUTION_CELLS = BOARD_CELLS
@@ -360,8 +500,15 @@ export const GROUP_CELLS = {
   asset:   BOARD_CELLS.map((c, i) => (c.group === 'asset' ? i : -1)).filter((i) => i >= 0),
 };
 
-/** 清算所跳转目标：地图另一端的代表性机构 */
-export const CLEARING_TARGETS = [23, 46, 35, 51];
+/**
+ * 清算所跳转目标：地图另一端的代表性机构。
+ *
+ * 这四个索引必须随棋盘重排同步更新，并满足：
+ *   1) 指向普通机构格（不能是特殊格 / 监管格 / 清算所自身）；
+ *   2) 分散在地图不同方位，避免每次都跳到同一个角落。
+ * 当前对应：招商银行(13) / 华泰证券(29) / 中国人保(44) / 深交所(61)。
+ */
+export const CLEARING_TARGETS = [13, 29, 44, 61];
 
 /** 事件卡池 —— 中国金融风小事件 */
 export const EVENT_CARDS = [
@@ -435,5 +582,38 @@ export function validateBoard() {
       }
     }
   }
+
+  // ===== 功能格不相邻 =====
+  // 「功能格」= 特殊格 + 监管机构格。二者在环形序列中不得彼此紧邻，
+  // 否则特殊格会连成一片，玩家落点分布严重偏斜。
+  const isFunctional = (c) => c.type === 'special' || c.regulator;
+  for (let i = 0; i < BOARD_CELLS.length; i++) {
+    const a = BOARD_CELLS[i];
+    const b = BOARD_CELLS[(i + 1) % BOARD_CELLS.length];
+    if (isFunctional(a) && isFunctional(b)) {
+      errors.push(`功能格相邻：#${i} ${a.name} 与 #${(i + 1) % BOARD_CELLS.length} ${b.name}`);
+    }
+  }
+
+  // ===== 起点固定在 index 0 =====
+  if (BOARD_CELLS[0].special?.id !== 'start') {
+    errors.push(`index 0 应为起点，实为 ${BOARD_CELLS[0].name}`);
+  }
+
+  // ===== 清算所跳转目标有效且分散 =====
+  const clearingIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'clearing');
+  for (const t of CLEARING_TARGETS) {
+    const c = BOARD_CELLS[t];
+    if (!c || c.type !== 'institution' || c.regulator) {
+      errors.push(`清算所目标 ${t} 不是普通机构格`);
+    }
+    if (t === clearingIdx) {
+      errors.push(`清算所目标 ${t} 不能是清算所自身`);
+    }
+  }
+  if (new Set(CLEARING_TARGETS).size !== CLEARING_TARGETS.length) {
+    errors.push('清算所目标存在重复');
+  }
+
   return errors;
 }
