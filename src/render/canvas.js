@@ -553,23 +553,36 @@ export class BoardRenderer {
         const s = this.scale;
         const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
 
+        // ===== 棋子底座 =====
+        // 站台圆盘把棋子与地面分隔开，避免与机构建筑「融」在一起。
+        // 底座用原生像素坐标绘制，再按 scale 放大，边缘保持锐利。
+        const baseCx = tx + 8 * s;
+        const baseCy = ty + 23 * s;
+        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main);
+
         if (anim && anim.squash) {
+          // 挤压动画：整体压扁 / 拉长。
+          // 描边必须跟着一起缩放，否则轮廓会与剪影错位 —— 所以先把
+          // 「带描边的精灵」烘焙到离屏画布，再整体缩放绘制。
           const sq = anim.squash;
+          const outlined = this.outlinedSprite(sprite, pc.main);
+          const pad = 2; // outlinedSprite 的留白
           ctx.save();
-          ctx.translate(Math.round(tx + 8), Math.round(ty + 24));
+          ctx.translate(Math.round(tx + 8 * s), Math.round(ty + 24 * s));
           ctx.scale(sq.sx, sq.sy);
-          ctx.drawImage(sprite, -8, -24, 16 * s, 24 * s);
+          // outlined 画布比本体大 pad*2，绘制时向左上偏移 pad 并放大到本体尺寸+留白
+          ctx.drawImage(
+            outlined,
+            -(8 + pad) * s,
+            -(24 + pad) * s,
+            (16 + pad * 2) * s,
+            (24 + pad * 2) * s
+          );
           ctx.restore();
         } else {
-          ctx.drawImage(sprite, Math.round(tx), Math.round(ty), 16 * s, 24 * s);
+          // 双层描边：墨色压边 + 玩家亮色识别边，紧贴人物剪影
+          this.drawTokenOutline(ctx, sprite, tx, ty, s, pc.main);
         }
-
-        // 玩家色像素描边
-        ctx.fillStyle = pc.main;
-        ctx.fillRect(Math.round(tx) - 1, Math.round(ty) - 1, 16 * s + 2, 1);
-        ctx.fillRect(Math.round(tx) - 1, Math.round(ty) + 24 * s, 16 * s + 2, 1);
-        ctx.fillRect(Math.round(tx) - 1, Math.round(ty), 1, 24 * s);
-        ctx.fillRect(Math.round(tx) + 16 * s, Math.round(ty), 1, 24 * s);
 
         // 玩家名牌（仅当前回合玩家显示，避免拥挤）
         if (state.currentPlayerIndex === p.index && !anim) {
@@ -578,6 +591,146 @@ export class BoardRenderer {
         }
       });
     }
+  }
+
+  /**
+   * 绘制棋子底座（深色站台圆盘 + 玩家色高光边）。
+   */
+  drawTokenBase(ctx, cx, cy, s, glow) {
+    const rx = Math.round(7 * s);
+    const ry = Math.max(2, Math.round(3 * s));
+    // 主体：逐行椭圆
+    for (let y = -ry; y <= ry; y++) {
+      const t = (y + ry) / (ry * 2);
+      const k = Math.sqrt(Math.max(0, 1 - (t * 2 - 1) ** 2));
+      const rowRx = Math.max(0, Math.round(rx * k));
+      if (rowRx <= 0) continue;
+      ctx.fillStyle = PALETTE.ink;
+      ctx.fillRect(Math.round(cx - rowRx), Math.round(cy - ry + y), rowRx * 2 + 1, 1);
+    }
+    // 上缘亮色高光（1px），让底座有受光感
+    ctx.fillStyle = glow;
+    ctx.fillRect(Math.round(cx - rx + 1), Math.round(cy - ry), Math.max(0, (rx - 1) * 2), 1);
+  }
+
+  /**
+   * 绘制棋子描边 —— 墨色压边 + 玩家亮色识别边。
+   *
+   * 直接沿人物剪影描边（而非套矩形框），这样披风 / 金锭 / 公文包伸出身体时
+   * 轮廓依然贴合，能与建筑立绘明确区分开。
+   */
+  drawTokenOutline(ctx, sprite, x, y, s, glow) {
+    const w = sprite.width;
+    const h = sprite.height;
+    const alpha = this.tokenAlpha(sprite);
+    if (!alpha) {
+      ctx.drawImage(sprite, Math.round(x), Math.round(y), w * s, h * s);
+      return;
+    }
+    this.paintOutline(ctx, alpha, w, h, x, y, s, glow);
+    // ---- 本体 ----
+    ctx.drawImage(sprite, Math.round(x), Math.round(y), w * s, h * s);
+  }
+
+  /**
+   * 生成「带描边的棋子精灵」离屏画布 —— 供挤压动画整体缩放使用。
+   *
+   * 描边先烘焙进精灵，再跟随 squash 一起缩放，轮廓与剪影始终贴合。
+   */
+  outlinedSprite(sprite, glow) {
+    if (!this._outlinedCache) this._outlinedCache = new WeakMap();
+    const cached = this._outlinedCache.get(sprite);
+    if (cached && cached.glow === glow) return cached.canvas;
+
+    const w = sprite.width;
+    const h = sprite.height;
+    const pad = 2; // 墨色外扩 2px 的留白
+    const cv = document.createElement('canvas');
+    cv.width = w + pad * 2;
+    cv.height = h + pad * 2;
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    const alpha = this.tokenAlpha(sprite);
+    if (!alpha) {
+      ctx.drawImage(sprite, pad, pad);
+    } else {
+      // 在留白画布上以 pad 为原点描边
+      this.paintOutline(ctx, alpha, w, h, pad, pad, 1, glow);
+      ctx.drawImage(sprite, pad, pad);
+    }
+    const entry = { canvas: cv, glow, pad };
+    this._outlinedCache.set(sprite, entry);
+    return cv;
+  }
+
+  /**
+   * 在目标上下文上沿剪影绘制双层描边（不含本体）。
+   *
+   * 第一层：墨色外扩 2px —— 把人物从深色背景里「抠」出来；
+   * 第二层：玩家亮色 1px —— 紧贴剪影，标记归属玩家。
+   */
+  paintOutline(ctx, alpha, w, h, x, y, s, glow) {
+    const ink = PALETTE.ink;
+    // ---- 第一层：墨色外扩 2px（把人物从背景抠出来）----
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        if (alpha[py * w + px] !== 0) continue;
+        if (!this.nearOpaque(alpha, w, h, px, py)) continue;
+        for (let oy = -2; oy <= 2; oy++) {
+          for (let ox = -2; ox <= 2; ox++) {
+            if (Math.abs(ox) < 2 && Math.abs(oy) < 2) continue; // 内圈留给亮色边
+            const nx = px + ox;
+            const ny = py + oy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            if (alpha[ny * w + nx] !== 0) continue;
+            ctx.fillStyle = ink;
+            ctx.fillRect(Math.round(x + nx * s), Math.round(y + ny * s), s, s);
+          }
+        }
+      }
+    }
+    // ---- 第二层：玩家亮色识别边（紧贴剪影 1px）----
+    ctx.fillStyle = glow;
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        if (alpha[py * w + px] !== 0) continue;
+        if (!this.nearOpaque(alpha, w, h, px, py)) continue;
+        ctx.fillRect(Math.round(x + px * s), Math.round(y + py * s), s, s);
+      }
+    }
+  }
+
+  /** 取精灵 alpha 通道（带缓存） */
+  tokenAlpha(sprite) {
+    if (!sprite || !sprite.getContext) return null;
+    if (this._alphaCache && this._alphaCache.has(sprite)) return this._alphaCache.get(sprite);
+    if (!this._alphaCache) this._alphaCache = new WeakMap();
+    let alpha = null;
+    try {
+      const sctx = sprite.getContext('2d');
+      const img = sctx.getImageData(0, 0, sprite.width, sprite.height);
+      alpha = new Uint8Array(sprite.width * sprite.height);
+      for (let i = 0; i < alpha.length; i++) alpha[i] = img.data[i * 4 + 3];
+    } catch {
+      alpha = null;
+    }
+    this._alphaCache.set(sprite, alpha);
+    return alpha;
+  }
+
+  /** 8 邻域是否有不透明像素 */
+  nearOpaque(alpha, w, h, px, py) {
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        if (ox === 0 && oy === 0) continue;
+        const nx = px + ox;
+        const ny = py + oy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        if (alpha[ny * w + nx] !== 0) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -591,7 +744,12 @@ export class BoardRenderer {
    * 分区规则：
    *   顶部条 18px（等级 / 名称） + 底部条 16px（归属牌 / 代码）
    *   中间主体区左侧留给机构立绘，右侧是棋子的行走与站位区
-   * 多人同格时在站位区内排成 1~3 列 × N 排，形成前后层次，不互相遮挡。
+   *
+   * 站位策略（按主体区实际高度自适应）：
+   *   · 高度够时 —— 排成 1~3 列 × N 排，后排抬高形成前后层次；
+   *   · 高度不够时（小窗口 / scale=1）—— 改用「横向错位单排」，
+   *     每个人依次向右偏移半个身位并交替上下微调，保证四人同格也能互相区分，
+   *     不会像旧实现那样全部被 Math.max 钳制到同一个坐标而完全重叠。
    */
   tokenSlots(r, n) {
     const s = this.scale;
@@ -607,25 +765,57 @@ export class BoardRenderer {
     // 站位区起点
     const zoneX = r.x + 2 + spriteZoneW;
     const zoneW = Math.max(w, r.w - 4 - spriteZoneW);
-    const zoneRight = zoneX + zoneW;
-
-    // 站位区内可容纳的列数
-    const perRow = Math.max(1, Math.min(3, Math.floor((zoneW - 2) / (w + 1))));
-    const rows = Math.ceil(n / perRow);
 
     const slots = [];
+
+    // ===== 情况 A：主体区够高 —— 正常多排布局 =====
+    if (bodyH >= h * 0.75) {
+      const perRow = Math.max(1, Math.min(3, Math.floor((zoneW - 2) / (w + 1))));
+      const rows = Math.ceil(n / perRow);
+      for (let i = 0; i < n; i++) {
+        const row = Math.floor(i / perRow);
+        const col = i % perRow;
+        const inRow = Math.min(perRow, n - row * perRow);
+        // 每排水平居中（相对站位区）
+        const rowW = inRow * (w + 1) - 1;
+        const startX = zoneX + Math.floor((zoneW - rowW) / 2);
+        // 多排时后排抬高，形成前后层次
+        const rowLift = (rows - 1 - row) * Math.floor(h * 0.22);
+        const baseY = bodyTop + bodyH - h - 1;
+        const y = Math.max(bodyTop + 1, baseY - rowLift);
+        const x = startX + col * (w + 1);
+        slots.push({ x, y, dx: x - r.x, dy: y - r.y });
+      }
+      return slots;
+    }
+
+    // ===== 情况 B：高度不足 —— 横向错位单排 =====
+    // 站位区放不下 n 个人时，允许向左溢出到立绘区（立绘在下方，错位不遮主体），
+    // 让每个人至少错开约 1/4 身位，配合上下微调保证四人同格也能互相区分。
+    // 绝不退化成「全部同一坐标」—— 那样旧实现会出现四人完全重叠、只剩一个的情况。
+    const avail = Math.max(1, zoneW - 2);
+    // 理想步长：身位的 1/4，至少 1px
+    const ideal = Math.max(1, Math.floor(w * 0.25));
+    // 站位区最多能提供的步长
+    const zoneStep = n > 1 ? Math.floor((avail - w) / (n - 1)) : 0;
+    // 若站位区不够，允许向左溢出到立绘区（最多溢出整格宽度的一半）
+    const overflow = Math.max(0, Math.floor((ideal * (n - 1) - Math.max(0, zoneStep)) / (n - 1)));
+    const step = n > 1
+      ? Math.max(1, Math.min(ideal, Math.max(zoneStep, 0) + overflow))
+      : 0;
+
+    // 单排时贴着底边；上下微调让剪影错开
+    // 注意：上下错位以「钳制后的 bodyTop+1」为基准向上/下微调，
+    // 而不是先钳制再加 jitter —— 否则 jitter 会被 Math.max 再次吃掉。
+    const floorY = bodyTop + 1;
+    const ceilY = bodyTop + bodyH - 1;
+    const jitterStep = Math.max(1, Math.round(s));
     for (let i = 0; i < n; i++) {
-      const row = Math.floor(i / perRow);
-      const col = i % perRow;
-      const inRow = Math.min(perRow, n - row * perRow);
-      // 每排水平居中（相对站位区）
-      const rowW = inRow * (w + 1) - 1;
-      const startX = zoneX + Math.floor((zoneW - rowW) / 2);
-      // 多排时后排抬高，形成前后层次
-      const rowLift = (rows - 1 - row) * Math.floor(h * 0.22);
-      const baseY = bodyTop + bodyH - h - 1;
-      const y = Math.max(bodyTop + 1, baseY - rowLift);
-      const x = startX + col * (w + 1);
+      const x = zoneX + i * step;
+      // 奇数位下移 1 格、偶数位上移 1 格，形成锯齿状前后层次
+      // （下移方向朝格子底部，更贴近「站台」）
+      const jitter = (i % 2 === 1 ? 1 : -1) * jitterStep;
+      const y = Math.max(floorY, Math.min(ceilY, floorY + jitter));
       slots.push({ x, y, dx: x - r.x, dy: y - r.y });
     }
     return slots;
