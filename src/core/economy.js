@@ -54,15 +54,17 @@ export const CONFIG = {
   bankruptcyFloor: 0,
 
   // ===== 央行贷款（起点绕圈后可申请）=====
-  // 三档可选：利率越低额度越小
+  // 单利 3%/回合；期限按「借款人自己的回合」计（与谁先绕圈无关）
+  // 额度越大期限越长：600→4 回合、1200→6 回合、2000→8 回合
+  // 到期总利率 = rate × term（12% / 18% / 24%），到期一次性还本付息
   loanTiers: [
-    { id: 'micro', name: '支小再贷款', amount: 600,  rate: 0.12, desc: '小额流动性支持，利率偏高' },
-    { id: 'bridge', name: '过桥资金',   amount: 1200, rate: 0.18, desc: '过桥融资，额度与利率均衡' },
-    { id: 'relending', name: ' PSL 棚改', amount: 2000, rate: 0.24, desc: '政策性工具，额度大但利率高' },
+    { id: 'micro', name: '支小再贷款', amount: 600,  rate: 0.03, term: 4, desc: '小额流动性支持，期限最短' },
+    { id: 'bridge', name: '过桥资金',   amount: 1200, rate: 0.03, term: 6, desc: '过桥融资，额度与期限均衡' },
+    { id: 'relending', name: 'PSL 棚改', amount: 2000, rate: 0.03, term: 8, desc: '政策性工具，额度大、期限长' },
   ],
   // 每圈最多可申请的贷款次数（同一圈只允许一次）
   maxLoansPerRound: 1,
-  // 贷款到期需一次性偿还本金 × (1 + rate)
+  // 贷款到期应还 = 本金 × (1 + rate × term)
   loanRepayMultiplier: 1,
 
   // ===== 债券融资（再融资窗口格）=====
@@ -438,10 +440,10 @@ export function ownsRegulator(player, regulatorId) {
  * 央行贷款 —— 起点绕圈后可申请
  * =================================================================== */
 
-/** 某档贷款的到期应还金额 */
+/** 某档贷款的到期应还金额（本金 + 单利 × 期限） */
 export function loanRepayAmount(tier) {
   const t = CONFIG.loanTiers.find((x) => x.id === tier) || CONFIG.loanTiers[0];
-  return Math.round(t.amount * (1 + t.rate) * CONFIG.loanRepayMultiplier);
+  return Math.round(t.amount * (1 + t.rate * t.term) * CONFIG.loanRepayMultiplier);
 }
 
 /** 玩家未偿还的贷款总额（本金+利息） */

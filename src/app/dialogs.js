@@ -8,7 +8,7 @@ import { getAvatarSprites } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
   groupBuffTier, globalRegulatorEffects, CONFIG, allGroupBuffs,
-  financialMetrics,
+  financialMetrics, loanRepayAmount,
 } from '../core/economy.js';
 import { GROUP_META, REGULATORS } from '../core/board.js';
 
@@ -600,8 +600,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   intro.className = 'modal-text';
   intro.innerHTML = `
     走过起点 <span class="hl">陆家嘴金融中心</span>，你获得了向中央银行申请流动性支持的机会。<br>
-    贷款用于<span class="hl">经营性周转</span>（收购地标级机构等），<span class="hl-red">到期需连本带息一次性偿还</span>。<br>
-    <span class="dim">与「股权质押」不同：质押是把资产变现，贷款是负债且不影响资产权属。</span>
+    贷款用于<span class="hl">经营性周转</span>（收购地标级机构等），
+    <span class="hl-red">到期需连本带息一次性偿还</span>。<br>
+    <span class="dim">期限按你自己的回合数计算（不受他人绕圈影响）；与「股权质押」不同：质押是把资产变现，贷款是负债且不影响资产权属。</span>
   `;
   body.appendChild(intro);
 
@@ -620,8 +621,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
     card.innerHTML = `
       <div class="loan-name">${t.name}</div>
       <div class="loan-amt">￥${t.amount}</div>
-      <div class="loan-rate">年化 ${Math.round(t.rate * 100)}%</div>
-      <div class="loan-repay">到期需还 ￥${Math.round(t.amount * (1 + t.rate))}</div>
+      <div class="loan-rate">单利 ${Math.round(t.rate * 100)}% / 回合</div>
+      <div class="loan-term">期限 ${t.term} 回合</div>
+      <div class="loan-repay">到期需还 ￥${loanRepayAmount(t.id)}</div>
       <div class="loan-desc">${t.desc}</div>
     `;
     card.addEventListener('click', () => {
@@ -635,7 +637,7 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   const note = document.createElement('div');
   note.className = 'modal-text dim';
   note.style.marginTop = '10px';
-  note.textContent = '每圈最多申请一次；贷款在下一圈结束时自动从现金扣除，未足额还款将触发强制平仓。';
+  note.textContent = '每圈最多申请一次；各档额度与期限见卡片（600/4 回合、1200/6 回合、2000/8 回合），到期自动从现金扣除本息，未足额还款将触发强制平仓。';
   body.appendChild(note);
 
   return openModal({
@@ -890,6 +892,18 @@ export function showBuffPanel(player, state) {
     持有债券 <span class="hl">${(player.subscribedBonds || []).length} 笔</span>
   `;
   body.appendChild(fin);
+
+  // 每笔贷款的期限与剩余回合
+  const loans = player.loans || [];
+  if (loans.length) {
+    const detail = document.createElement('div');
+    detail.className = 'modal-text dim';
+    detail.innerHTML = loans.map((l) => {
+      const left = Math.max(0, l.dueTurn - state.turnNumber);
+      return `<div>· ${l.name} 本金 ￥${l.amount} · 应还 ￥${l.repay} · ${left} 回合后到期（第 ${l.dueTurn} 回合）</div>`;
+    }).join('');
+    body.appendChild(detail);
+  }
 
   return openModal({ title: 'Buff · 监管 · 融资总览', body, actions: [{ text: '关闭', primary: true }] });
 }

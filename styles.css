@@ -944,6 +944,7 @@ canvas, .pixel-panel, .pixel-btn, img {
 .loan-name { font-size: var(--fs-xs); color: var(--c-gold); font-weight: 700; }
 .loan-amt { font-size: var(--fs-lg); font-weight: 700; color: var(--c-gold-lt); }
 .loan-rate { font-size: var(--fs-xs); color: var(--c-red-lt); }
+.loan-term { font-size: var(--fs-xs); color: var(--c-green-lt); }
 .loan-repay { font-size: var(--fs-xs); color: var(--c-paper); }
 .loan-desc { font-size: 10px; color: var(--c-dim-lt); text-align: center; margin-top: 3px; }
 .modal-note {

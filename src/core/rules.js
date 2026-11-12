@@ -77,7 +77,7 @@ export function createState(options = {}) {
       },
       lastAction: null,
       // ===== 新增金融状态 =====
-      loans: [],          // 央行贷款：{id, tier, name, amount, rate, repay, takenRound, dueRound}
+      loans: [],          // 央行贷款：{id, tier, name, amount, rate, term, repay, takenTurn, dueTurn}
       bonds: [],          // 作为发行方持有的债券：{id, face, subscribers:[playerId], couponsPaid, issuedRound, dueRound, couponPer}
       subscribedBonds: [],// 作为认购方持有的债券：{id, issuerId, face, couponsPaid, dueRound}
       loanCountThisRound: 0,
@@ -461,17 +461,19 @@ export function takeCentralLoan(state, player, tierId) {
     name: tier.name,
     amount: tier.amount,
     rate: tier.rate,
+    term: tier.term,
     repay,
-    takenRound: state.round,
-    // 下一圈结束时到期
-    dueRound: state.round + 1,
+    takenTurn: state.turnNumber,
+    // 期限按「借款人自己的回合」计：借入回合 + 期限回合后到期
+    dueTurn: state.turnNumber + tier.term,
   };
   player.cash += tier.amount;
   player.loans.push(loan);
   player.loanCountThisRound += 1;
   emit(state, 'loan-taken', { playerId: player.id, loan });
   log(state, player.isAI ? 'ai' : 'self',
-    `${player.name} 向央行申请「${tier.name}」贷款 ￥${tier.amount}，到期需偿还 ￥${repay}`,
+    `${player.name} 向央行申请「${tier.name}」贷款 ￥${tier.amount}，` +
+    `期限 ${tier.term} 回合（第 ${loan.dueTurn} 回合到期），到期应还 ￥${repay}`,
     '融资');
   return { ok: true, amount: tier.amount, repay, loan };
 }
@@ -731,9 +733,14 @@ export function endTurn(state) {
   // 起点经过 → 圈数 +1（消费后立即清除，避免重复触发）
   if (player.lastAction?.passedStart) {
     player.lastAction.passedStart = false;
+    // 「每圈最多贷一次」只对该玩家自己的圈生效
+    player.loanCountThisRound = 0;
     state.round += 1;
     onRoundComplete(state);
   }
+
+  // 央行贷款到期 —— 按绝对回合号结算，与谁先绕圈无关
+  settleDueLoans(state);
 
   // 游戏结束检测
   const alive = state.players.filter((p) => !p.bankrupt);
@@ -768,23 +775,32 @@ function onRoundComplete(state) {
   // 债券付息与到期兑付
   const bondNotes = processBonds(state);
   for (const n of bondNotes) log(state, 'sys', n, '债券');
+}
 
-  // 贷款到期（强制从现金扣除，不足则记为欠款并触发破产判定）
+/**
+ * 央行贷款到期结算。
+ *
+ * 期限以「绝对回合号」记录（借入回合 + 期限），因此不会被其他玩家绕圈提前触发，
+ * 也不会因自己迟迟不绕圈而永不到期。
+ */
+function settleDueLoans(state) {
   for (const p of state.players) {
     if (p.bankrupt) continue;
-    const due = (p.loans || []).filter((l) => state.round >= l.dueRound);
+    const due = (p.loans || []).filter((l) => state.turnNumber >= l.dueTurn);
     for (const l of due) {
-      if (p.cash >= l.repay) {
-        p.cash -= l.repay;
-        p.loans = p.loans.filter((x) => x.id !== l.id);
-        log(state, 'sys', `${p.name} 到期偿还央行贷款 ￥${l.repay}`, '还款');
+      const shortfall = l.repay - p.cash;
+      p.cash -= l.repay;
+      p.loans = p.loans.filter((x) => x.id !== l.id);
+      if (shortfall <= 0) {
+        log(state, 'sys',
+          `${p.name} 贷款「${l.name}」到期，偿还本息 ￥${l.repay}`, '还款');
       } else {
-        p.cash -= l.repay;
-        p.loans = p.loans.filter((x) => x.id !== l.id);
-        log(state, 'bad', `${p.name} 贷款到期未能足额还款 ￥${l.repay}，触发强制平仓`, '违约');
+        log(state, 'bad',
+          `${p.name} 贷款「${l.name}」到期，现金不足 ￥${shortfall}，触发强制平仓`, '违约');
       }
+      // 资不抵债时立即清算，避免负现金一直挂到下一次检查
+      checkBankruptcy(state, p);
     }
-    p.loanCountThisRound = 0;
   }
 }
 

@@ -17,7 +17,7 @@ import {
 import {
   createState, computeMove, computeTeleportSteps, rollDice, movePlayer, settleOnCell,
   resolvePurchase, upgradeInstitution, mortgageInstitution, redeemInstitution,
-  endTurn, checkBankruptcy, rankPlayers,
+  endTurn, checkBankruptcy, rankPlayers, currentPlayer,
   applyTrapCard, takeCentralLoan, repayLoan, issueBond, processBonds,
 } from './rules.js';
 import {
@@ -616,6 +616,10 @@ export function runAll() {
     assert(p.loans.length === 1, '应记录 1 笔贷款');
     assert(res.repay === loanRepayAmount(tier.id), '还款额公式不符');
     assert(res.repay > tier.amount, '应含利息');
+    // 期限必须按回合数、与额度匹配，而不是 1 圈
+    assert(res.loan.dueTurn === state.turnNumber + tier.term,
+      `到期回合应为借入回合 + ${tier.term}，实际 ${res.loan.dueTurn}`);
+    assert(tier.term >= 4, `期限过短：${tier.term} 回合`);
 
     // 每圈只能一次
     const again = takeCentralLoan(state, p, tier.id);
@@ -626,24 +630,35 @@ export function runAll() {
     const rp = repayLoan(state, p, p.loans[0].id);
     assert(rp.ok, '还款应成功');
     assert(p.loans.length === 0, '贷款应被清除');
-    return `借款 ￥${tier.amount}，到期还 ￥${res.repay}`;
+    return `借款 ￥${tier.amount}，期限 ${tier.term} 回合，到期还 ￥${res.repay}`;
   });
 
-  check(results, '央行贷款到期自动扣款', () => {
+  check(results, '央行贷款期限按回合计，不被他人绕圈提前触发', () => {
     const state = makeTestState();
     const p = state.players[0];
     const tier = CONFIG.loanTiers[0];
     takeCentralLoan(state, p, tier.id);
     const cashAfterLoan = p.cash;
+    const loan = p.loans[0];
+    assert(loan.dueTurn === tier.term, `到期回合应为 ${tier.term}，实际 ${loan.dueTurn}`);
 
-    // 推进到到期圈后绕圈
-    p.position = BOARD_SIZE - 1;
-    movePlayer(state, p, 1);
-    endTurn(state);
+    // 连续 3 名玩家绕圈（圈数上涨），但回合数不足 —— 不应提前扣款
+    for (let i = 0; i < Math.min(3, tier.term - 1); i++) {
+      const cur = currentPlayer(state);
+      cur.position = BOARD_SIZE - 1;
+      movePlayer(state, cur, 1);
+      endTurn(state);
+    }
+    assert(p.loans.length === 1, '他人绕圈导致贷款提前到期（周期未与回合匹配）');
+    assert(state.round >= 2, `圈数应已上涨，实际 ${state.round}`);
 
+    // 推进到到期回合
+    let guard = 0;
+    while (p.loans.length && guard++ < 50) endTurn(state);
     assert(p.loans.length === 0, '到期后贷款应被清除');
-    assert(p.cash === cashAfterLoan - loanRepayAmount(tier.id), `应扣除 ${loanRepayAmount(tier.id)}`);
-    return `到期自动扣款 ￥${loanRepayAmount(tier.id)}`;
+    assert(state.turnNumber >= loan.dueTurn, `应在第 ${loan.dueTurn} 回合结算，实际 ${state.turnNumber}`);
+    assert(p.cash === cashAfterLoan - loan.repay, `应扣除 ${loan.repay}，实际扣除 ${cashAfterLoan - p.cash}`);
+    return `${tier.term} 回合后到期，自动扣款 ￥${loan.repay}`;
   });
 
   /* ---------- 债券发行 ---------- */
@@ -1117,7 +1132,7 @@ export function runAll() {
     p.institutions.push({ cellIndex: idx, level: 1, mortgaged: false, mortgageAmount: 0 });
 
     // 制造一笔贷款负债
-    p.loans.push({ id: 'L1', tier: 'micro', name: '支小再贷款', amount: 600, rate: 0.12, repay: 672, takenRound: 1, dueRound: 2 });
+    p.loans.push({ id: 'L1', tier: 'micro', name: '支小再贷款', amount: 600, rate: 0.03, term: 4, repay: 672, takenTurn: 1, dueTurn: 5 });
     const m = financialMetrics(p, state);
     assert(m.loanDebt === 672, `未偿贷款口径错误：${m.loanDebt}`);
     assert(m.debt === 672, `总负债口径错误：${m.debt}`);
