@@ -429,12 +429,13 @@ export function wantsReroll(state, player) {
 
 /**
  * AI 是否认购他人的债券。
- * 依据：自身现金储备、性格风险偏好、对手信用（对方资产排名）。
+ * 依据：票息水平、自身现金储备、性格风险偏好、对手信用（对方资产排名）。
  * 不看任何骰子信息，信息对等。
  *
+ * @param {number} [coupon] 本次发行的票息（由发行人财务状况决定），缺省按基准票息
  * @returns {{subscribed:boolean, reason:string}}
  */
-export function decideBondSubscription(state, player, issuer) {
+export function decideBondSubscription(state, player, issuer, coupon = CONFIG.bondCoupon) {
   const p = playerPersonality(player);
   const diff = difficultyConfig(state);
   const rng = state.rng;
@@ -459,6 +460,8 @@ export function decideBondSubscription(state, player, issuer) {
 
   // 风险偏好越高越愿意认购
   let willingness = 0.55 + p.riskTolerance * 0.35 - creditPenalty;
+  // 票息越高越有吸引力：相对基准 6% 每高 1 个百分点 +0.08，低于基准则扣分
+  willingness += ((coupon - CONFIG.bondCoupon) / 0.01) * 0.08;
   willingness *= (0.85 + diff.accuracy * 0.3);
   willingness += (rng.next() * 2 - 1) * diff.noise * 0.35;
 
@@ -467,9 +470,9 @@ export function decideBondSubscription(state, player, issuer) {
   if (p.id === 'conservative') willingness -= 0.12;
 
   if (willingness > 0.5) {
-    return { subscribed: true, reason: `${issuer.name}的债券票息划算，认购` };
+    return { subscribed: true, reason: `票息 ${Math.round(coupon * 1000) / 10}% 有吸引力，认购` };
   }
-  return { subscribed: false, reason: `${issuer.name}信用一般，再看看` };
+  return { subscribed: false, reason: `${issuer.name}信用或票息一般，再看看` };
 }
 
 /**

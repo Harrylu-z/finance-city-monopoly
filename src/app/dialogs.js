@@ -8,7 +8,8 @@ import { getAvatarSprites } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
   groupBuffTier, globalRegulatorEffects, CONFIG, allGroupBuffs,
-  financialMetrics, loanRepayAmount,
+  financialMetrics, loanRepayAmount, loanInterestPerTurn, bondCouponFor,
+  outstandingLoan,
 } from '../core/economy.js';
 import { GROUP_META, REGULATORS } from '../core/board.js';
 
@@ -600,9 +601,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   intro.className = 'modal-text';
   intro.innerHTML = `
     走过起点 <span class="hl">陆家嘴金融中心</span>，你获得了向中央银行申请流动性支持的机会。<br>
-    贷款用于<span class="hl">经营性周转</span>（收购地标级机构等），
-    <span class="hl-red">到期需连本带息一次性偿还</span>。<br>
-    <span class="dim">期限按你自己的回合数计算（不受他人绕圈影响）；与「股权质押」不同：质押是把资产变现，贷款是负债且不影响资产权属。</span>
+    贷款用于<span class="hl">经营性周转</span>（收购地标级机构等）：
+    <span class="hl-red">每回合从现金中扣除当期利息，到期归还本金</span>。<br>
+    <span class="dim">期限按你自己的回合数计算（不受他人绕圈影响）；现金不足时当期利息转为「欠息」，到期连同本金一并结清。</span>
   `;
   body.appendChild(intro);
 
@@ -621,9 +622,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
     card.innerHTML = `
       <div class="loan-name">${t.name}</div>
       <div class="loan-amt">￥${t.amount}</div>
-      <div class="loan-rate">单利 ${Math.round(t.rate * 100)}% / 回合</div>
-      <div class="loan-term">期限 ${t.term} 回合</div>
-      <div class="loan-repay">到期需还 ￥${loanRepayAmount(t.id)}</div>
+      <div class="loan-rate">每回合付息 ￥${loanInterestPerTurn(t)}</div>
+      <div class="loan-term">期限 ${t.term} 回合 · 到期还本 ￥${t.amount}</div>
+      <div class="loan-repay">本息合计 ￥${loanRepayAmount(t.id)}</div>
       <div class="loan-desc">${t.desc}</div>
     `;
     card.addEventListener('click', () => {
@@ -637,7 +638,7 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   const note = document.createElement('div');
   note.className = 'modal-text dim';
   note.style.marginTop = '10px';
-  note.textContent = '每圈最多申请一次；各档额度与期限见卡片（600/4 回合、1200/6 回合、2000/8 回合），到期自动从现金扣除本息，未足额还款将触发强制平仓。';
+  note.textContent = '每圈最多申请一次；利息按回合从现金中扣除，现金不足则计入欠息；到期自动归还本金与欠息，未足额还款将触发强制平仓。';
   body.appendChild(note);
 
   return openModal({
@@ -647,28 +648,46 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   });
 }
 
-/** 债券发行弹窗 —— 向其他玩家募集，需 ≥2 人认购 */
+/**
+ * 债券发行弹窗 —— 向其他玩家募集。
+ *
+ * 发行方只能看到票息与潜在投资人，**无法自行决定谁认购**：
+ * 认购结果由各玩家的实际意愿随机产生，≥2 人认购才算发行成功。
+ */
 export function showBondDialog(issuer, state, onConfirm, onCancel) {
   const body = document.createElement('div');
 
   const others = state.players.filter((p) => p.id !== issuer.id && !p.bankrupt);
   const min = CONFIG.bondMinSubscribers;
+  const coupon = bondCouponFor(state, issuer);
+  const metrics = financialMetrics(issuer, state);
+  const couponPer = Math.round(CONFIG.bondFace * coupon);
+  const totalReturn = CONFIG.bondFace + couponPer * CONFIG.bondTerm;
 
   const intro = document.createElement('div');
   intro.className = 'modal-text';
   intro.innerHTML = `
     你抵达了 <span class="hl">再融资窗口</span>，可以向其他玩家发行公司债券。<br>
-    每份面值 <span class="hl">￥${CONFIG.bondFace}</span>，票息 <span class="hl">${Math.round(CONFIG.bondCoupon * 100)}%</span>，
-    期限 <span class="hl">${CONFIG.bondTerm} 圈</span>。<br>
+    每份面值 <span class="hl">￥${CONFIG.bondFace}</span>，期限 <span class="hl">${CONFIG.bondTerm} 圈</span>，
+    每圈票息 <span class="hl">￥${couponPer}</span>（<span class="hl">${Math.round(coupon * 1000) / 10}%</span>）。<br>
     <span class="hl-red">需至少 ${min} 人认购，发行方才能成立。</span>
   `;
   body.appendChild(intro);
 
+  // 票息定价依据 —— 与发行人财务状况直接挂钩
+  const pricing = document.createElement('div');
+  pricing.className = 'modal-text dim';
+  pricing.innerHTML = `
+    <span class="hl">票息定价</span>：资产负债率 <span class="hl">${metrics.debtRatio}%</span> ·
+    净资产 <span class="${metrics.netWorth < 0 ? 'hl-red' : 'hl'}">￥${metrics.netWorth}</span> ·
+    负债 <span class="hl-red">￥${metrics.debt}</span><br>
+    财务状况越差，需要付出的票息越高，认购人持有到期可得 ￥${totalReturn}/份。
+  `;
+  body.appendChild(pricing);
+
+  // 潜在认购人（只展示，不接受发行方点选）
   const list = document.createElement('div');
   list.className = 'inst-list';
-
-  const decisions = [];
-
   for (const p of others) {
     const item = document.createElement('div');
     item.className = 'inst-item';
@@ -699,38 +718,10 @@ export function showBondDialog(issuer, state, onConfirm, onCancel) {
 
     const meta = document.createElement('div');
     meta.className = 'inst-meta';
-    meta.textContent = p.personality ? `${p.personality.tag} · ${p.personality.desc}` : '其他玩家';
+    meta.textContent = '认购意愿：市场随机决定';
     info.appendChild(meta);
     item.appendChild(info);
 
-    const btns = document.createElement('div');
-    btns.className = 'inst-btns';
-
-    const yes = document.createElement('button');
-    yes.className = 'pixel-btn pixel-btn-xs pixel-btn-primary';
-    yes.textContent = '认购';
-    const no = document.createElement('button');
-    no.className = 'pixel-btn pixel-btn-xs';
-    no.textContent = '拒绝';
-    const dec = { playerId: p.id, subscribed: false };
-
-    yes.addEventListener('click', (e) => {
-      e.stopPropagation();
-      dec.subscribed = true;
-      yes.classList.add('pixel-btn-primary');
-      no.classList.remove('pixel-btn-primary');
-    });
-    no.addEventListener('click', (e) => {
-      e.stopPropagation();
-      dec.subscribed = false;
-      no.classList.add('pixel-btn-primary');
-      yes.classList.remove('pixel-btn-primary');
-    });
-    btns.appendChild(yes);
-    btns.appendChild(no);
-    item.appendChild(btns);
-
-    decisions.push(dec);
     list.appendChild(item);
   }
 
@@ -746,17 +737,9 @@ export function showBondDialog(issuer, state, onConfirm, onCancel) {
   const status = document.createElement('div');
   status.className = 'modal-text dim';
   status.style.marginTop = '10px';
-  const upd = () => {
-    const n = decisions.filter((d) => d.subscribed).length;
-    status.innerHTML = `当前认购 <span class="hl">${n}</span> 人，门槛 <span class="hl">${min}</span> 人`
-      + (n >= min ? ' —— <span class="hl">可以成立</span>' : ' —— <span class="hl-red">不足</span>');
-  };
-  upd();
+  status.innerHTML = `<span class="hl-red">发行成败由其他玩家的实际认购决定，你无法自行判定。</span>`
+    + `认购人数达到 ${min} 人即发行成功，否则失败。`;
   body.appendChild(status);
-
-  // 订阅变化时更新计数
-  const obs = new MutationObserver(upd);
-  obs.observe(list, { subtree: true, attributes: true, attributeFilter: ['class'] });
 
   return openModal({
     title: '债券发行 · 市场化融资',
@@ -764,14 +747,40 @@ export function showBondDialog(issuer, state, onConfirm, onCancel) {
     actions: [
       { text: '放弃发行', onClick: onCancel },
       {
-        text: '确认发行',
+        text: '提交发行（结果随机）',
         primary: true,
         onClick: () => {
           closeModal();
-          onConfirm(decisions.map((d) => ({ ...d })));
+          onConfirm();
         },
       },
     ],
+  });
+}
+
+/** 债券发行结果 —— 市场认购结束后展示 */
+export function showBondResultDialog(res, onClose) {
+  const body = document.createElement('div');
+  body.className = 'modal-text';
+  const couponPct = Math.round((res.coupon ?? 0) * 1000) / 10;
+  if (res.ok) {
+    body.innerHTML = `
+      <div class="hl-green">发行成功</div><br>
+      票息 <span class="hl">${couponPct}%</span> · 共 <span class="hl">${res.subscribers}</span> 家认购 ·
+      募资 <span class="hl">￥${res.raised}</span><br>
+      <span class="dim">认购人看中的是你的票息与财务状况，后续每圈需按时付息、到期兑付本金。</span>
+    `;
+  } else {
+    body.innerHTML = `
+      <div class="hl-red">发行失败</div><br>
+      仅 <span class="hl">${res.subscribers}</span> 家认购，未达 <span class="hl">${res.min}</span> 家门槛。<br>
+      <span class="dim">本期票息 ${couponPct}% —— 降低负债率、改善财务状况有助于下次发行获得更高认购。</span>
+    `;
+  }
+  return openModal({
+    title: '债券发行结果',
+    body,
+    actions: [{ text: '知道了', primary: true, onClick: onClose }],
   });
 }
 
@@ -877,6 +886,44 @@ export function showBuffPanel(player, state) {
     body.appendChild(rlist);
   }
 
+  // 限时状态（特殊格赋予的 Buff）
+  const activeBuffs = player.buffs || [];
+  const secBuff = document.createElement('div');
+  secBuff.className = 'modal-text';
+  secBuff.innerHTML = '<span class="hl">限时状态</span>（特殊格赋予，持续若干自己的回合）';
+  body.appendChild(secBuff);
+  if (!activeBuffs.length) {
+    const t = document.createElement('div');
+    t.className = 'modal-text dim';
+    t.textContent = '暂无生效中的限时状态。走过公益捐赠 / 投资者路演 / 信用评级 / 大宗交易等特殊格可获得。';
+    body.appendChild(t);
+  } else {
+    const blist = document.createElement('div');
+    blist.className = 'inst-list';
+    for (const b of activeBuffs) {
+      const item = document.createElement('div');
+      item.className = 'inst-item';
+      const info = document.createElement('div');
+      info.className = 'inst-info';
+      const nm = document.createElement('div');
+      nm.className = 'inst-name';
+      nm.textContent = b.name;
+      const tg = document.createElement('span');
+      tg.className = 'inst-lv';
+      tg.textContent = `剩 ${b.remaining} 回合`;
+      tg.style.background = b.kind === 'bad' ? PALETTE.red : PALETTE.greenLt;
+      nm.appendChild(tg);
+      info.appendChild(nm);
+      const meta = document.createElement('div');
+      meta.className = 'inst-meta';
+      meta.textContent = b.desc;
+      info.appendChild(meta);
+      item.appendChild(info);
+      blist.appendChild(item);
+    }
+    body.appendChild(blist);
+  }
+
   // 融资状况
   const loanTotal = outstandingLoan(player);
   const sec3 = document.createElement('div');
@@ -899,8 +946,13 @@ export function showBuffPanel(player, state) {
     const detail = document.createElement('div');
     detail.className = 'modal-text dim';
     detail.innerHTML = loans.map((l) => {
-      const left = Math.max(0, l.dueTurn - state.turnNumber);
-      return `<div>· ${l.name} 本金 ￥${l.amount} · 应还 ￥${l.repay} · ${left} 回合后到期（第 ${l.dueTurn} 回合）</div>`;
+      const left = Math.max(0, l.term - (l.turnsElapsed || 0));
+      const interest = l.interestPerTurn ?? Math.round(l.amount * l.rate);
+      const owed = l.amount + (l.accruedInterest || 0);
+      const arrears = l.accruedInterest
+        ? ` · <span class="hl-red">欠息 ￥${l.accruedInterest}</span>` : '';
+      return `<div>· ${l.name} 本金 ￥${l.amount} · 每回合利息 ￥${interest} · 已付 ￥${l.interestPaid || 0}`
+        + `${arrears} · 到期还本 ￥${owed} · 剩 ${left} 回合</div>`;
     }).join('');
     body.appendChild(detail);
   }

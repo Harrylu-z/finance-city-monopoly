@@ -13,12 +13,14 @@ import {
   isBankrupt, liquidate, purchasePrice, totalAssets,
   groupBuffTier, allGroupBuffs, globalRegulatorEffects, ownsRegulator,
   loanRepayAmount, bondRedeemValue, buffMultiplierFor, financialMetrics,
+  bondCouponFor, buffEffectMult,
 } from './economy.js';
 import {
   createState, computeMove, computeTeleportSteps, rollDice, movePlayer, settleOnCell,
   resolvePurchase, upgradeInstitution, mortgageInstitution, redeemInstitution,
   endTurn, checkBankruptcy, rankPlayers, currentPlayer,
   applyTrapCard, takeCentralLoan, repayLoan, issueBond, processBonds,
+  underwriteBond, addBuff,
 } from './rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities,
@@ -614,51 +616,153 @@ export function runAll() {
     assert(res.ok, '贷款应成功');
     assert(p.cash === before + tier.amount, `现金应增加 ${tier.amount}`);
     assert(p.loans.length === 1, '应记录 1 笔贷款');
-    assert(res.repay === loanRepayAmount(tier.id), '还款额公式不符');
+    assert(res.repay === loanRepayAmount(tier.id), '本息合计公式不符');
     assert(res.repay > tier.amount, '应含利息');
-    // 期限必须按回合数、与额度匹配，而不是 1 圈
-    assert(res.loan.dueTurn === state.turnNumber + tier.term,
-      `到期回合应为借入回合 + ${tier.term}，实际 ${res.loan.dueTurn}`);
+    // 利率按本金逐期计息，本金到期才归还
+    assert(res.interestPerTurn === Math.round(tier.amount * tier.rate),
+      `每回合利息应为 ${Math.round(tier.amount * tier.rate)}，实际 ${res.interestPerTurn}`);
+    assert(res.loan.accruedInterest === 0, '新贷款不应带欠息');
+    assert(res.loan.interestPaid === 0, '新贷款尚未付息');
+    // 期限必须按「自己的回合数」计，与额度匹配
+    assert(res.loan.term === tier.term, `期限应为 ${tier.term} 个自己的回合`);
+    assert(res.loan.turnsElapsed === 0, '刚借入时不应已经历回合');
     assert(tier.term >= 4, `期限过短：${tier.term} 回合`);
 
     // 每圈只能一次
     const again = takeCentralLoan(state, p, tier.id);
     assert(!again.ok, '同一圈不应允许二次贷款');
 
-    // 手动偿还
+    // 手动偿还：本金 + 欠息（已付利息不退）
     p.cash = 100000;
     const rp = repayLoan(state, p, p.loans[0].id);
     assert(rp.ok, '还款应成功');
+    assert(rp.amount === tier.amount, `未付息时应只还本金 ${tier.amount}，实际 ${rp.amount}`);
     assert(p.loans.length === 0, '贷款应被清除');
-    return `借款 ￥${tier.amount}，期限 ${tier.term} 回合，到期还 ￥${res.repay}`;
+    return `借款 ￥${tier.amount}，期限 ${tier.term} 回合，每回合付息 ￥${res.interestPerTurn}、到期还本`;
   });
 
-  check(results, '央行贷款期限按回合计，不被他人绕圈提前触发', () => {
+  check(results, '央行贷款按自己的回合逐期付息、到期还本', () => {
     const state = makeTestState();
     const p = state.players[0];
     const tier = CONFIG.loanTiers[0];
     takeCentralLoan(state, p, tier.id);
     const cashAfterLoan = p.cash;
     const loan = p.loans[0];
-    assert(loan.dueTurn === tier.term, `到期回合应为 ${tier.term}，实际 ${loan.dueTurn}`);
 
-    // 连续 3 名玩家绕圈（圈数上涨），但回合数不足 —— 不应提前扣款
-    for (let i = 0; i < Math.min(3, tier.term - 1); i++) {
+    // 其他人（非借款人）连续行动 —— 不应计息、也不应催收
+    const others = state.players.length - 1;
+    for (let i = 0; i < others * 2; i++) {
+      state.currentPlayerIndex = 1 + (i % others);
       const cur = currentPlayer(state);
       cur.position = BOARD_SIZE - 1;
       movePlayer(state, cur, 1);
       endTurn(state);
     }
-    assert(p.loans.length === 1, '他人绕圈导致贷款提前到期（周期未与回合匹配）');
-    assert(state.round >= 2, `圈数应已上涨，实际 ${state.round}`);
+    assert(p.loans.length === 1, '他人回合不应触发还款');
+    assert(loan.turnsElapsed === 0, `他人回合不应计入借款人期限，实际 ${loan.turnsElapsed}`);
+    assert(loan.interestPaid === 0, '他人回合不应扣借款人的利息');
 
-    // 推进到到期回合
-    let guard = 0;
-    while (p.loans.length && guard++ < 50) endTurn(state);
+    // 走完借款人自己的 term 个回合：每回合付息，最后一期还本
+    for (let r = 0; r < tier.term; r++) {
+      state.currentPlayerIndex = 0;
+      const cur = currentPlayer(state);
+      cur.position = BOARD_SIZE - 1;
+      movePlayer(state, cur, 1);
+      endTurn(state);
+      if (r < tier.term - 1) {
+        assert(p.loans.length === 1, `第 ${r + 1} 个自己的回合后不应到期`);
+        assert(loan.interestPaid === loan.interestPerTurn * (r + 1),
+          `第 ${r + 1} 期应付息 ${loan.interestPerTurn}，累计 ${loan.interestPaid}`);
+        assert(loan.accruedInterest === 0, '现金充足不应产生欠息');
+      }
+    }
     assert(p.loans.length === 0, '到期后贷款应被清除');
-    assert(state.turnNumber >= loan.dueTurn, `应在第 ${loan.dueTurn} 回合结算，实际 ${state.turnNumber}`);
-    assert(p.cash === cashAfterLoan - loan.repay, `应扣除 ${loan.repay}，实际扣除 ${cashAfterLoan - p.cash}`);
-    return `${tier.term} 回合后到期，自动扣款 ￥${loan.repay}`;
+    const total = Math.round(tier.amount * (1 + tier.rate * tier.term));
+    assert(cashAfterLoan - p.cash === total,
+      `本息合计应为 ￥${total}，实际 ${cashAfterLoan - p.cash}`);
+    return `每回合付息 ￥${loan.interestPerTurn} × ${tier.term}，到期还本 ￥${tier.amount}`;
+  });
+
+  check(results, '央行贷款现金不足时利息转为欠息', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const tier = CONFIG.loanTiers[0];
+    takeCentralLoan(state, p, tier.id);
+    const loan = p.loans[0];
+    // 借入当回合不扣息
+    state.currentPlayerIndex = 0;
+    endTurn(state);
+    assert(loan.interestPaid === 0 && loan.accruedInterest === 0, '借入当回合不应计息');
+
+    p.cash = 0; // 制造现金枯竭
+    state.currentPlayerIndex = 0;
+    endTurn(state);
+    assert(loan.interestPaid === 0, '现金不足时不应扣息');
+    assert(loan.accruedInterest === loan.interestPerTurn,
+      `欠息应为 ${loan.interestPerTurn}，实际 ${loan.accruedInterest}`);
+    assert(p.cash === 0, '现金不足时不应被扣成负数');
+    return `现金不足，欠息累计 ￥${loan.accruedInterest}`;
+  });
+
+  /* ---------- 特殊格限时状态 ---------- */
+  check(results, '特殊格机制差异化：公益捐赠换取限时状态', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const idx = BOARD_CELLS.findIndex((c) => c.special?.id === 'charity');
+    assert(idx >= 0, '应存在公益格');
+    const before = p.cash;
+    settleOnCell(state, p, idx);
+    assert(p.cash === before - SPECIAL.charity.amount,
+      `应扣捐赠 ${SPECIAL.charity.amount}，实际 ${before - p.cash}`);
+    const buff = p.buffs.find((b) => b.id === 'public-good');
+    assert(!!buff, '应获得「公益声誉」状态');
+    assert(buff.effect.rentMult > 1, '公益声誉应提升管理费');
+    return `捐赠 ￥${SPECIAL.charity.amount} → 3 回合管理费 ×${buff.effect.rentMult}`;
+  });
+
+  check(results, '特殊格机制差异化：合规成本按机构规模计征', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const idx = BOARD_CELLS.findIndex((c) => c.special?.id === 'tax');
+    assert(idx >= 0, '应存在合规成本格');
+    // 5 份机构 → 5 × 40 = ￥200
+    for (const ci of UPGRADABLE_CELLS.slice(0, 5)) {
+      p.institutions.push({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    const before = p.cash;
+    settleOnCell(state, p, idx);
+    assert(before - p.cash === 200, `持有 5 份机构应缴 ￥200，实际 ${before - p.cash}`);
+    return `持有 5 份机构 → 缴税 ￥200`;
+  });
+
+  check(results, '限时状态按自己的回合递减并到期移除', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    addBuff(state, p, { id: 'test', name: '测试状态', turns: 2, effect: { rentMult: 1.2 } });
+    assert(buffEffectMult(p, 'rentMult') === 1.2, '状态应立即生效');
+    // 获得当回合不递减
+    state.currentPlayerIndex = 0;
+    endTurn(state);
+    assert(p.buffs[0].remaining === 2, '获得当回合不应递减');
+    state.currentPlayerIndex = 0;
+    endTurn(state);
+    assert(p.buffs[0].remaining === 1, `应剩 1 回合，实际 ${p.buffs[0].remaining}`);
+    state.currentPlayerIndex = 0;
+    endTurn(state);
+    assert(p.buffs.length === 0, '到期应移除状态');
+    assert(buffEffectMult(p, 'rentMult') === 1, '到期后乘数应恢复');
+    return '2 个自己的回合后状态到期';
+  });
+
+  check(results, '同组限时状态互相覆盖', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    addBuff(state, p, { id: 'a', group: 'rating', name: '评级上调', turns: 3, effect: { rentMult: 1.15 } });
+    addBuff(state, p, { id: 'b', group: 'rating', name: '评级下调', turns: 3, kind: 'bad', effect: { rentMult: 0.9 } });
+    const list = p.buffs.filter((x) => x.group === 'rating');
+    assert(list.length === 1, `同组状态应只剩 1 条，实际 ${list.length}`);
+    assert(buffEffectMult(p, 'rentMult') === 0.9, '应以最新状态为准');
+    return '评级上调被下调覆盖';
   });
 
   /* ---------- 债券发行 ---------- */
@@ -692,13 +796,15 @@ export function runAll() {
   check(results, '债券按期付息并到期兑付', () => {
     const state = makeTestState();
     const issuer = state.players[0];
-    issueBond(state, issuer, [
+    const issueRes = issueBond(state, issuer, [
       { playerId: 1, subscribed: true },
       { playerId: 2, subscribed: true },
     ]);
+    assert(issueRes.ok, '发行应成功');
     const buyer1 = state.players[1];
     const buyerCash = buyer1.cash;
-    const couponEach = CONFIG.bondFace * CONFIG.bondCoupon;
+    const couponEach = issueRes.bond.couponPer;
+    assert(couponEach > 0, '票息必须为正');
 
     // 一圈付息
     processBonds(state);
@@ -712,7 +818,34 @@ export function runAll() {
       `到期应兑付本金+票息，实际 ${buyer1.cash - buyerCashBefore}`);
     assert(buyer1.subscribedBonds.length === 0, '到期后应清除持有记录');
     assert(issuer.bonds.length === 0, '到期后发行方应清除债券');
-    return `票息 ${Math.round(CONFIG.bondCoupon * 100)}% · ${CONFIG.bondTerm} 圈到期兑付`;
+    return `票息 ${Math.round(issueRes.bond.coupon * 1000) / 10}% · ${CONFIG.bondTerm} 圈到期兑付`;
+  });
+
+  check(results, '债券票息与发行人财务状况挂钩', () => {
+    const state = makeTestState();
+    const healthy = state.players[0];
+    const weak = state.players[1];
+
+    const base = bondCouponFor(state, healthy);
+    // 制造高负债：多笔贷款 + 现金枯竭
+    weak.cash = 100;
+    for (let i = 0; i < 6; i++) {
+      weak.loans.push({
+        id: `L${i}`, name: '过桥资金', amount: 1200, rate: 0.03, term: 6,
+        interestPerTurn: 36, accruedInterest: 0, interestPaid: 0, turnsElapsed: 0, takenTurn: 0,
+      });
+    }
+    const highRisk = bondCouponFor(state, weak);
+    assert(highRisk > base, `高负债发行人票息应更高：${highRisk} vs ${base}`);
+    assert(highRisk <= 0.18, '票息应有上限');
+    assert(base >= 0.05, '票息应有下限');
+
+    // 市场化发行：结果由随机认购决定，不依赖发行人自选
+    const res = underwriteBond(state, healthy);
+    assert(typeof res.ok === 'boolean', '应返回发行结果');
+    assert(typeof res.subscribers === 'number', '应返回认购人数');
+    assert(res.coupon === bondCouponFor(state, healthy), '票息应与财务状况一致');
+    return `健康发行人 ${Math.round(base * 1000) / 10}% · 高负债 ${Math.round(highRisk * 1000) / 10}%`;
   });
 
   check(results, 'AI 债券认购决策可用', () => {
@@ -890,21 +1023,26 @@ export function runAll() {
     const taxIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'tax');
     assert(taxIdx > 0, '应存在合规成本格');
 
-    // 合规成本格在印花税 / 交易手续费 / 监管罚款中随机取其一
-    const VALID = [140, 180, 240];
-    const seen = new Set();
-    for (let i = 0; i < 60; i++) {
+    // 合规成本按机构持有规模计征：每份 ￥40，最低 ￥120、封顶 ￥360
+    const cases = [
+      { holdings: 0, expect: 120 },
+      { holdings: 3, expect: 120 },
+      { holdings: 5, expect: 200 },
+      { holdings: 9, expect: 360 },
+      { holdings: 20, expect: 360 },
+    ];
+    for (const c of cases) {
+      p.institutions = UPGRADABLE_CELLS.slice(0, c.holdings)
+        .map((ci) => ({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 }));
       p.cash = 1000;
-      const before = p.cash;
       const results = settleOnCell(state, p, taxIdx);
       const charged = results.find((r) => r.kind === 'charge');
       assert(!!charged, '合规成本格应产生扣款');
-      assert(VALID.includes(charged.amount), `合规成本金额非法：${charged.amount}`);
-      assert(before - charged.amount === p.cash, '合规成本未正确扣除');
-      seen.add(charged.amount);
+      assert(charged.amount === c.expect,
+        `持有 ${c.holdings} 份机构应缴 ￥${c.expect}，实际 ￥${charged.amount}`);
+      assert(p.cash === 1000 - c.expect, '合规成本未正确扣除');
     }
-    assert(seen.size > 1, '合规成本应为随机多档，而非固定值');
-    return `随机扣除 ${[...seen].sort((a, b) => a - b).map((v) => '￥' + v).join(' / ')}`;
+    return '按机构规模计征：0~3 份 ￥120 / 5 份 ￥200 / ≥9 份 ￥360';
   });
 
   check(results, '起点补贴', () => {
@@ -1132,7 +1270,7 @@ export function runAll() {
     p.institutions.push({ cellIndex: idx, level: 1, mortgaged: false, mortgageAmount: 0 });
 
     // 制造一笔贷款负债
-    p.loans.push({ id: 'L1', tier: 'micro', name: '支小再贷款', amount: 600, rate: 0.03, term: 4, repay: 672, takenTurn: 1, dueTurn: 5 });
+    p.loans.push({ id: 'L1', tier: 'micro', name: '支小再贷款', amount: 600, rate: 0.03, term: 4, interestPerTurn: 18, accruedInterest: 72, interestPaid: 0, turnsElapsed: 3, takenTurn: 1 });
     const m = financialMetrics(p, state);
     assert(m.loanDebt === 672, `未偿贷款口径错误：${m.loanDebt}`);
     assert(m.debt === 672, `总负债口径错误：${m.debt}`);

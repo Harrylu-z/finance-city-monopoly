@@ -6,14 +6,14 @@ import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META } from '..
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects,
-  groupBuffTier, outstandingLoan, bondRedeemValue,
+  groupBuffTier, outstandingLoan, bondRedeemValue, bondCouponFor, financialMetrics,
 } from '../core/economy.js';
 import {
   createState, log, currentPlayer, computeMove, computeTeleportSteps,
   rollDice, movePlayer, settleOnCell, resolvePurchase, upgradeInstitution,
   mortgageInstitution, redeemInstitution, endTurn, checkBankruptcy, rankPlayers,
   applyEventCard, applyTrapCard, takeCentralLoan, repayLoan, issueBond,
-  grantStartPass,
+  underwriteBond, grantStartPass,
 } from '../core/rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities, aiName,
@@ -28,7 +28,7 @@ import { renderRank, renderFinanceCompare, appendLog, clearLog } from './hud.js'
 import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog, showMenuDialog,
-  showLoanDialog, showBondDialog, showTrapDialog, showBuffPanel,
+  showLoanDialog, showBondDialog, showBondResultDialog, showTrapDialog, showBuffPanel,
   showPlayerDetailDialog, showRentDialog, openModal,
 } from './dialogs.js';
 import { showTutorial } from './tutorial.js';
@@ -937,6 +937,24 @@ class Game {
           this.floatText(`-￥${r.amount}`, c, PALETTE.redLt);
           break;
         }
+        case 'bonus': {
+          log(state, 'good', `${player.name} ${r.reason} +￥${r.amount}`, '收益');
+          this.sfx.buy();
+          const c = this.cellCenter(player.position);
+          this.effects.floatUp(c.x, c.y, { count: 8, colors: [PALETTE.gold, PALETTE.greenLt] });
+          this.floatText(`+￥${r.amount}`, c, PALETTE.greenLt);
+          break;
+        }
+        case 'neutral': {
+          log(state, 'sys', `${player.name} ${r.reason}`, '风险');
+          break;
+        }
+        case 'buff': {
+          if (!player.isAI) {
+            this.toast(`获得状态「${r.buff.name}」：${r.buff.desc}`, r.buff.kind === 'bad' ? 't-bad' : 't-good');
+          }
+          break;
+        }
         case 'teleport': {
           log(state, 'sys', `${player.name} 触发${r.reason}，直达 ${state.board[r.target].name}`, '跳转');
           this.sfx.teleport();
@@ -1037,18 +1055,22 @@ class Game {
           } else {
             this.busy = false;
             showBondDialog(player, this.state,
-              (decisions) => {
-                const res = issueBond(this.state, player, decisions);
-                if (res.ok) {
-                  this.sfx.buy();
-                  this.floatText(`+￥${res.raised}`, this.cellCenter(player.position), PALETTE.jadeLt);
-                  this.toast(`债券发行成功，募资 ￥${res.raised}`, 't-good');
-                } else {
-                  this.sfx.deny();
-                  this.toast(res.reason, 't-bad');
-                }
-                this.busy = true;
-                this.continueAfterSettlement(player);
+              () => {
+                // 认购结果由市场随机决定，发行人无法自判成败
+                const res = underwriteBond(this.state, player);
+                this.busy = false;
+                showBondResultDialog(res, () => {
+                  if (res.ok) {
+                    this.sfx.buy();
+                    this.floatText(`+￥${res.raised}`, this.cellCenter(player.position), PALETTE.greenLt);
+                    this.toast(`债券发行成功，${res.subscribers} 家认购`, 't-good');
+                  } else {
+                    this.sfx.deny();
+                    this.toast(`发行失败：${res.reason}`, 't-bad');
+                  }
+                  this.busy = true;
+                  this.continueAfterSettlement(player);
+                });
               },
               () => {
                 this.busy = true;
@@ -1106,10 +1128,13 @@ class Game {
     const state = this.state;
     const decisions = [];
     const human = state.players.find((o) => o.id !== player.id && !o.bankrupt && !o.isAI) || null;
+    // 票息由发行人财务状况决定（负债率越高、净资产越差，票息越高）
+    const coupon = bondCouponFor(state, player);
+    const couponPer = Math.round(CONFIG.bondFace * coupon);
 
     for (const other of state.players) {
       if (other.id === player.id || other.bankrupt || !other.isAI) continue;
-      const d = decideBondSubscription(state, other, player);
+      const d = decideBondSubscription(state, other, player, coupon);
       decisions.push({ playerId: other.id, subscribed: d.subscribed, reason: d.reason });
       log(state, 'ai', `${other.name} ${d.subscribed ? '认购' : '放弃'}：${d.reason}`, playerPersonality(other).tag);
     }
@@ -1137,16 +1162,17 @@ class Game {
     // 真人玩家：弹窗征询是否认购（AI 不得代扣资金）
     this.busy = false;
     const issuerAssets = Math.max(0, totalAssets(player, state));
+    const bondMetrics = financialMetrics(player, state);
     const body = document.createElement('div');
     body.className = 'modal-text';
     body.innerHTML = `
       <span class="hl">${escapeHtml(player.name)}</span> 正在发行公司债券，邀请你认购。<br>
-      面值 <span class="hl">￥${CONFIG.bondFace}</span> · 票息
-      <span class="hl">${Math.round(CONFIG.bondCoupon * 100)}%/圈</span> ·
+      面值 <span class="hl">￥${CONFIG.bondFace}</span> · 每圈票息
+      <span class="hl">￥${couponPer}</span>（<span class="hl">${Math.round(coupon * 1000) / 10}%</span>）·
       期限 <span class="hl">${CONFIG.bondTerm} 圈</span><br>
       持有到期共可获
-      <span class="hl-green">￥${Math.round(CONFIG.bondFace * (1 + CONFIG.bondCoupon * CONFIG.bondTerm))}</span><br>
-      <span class="dim">发行方总资产 ￥${issuerAssets} · 你当前现金 ￥${human.cash}（若发行方中途爆仓，可能损失本金与票息）</span>
+      <span class="hl-green">￥${CONFIG.bondFace + couponPer * CONFIG.bondTerm}</span><br>
+      <span class="dim">发行方总资产 ￥${issuerAssets} · 负债率 ${bondMetrics.debtRatio}% · 你当前现金 ￥${human.cash}（若发行方中途爆仓，可能损失本金与票息）</span>
     `;
     openModal({
       title: '债券认购征询',

@@ -740,7 +740,12 @@ export class BoardRenderer {
 
     // ---- 说明文字（底部一行）----
     let desc = '';
-    if (sp.amount) desc = `-￥${sp.amount}`;
+    if (sp.id === 'tax') desc = '按规模计税';
+    else if (sp.id === 'risk') desc = '集中度整改';
+    else if (sp.id === 'rating') desc = '评级 3 回合';
+    else if (sp.id === 'commodity') desc = '行情结算';
+    else if (sp.id === 'roadshow') desc = '路演 3 回合';
+    else if (sp.amount) desc = `-￥${sp.amount}`;
     else if (sp.amountRange) {
       const lo = Math.min(...sp.amountRange);
       const hi = Math.max(...sp.amountRange);

@@ -249,12 +249,11 @@ export const SPECIAL = {
   },
   tax: {
     id: 'tax', name: '合规成本 · 印花税/监管罚款', short: '合规成本', icon: 'tax',
-    desc: '缴纳印花税与交易手续费，或因合规瑕疵被监管处罚',
-    amountRange: [140, 180, 240],
+    desc: '按机构持有规模计征印花税（每份 ￥40，最低 ￥120、封顶 ￥360）',
   },
   charity: {
     id: 'charity', name: '慈善公益捐赠', short: '公益捐赠', icon: 'charity',
-    amount: 120, desc: '向金融公益基金捐赠',
+    amount: 120, desc: '向金融公益基金捐赠 ￥120，换取「公益声誉」3 回合：机构管理费 +12%',
   },
   event: {
     id: 'event', name: '财经快讯 · 事件卡', short: '财经快讯', icon: 'event',
@@ -270,31 +269,31 @@ export const SPECIAL = {
     desc: '触发监管处罚：罚款、没收收益或强制披露',
     trap: true,
   },
-  /** 陷阱格 —— 风险警示 */
+  /** 风险警示 */
   risk: {
     id: 'risk', name: '风险警示 · 集中度整改', short: '风险警示', icon: 'risk',
-    desc: '触发风险事件：集中度超限、评级下调或流动性抽紧',
+    desc: '单一集团持仓超过 3 家时被要求整改：缴纳整改费并进入 2 回合「去杠杆」状态（管理费 -15%）',
     trap: true,
   },
   /** 再融资窗口 —— 可向其他玩家发行债券 */
   refinance: {
     id: 'refinance', name: '再融资窗口 · 债券发行', short: '债券发行', icon: 'bond',
-    desc: '可向其他玩家发行债券，需 ≥2 人认购方能成功',
+    desc: '可向其他玩家发行债券：票息随你的负债率浮动，认购结果由市场随机决定，需 ≥2 人认购',
   },
   /** 信用评级 —— 提升/下调持有机构的租金 */
   rating: {
     id: 'rating', name: '信用评级 · 展望调整', short: '评级调整', icon: 'rating',
-    desc: '获得评级展望调整，租金收益随之变动',
+    desc: '获得 3 回合评级展望：上调管理费 +15%，下调管理费 -10%',
   },
   /** 要素市场 · 大宗交易 */
   commodity: {
     id: 'commodity', name: '要素市场 · 大宗交易', short: '大宗交易', icon: 'commodity',
-    desc: '大宗交易折溢价结算，现金双向流动',
+    desc: '按行情方向折溢价结算，并建立 2 回合「套期保值」状态（管理费 +5%）',
   },
   /** 投资者路演 */
   roadshow: {
     id: 'roadshow', name: '投资者路演', short: '路演', icon: 'roadshow',
-    desc: '路演推介成功，资产估值提升',
+    desc: '获得 ￥80 意向金与 3 回合「路演热度」：收购与升级成本 -15%',
   },
 };
 

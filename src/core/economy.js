@@ -56,7 +56,8 @@ export const CONFIG = {
   // ===== 央行贷款（起点绕圈后可申请）=====
   // 单利 3%/回合；期限按「借款人自己的回合」计（与谁先绕圈无关）
   // 额度越大期限越长：600→4 回合、1200→6 回合、2000→8 回合
-  // 到期总利率 = rate × term（12% / 18% / 24%），到期一次性还本付息
+  // 「每回合付息、到期还本」：每个回合扣当期利息，本金到期一次性归还；
+  // 现金不足时当期利息转为欠息，到期连同本金一并结清。
   loanTiers: [
     { id: 'micro', name: '支小再贷款', amount: 600,  rate: 0.03, term: 4, desc: '小额流动性支持，期限最短' },
     { id: 'bridge', name: '过桥资金',   amount: 1200, rate: 0.03, term: 6, desc: '过桥融资，额度与期限均衡' },
@@ -231,8 +232,8 @@ export function financialMetrics(player, state) {
       mortgagedValue += assetValue(cell, inst.level, true);
     } else {
       activeCount += 1;
-      // 管理费收入按当前市场周期 + 集团 Buff 计算
-      const buff = groupBuffTier(player, cell.group).mult;
+      // 管理费收入按当前市场周期 + 集团 Buff + 限时状态计算
+      const buff = groupBuffTier(player, cell.group).mult * buffEffectMult(player, 'rentMult');
       rentIncome += calculateRent(cell, inst.level, {
         market,
         eventMult: state ? state.eventMult : 1,
@@ -440,25 +441,77 @@ export function ownsRegulator(player, regulatorId) {
  * 央行贷款 —— 起点绕圈后可申请
  * =================================================================== */
 
-/** 某档贷款的到期应还金额（本金 + 单利 × 期限） */
+/** 某档贷款每回合应付利息（单利，按本金计） */
+export function loanInterestPerTurn(loanOrTier) {
+  const amount = loanOrTier.amount;
+  const rate = loanOrTier.rate;
+  return Math.round(amount * rate);
+}
+
+/** 某档贷款到期应还的「本息合计」（本金 + 单利 × 期限） */
 export function loanRepayAmount(tier) {
   const t = CONFIG.loanTiers.find((x) => x.id === tier) || CONFIG.loanTiers[0];
   return Math.round(t.amount * (1 + t.rate * t.term) * CONFIG.loanRepayMultiplier);
 }
 
-/** 玩家未偿还的贷款总额（本金+利息） */
+/** 单笔贷款当前未偿金额 = 本金 + 尚未支付的欠息 */
+export function loanOutstandingAmount(loan) {
+  return loan.amount + (loan.accruedInterest || 0);
+}
+
+/** 玩家未偿还的贷款总额（本金 + 欠息） */
 export function outstandingLoan(player) {
-  return (player.loans || []).reduce((a, l) => a + l.repay, 0);
+  return (player.loans || []).reduce((a, l) => a + loanOutstandingAmount(l), 0);
+}
+
+/* ===================================================================
+ * 限时 Buff —— 由特殊格赋予，持续若干「自己的回合」
+ * =================================================================== */
+
+/** 汇总玩家所有 Buff 在某个效果键上的乘数 */
+export function buffEffectMult(player, key) {
+  let mult = 1;
+  for (const b of (player.buffs || [])) {
+    const v = b.effect?.[key];
+    if (typeof v === 'number' && v !== 1) mult *= v;
+  }
+  return mult;
+}
+
+/** 租金乘数（含集团 Buff / 监管 / 限时状态） */
+export function playerRentMult(player, groupId, state) {
+  return buffMultiplierFor(player, groupId, state) * buffEffectMult(player, 'rentMult');
 }
 
 /* ===================================================================
  * 债券 —— 向其他玩家发行
  * =================================================================== */
 
+/**
+ * 债券票息 —— 与发行人财务状况挂钩。
+ *
+ *   基础票息 6%；资产负债率超过 40% 后每 10 个百分点加 1.5%（上限 +6%）；
+ *   净资产为负再加 2%；净资产雄厚（>6000）减 1%。
+ *   最终限定在 5% ~ 18% 区间。
+ */
+export function bondCouponFor(state, issuer) {
+  const m = financialMetrics(issuer, state);
+  let coupon = CONFIG.bondCoupon;
+  // 资产归零但仍有负债 → 视为极端高杠杆
+  const ratio = m.assets > 0 ? m.debtRatio : (m.debt > 0 ? 100 : 0);
+  const excess = Math.max(0, ratio - 40);
+  coupon += Math.min(0.06, (excess / 10) * 0.015);
+  if (m.netWorth < 0) coupon += 0.02;
+  if (m.netWorth > 6000) coupon -= 0.01;
+  coupon = Math.max(0.05, Math.min(0.18, coupon));
+  return Math.round(coupon * 1000) / 1000;
+}
+
 /** 一张债券的到期兑付金额（本金 + 累计票息） */
 export function bondRedeemValue(bond) {
   const coupons = bond.couponsPaid || 0;
-  return Math.round(bond.face * (1 + CONFIG.bondCoupon * coupons));
+  const per = bond.couponPer ?? Math.round(bond.face * CONFIG.bondCoupon);
+  return Math.round(bond.face + per * coupons);
 }
 
 /** 发行一次债券需要的最低认购人数 */
