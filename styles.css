@@ -310,7 +310,7 @@ body { user-select: none; -webkit-tap-highlight-color: transparent; }
 }
 
 .board-canvas {
-  position: absolute; inset: 0;
+  position: absolute; left: 0; top: 0;
   width: 100%; height: 100%;
   display: block;
   image-rendering: pixelated;
