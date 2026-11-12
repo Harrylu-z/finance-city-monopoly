@@ -16,7 +16,7 @@ import {
 } from '../core/rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities, aiName,
-  decideBondSubscription, decideLoan,
+  decideBondSubscription, decideLoan, playerPersonality,
 } from '../core/ai.js';
 import { makeRng, randomSeed, hashSeed } from '../core/rng.js';
 import { BoardRenderer } from '../render/canvas.js';
@@ -58,6 +58,26 @@ class Game {
     this.setupGameEvents();
     this.handleShareLink();
     window.addEventListener('resize', () => this.onResize());
+
+    // 棋盘容器尺寸变化时（窗口缩放、字体加载、面板增减）自动重算画布尺寸。
+    // 只监听 #board-wrap，避免 HUD 面板变化误触发。
+    //
+    // 注意：ResizeObserver 的回调发生在「布局 → 观测尺寸」同一次刷新周期内。
+    // 若回调里同步改变被观测元素的子节点尺寸（这里是把画布重设为新尺寸），
+    // 浏览器会判定为「观察循环未收敛」，抛出
+    // "ResizeObserver loop completed with undelivered notifications" 错误。
+    // 因此把重算推迟到下一帧执行，避开同批次布局，循环即可收敛。
+    if (typeof ResizeObserver !== 'undefined' && this.el['board-wrap']) {
+      this.boardObserver = new ResizeObserver(() => {
+        if (this._resizePending) return;
+        this._resizePending = true;
+        requestAnimationFrame(() => {
+          this._resizePending = false;
+          this.onResize();
+        });
+      });
+      this.boardObserver.observe(this.el['board-wrap']);
+    }
 
     // 标签页切到后台时浏览器会暂停 requestAnimationFrame，
     // 用非节流调度器兜底推进动画，避免回合被永久卡住。
@@ -341,6 +361,8 @@ class Game {
     this.renderer = new BoardRenderer(this.el['board-canvas']);
     this.background = new Background(window.innerWidth, window.innerHeight);
     this.onResize();
+    // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
+    requestAnimationFrame(() => this.onResize());
 
     clearLog(this.el['log-list']);
     log(this.state, 'sys', `开局！种子 ${config.seed}，${players.length} 位玩家入场`, '开局');
@@ -801,10 +823,10 @@ class Game {
     if (d.take) {
       const res = takeCentralLoan(state, player, chosen.id);
       if (res.ok) {
-        log(state, 'ai', `${player.name}：${d.reason}，获贷 ￥${res.amount}`, player.personality.tag);
+        log(state, 'ai', `${player.name}：${d.reason}，获贷 ￥${res.amount}`, playerPersonality(player).tag);
       }
     } else {
-      log(state, 'ai', `${player.name}：${d.reason}`, player.personality.tag);
+      log(state, 'ai', `${player.name}：${d.reason}`, playerPersonality(player).tag);
     }
   }
 
@@ -819,13 +841,14 @@ class Game {
     }
     const res = issueBond(state, player, decisions);
     if (res.ok) {
-      log(state, 'ai', `${player.name} 成功发行债券，募资 ￥${res.raised}`, player.personality.tag);
+      log(state, 'ai', `${player.name} 成功发行债券，募资 ￥${res.raised}`, playerPersonality(player).tag);
       for (const d of decisions) {
         const buyer = state.players.find((p) => p.id === d.playerId);
-        if (buyer) log(state, 'ai', `${buyer.name} ${d.subscribed ? '认购' : '放弃'}：${d.reason}`, buyer.personality.tag);
+        // 认购方可能是真人玩家（personality 为 null），需回退到默认性格标签
+        if (buyer) log(state, 'ai', `${buyer.name} ${d.subscribed ? '认购' : '放弃'}：${d.reason}`, playerPersonality(buyer).tag);
       }
     } else {
-      log(state, 'ai', `${player.name} 债券发行失败：${res.reason}`, player.personality.tag);
+      log(state, 'ai', `${player.name} 债券发行失败：${res.reason}`, playerPersonality(player).tag);
     }
   }
 
@@ -877,10 +900,10 @@ class Game {
     if (decision.action === 'buy' && player.cash >= r.price) {
       resolvePurchase(state, player, true);
       this.onPurchased(player, r);
-      log(state, 'ai', `${player.name}：${decision.reason}`, player.personality.tag);
+      log(state, 'ai', `${player.name}：${decision.reason}`, playerPersonality(player).tag);
     } else {
       resolvePurchase(state, player, false);
-      log(state, 'ai', `${player.name} 放弃 ${r.cell.name}：${decision.reason}`, player.personality.tag);
+      log(state, 'ai', `${player.name} 放弃 ${r.cell.name}：${decision.reason}`, playerPersonality(player).tag);
     }
   }
 
@@ -892,7 +915,7 @@ class Game {
       const d = decide(state, player, 'mortgage');
       if (d.action === 'mortgage') {
         mortgageInstitution(state, player, d.cellIndex);
-        log(state, 'ai', `${player.name}：${d.reason}`, player.personality.tag);
+        log(state, 'ai', `${player.name}：${d.reason}`, playerPersonality(player).tag);
       }
     }
 
@@ -906,7 +929,7 @@ class Game {
         if (res.ok) {
           this.effects.confetti(r.x, r.y);
           this.sfx.upgrade();
-          log(state, 'ai', `${player.name}：${d.reason}`, player.personality.tag);
+          log(state, 'ai', `${player.name}：${d.reason}`, playerPersonality(player).tag);
           this.floatText(`升级 ${cell.name}`, r, PALETTE.gold);
         }
       }
@@ -960,13 +983,14 @@ class Game {
     this.updateHUD();
 
     const plan = planTurn(state, player);
+    const personality = playerPersonality(player);
     if (plan.note) {
-      log(state, 'ai', `${player.name}（${player.personality.tag}）：${plan.note}`, player.personality.tag);
+      log(state, 'ai', `${player.name}（${personality.tag}）：${plan.note}`, personality.tag);
     }
 
     const rr = wantsReroll(state, player);
     if (rr.use) {
-      log(state, 'ai', `${player.name}：${rr.reason}`, player.personality.tag);
+      log(state, 'ai', `${player.name}：${rr.reason}`, personality.tag);
     }
 
     delay(700, () => {
@@ -980,7 +1004,7 @@ class Game {
         if (rr.use) {
           const second = rollDice(state, player);
           finalTotal = second.total;
-          log(state, 'ai', `${player.name} 加仓重掷：${first.total} → ${finalTotal}`, player.personality.tag);
+          log(state, 'ai', `${player.name} 加仓重掷：${first.total} → ${finalTotal}`, personality.tag);
         }
         this.moveAndSettle(player, finalTotal);
       });
@@ -1103,6 +1127,11 @@ class Game {
     const state = this.state;
     if (!state || !this.renderer) return;
 
+    // 兜底尺寸同步：若棋盘容器尺寸与渲染器记录不一致（例如媒体查询
+    // 刚刚切换、或字体加载导致行高变化），立即重算。
+    // clientWidth/clientHeight 是整数且读取代价极低，逐帧检查无压力。
+    this.syncBoardSize();
+
     // 背景层绘制到独立的 #stage-bg（覆盖整个 stage）
     const bgCanvas = this.el['stage-bg'];
     if (bgCanvas) {
@@ -1148,27 +1177,51 @@ class Game {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const wrap = this.el['board-wrap'];
 
-    // 棋盘容器实测尺寸（CSS 像素）
+    // 棋盘容器实测尺寸（CSS 像素，不含边框）
     let bw = 0;
     let bh = 0;
     if (wrap) {
-      const r = wrap.getBoundingClientRect();
-      bw = Math.floor(r.width);
-      bh = Math.floor(r.height);
+      bw = Math.floor(wrap.clientWidth);
+      bh = Math.floor(wrap.clientHeight);
     }
     // 容器尚未布局完成（例如 hidden 状态下首次进入）时退回窗口尺寸
     if (bw < 80 || bh < 80) {
       bw = Math.floor(window.innerWidth);
       bh = Math.floor(window.innerHeight);
     }
-    this.renderer.resize(bw, bh, dpr);
 
     // 背景层：覆盖整个 stage
     const stage = document.getElementById('stage');
     const sw = stage ? Math.floor(stage.clientWidth) : window.innerWidth;
     const sh = stage ? Math.floor(stage.clientHeight) : window.innerHeight;
+
+    // 幂等：尺寸没变就直接跳过，避免无谓地重设 canvas.width/height
+    // （重设会清空画布并触发 ResizeObserver 的再次通知）。
+    const stageChanged = sw !== this._lastStageW || sh !== this._lastStageH;
+    const boardChanged = bw !== this.renderer.w || bh !== this.renderer.h;
+    if (!stageChanged && !boardChanged) return;
+
+    this._lastStageW = sw;
+    this._lastStageH = sh;
+    this.renderer.resize(bw, bh, dpr);
     this.background.resize(Math.max(1, sw), Math.max(1, sh));
     this.resizeStageBg(sw, sh);
+  }
+
+  /**
+   * 逐帧兜底：棋盘容器尺寸与渲染器记录不一致时触发重算。
+   * 覆盖「媒体查询刚切换」「字体加载后行高变化」「面板增减」等
+   * ResizeObserver 可能漏掉的时机。
+   */
+  syncBoardSize() {
+    const wrap = this.el['board-wrap'];
+    if (!wrap) return;
+    const bw = Math.floor(wrap.clientWidth);
+    const bh = Math.floor(wrap.clientHeight);
+    if (bw < 80 || bh < 80) return;
+    if (bw !== this.renderer.w || bh !== this.renderer.h) {
+      this.onResize();
+    }
   }
 
   /** 让背景 canvas 的内部像素尺寸与 CSS 尺寸一致 */
@@ -1211,6 +1264,10 @@ class Game {
     this.el['btn-assets'].disabled = !isPlayer;
     this.el['btn-mortgage'].disabled = !isPlayer;
     this.el['btn-endturn'].disabled = !isPlayer || state.phase === 'await-roll';
+
+    // HUD 内容变化（玩家卡片增减）会改变中栏可用高度，
+    // 这里同步一次棋盘画布尺寸，保证任何时候棋盘都完整可见。
+    if (this.renderer) this.syncBoardSize();
   }
 
   syncLog() {
