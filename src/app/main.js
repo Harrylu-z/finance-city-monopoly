@@ -24,12 +24,12 @@ import { BoardRenderer } from '../render/canvas.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Sfx } from '../audio/sfx.js';
-import { renderPlayerCards, renderRank, appendLog, clearLog, drawKline } from './hud.js';
+import { renderRank, renderFinanceCompare, appendLog, clearLog } from './hud.js';
 import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog, showMenuDialog,
   showLoanDialog, showBondDialog, showTrapDialog, showBuffPanel,
-  showPlayerDetailDialog, showRentDialog,
+  showPlayerDetailDialog, showRentDialog, openModal,
 } from './dialogs.js';
 import { showTutorial } from './tutorial.js';
 import { openShareDialog, parseShareUrl } from './share.js';
@@ -106,10 +106,24 @@ class Game {
       'input-nickname', 'avatar-picker', 'difficulty-picker', 'aicount-picker',
       'theme-picker', 'rounds-picker', 'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
-      'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer', 'hud-turn-name', 'hud-market', 'player-cards',
-      'rank-list', 'kline-canvas', 'log-list', 'btn-roll', 'btn-assets',
-      'btn-mortgage', 'btn-endturn', 'dice-tray', 'toast-layer',
-      'btn-sound', 'btn-anim', 'btn-theme', 'btn-menu',
+      'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
+      // HUD 容器（四角定位，用于测量与避让计算）
+      'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
+      // 左上：当前玩家紧凑单条
+      'active-player-card', 'active-avatar', 'active-player-name',
+      'active-player-cash', 'active-player-sub',
+      // 右上：回合徽章 + 按钮
+      'hud-round', 'hud-market', 'btn-rank', 'btn-menu',
+      // 左侧：可折叠播报
+      'feed-toggle', 'feed-latest', 'log-panel', 'log-list',
+      // 底部：主行动 + 常用操作按钮
+      'btn-roll', 'btn-assets', 'btn-mortgage', 'btn-endturn',
+      // 右侧：资产排行 + 财务对比常驻面板
+      'hud-right', 'rank-side', 'fin-compare',
+      // 弹窗 / 其他
+      'rank-root', 'rank-backdrop', 'rank-box', 'rank-list', 'btn-rank-close',
+      'cell-detail',
+      'dice-tray', 'toast-layer',
       'selftest-screen', 'selftest-output', 'btn-selftest-back',
     ];
     for (const id of ids) this.el[id] = document.getElementById(id);
@@ -402,32 +416,30 @@ class Game {
 
   /* ==================== 游戏事件 ==================== */
   setupGameEvents() {
-    this.el['btn-roll'].addEventListener('click', () => this.handleRoll());
-    this.el['btn-assets'].addEventListener('click', () => this.handleShowAssets());
-    this.el['btn-mortgage'].addEventListener('click', () => this.handleShowAssets());
-    this.el['btn-endturn'].addEventListener('click', () => this.handleEndTurn());
-
-    this.el['btn-sound'].addEventListener('click', () => {
-      this.sfx.setEnabled(!this.sfx.enabled);
-      this.el['btn-sound'].classList.toggle('is-off', !this.sfx.enabled);
-      if (this.sfx.enabled) this.sfx.click();
-      this.toast(this.sfx.enabled ? '音效开启' : '音效关闭');
-    });
-
-    this.el['btn-anim'].addEventListener('click', () => {
-      this.effectsEnabled = !this.effectsEnabled;
-      this.effects.enabled = this.effectsEnabled;
-      document.body.classList.toggle('no-anim', !this.effectsEnabled);
-      this.el['btn-anim'].classList.toggle('is-off', !this.effectsEnabled);
-      this.toast(this.effectsEnabled ? '特效开启' : '特效关闭（保帧率）');
-    });
-
-    this.el['btn-theme'].addEventListener('click', () => {
-      document.body.classList.toggle('theme-light');
-      this.toast(document.body.classList.contains('theme-light') ? '亮色主题' : '暗色主题');
-    });
+    // blur() 防止按钮保持焦点后，空格/回车快捷键误触上次点击的按钮
+    this.el['btn-roll'].addEventListener('click', () => { this.el['btn-roll'].blur(); this.handleRoll(); });
+    this.el['btn-assets'].addEventListener('click', () => { this.el['btn-assets'].blur(); this.handleShowAssets(); });
+    this.el['btn-mortgage'].addEventListener('click', () => { this.el['btn-mortgage'].blur(); this.handleShowAssets(); });
+    this.el['btn-endturn'].addEventListener('click', () => { this.el['btn-endturn'].blur(); this.handleEndTurn(); });
 
     this.el['btn-menu'].addEventListener('click', () => this.handleMenu());
+
+    // ===== 回合播报折叠 =====
+    this.el['feed-toggle'].addEventListener('click', () => {
+      const panel = this.el['log-panel'];
+      const open = panel.hidden;
+      panel.hidden = !open;
+      this.el['feed-toggle'].setAttribute('aria-expanded', String(open));
+      if (open) {
+        const list = this.el['log-list'];
+        list.scrollTop = list.scrollHeight;
+      }
+    });
+
+    // ===== 资产排行弹窗（不常驻）=====
+    this.el['btn-rank'].addEventListener('click', () => this.openRankModal());
+    this.el['btn-rank-close'].addEventListener('click', () => this.closeRankModal());
+    this.el['rank-backdrop'].addEventListener('click', () => this.closeRankModal());
 
     this.el['btn-selftest-back'].addEventListener('click', () => {
       this.el['selftest-screen'].hidden = true;
@@ -438,12 +450,17 @@ class Game {
     document.addEventListener('keydown', (e) => {
       if (!this.state || this.el['game-screen'].hidden) return;
       if (!document.getElementById('modal-root').hidden) return;
+      if (!this.el['rank-root'].hidden) {
+        if (e.key === 'Escape') this.closeRankModal();
+        return;
+      }
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
         this.handleRoll();
       }
     });
 
+    // ===== 棋盘交互：悬停高亮 + 点击查看详情 =====
     this.el['board-canvas'].addEventListener('mousemove', (e) => {
       if (!this.renderer) return;
       const rect = this.el['board-canvas'].getBoundingClientRect();
@@ -452,10 +469,170 @@ class Game {
 
     this.el['board-canvas'].addEventListener('mouseleave', () => {
       if (this.renderer) this.renderer.hoverCell = -1;
+      this.hideCellDetail();
     });
+
+    // 点击地块 → 弹出详情卡（移动端解决小屏格子过小的关键交互）
+    this.el['board-canvas'].addEventListener('click', (e) => {
+      if (!this.renderer) return;
+      const rect = this.el['board-canvas'].getBoundingClientRect();
+      const index = this.renderer.cellAt(e.clientX - rect.left, e.clientY - rect.top);
+      if (index < 0) return;
+      this.showCellDetail(index, e.clientX - rect.left, e.clientY - rect.top);
+    });
+
+    // 触摸设备：点空白处关闭详情卡
+    this.el['board-canvas'].addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'mouse') this.hideCellDetail();
+    });
+
+    this.setupPinchZoom();
 
     const unlock = () => { this.sfx.unlock(); document.removeEventListener('pointerdown', unlock); };
     document.addEventListener('pointerdown', unlock);
+  }
+
+  /**
+   * 移动端双指缩放 —— 解决小屏格子过小的问题。
+   *
+   * 实现方式：在 #board-wrap 上监听 pointer 事件，跟踪两个活跃指针的距离，
+   * 距离变化超过阈值时调整棋盘的 CSS 缩放倍数（1.0 ~ 2.0）。
+   * 缩放只作用于棋盘容器，不影响 HUD。
+   */
+  setupPinchZoom() {
+    const wrap = this.el['board-wrap'];
+    if (!wrap) return;
+
+    const pointers = new Map();
+    let startDist = 0;
+    let startZoom = 1;
+    let moved = false;
+
+    const distance = () => {
+      const [a, b] = [...pointers.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+
+    wrap.style.touchAction = 'none';
+
+    wrap.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2) {
+        startDist = distance();
+        startZoom = this.boardZoom || 1;
+        moved = true;
+      }
+    });
+
+    wrap.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2 && startDist > 0) {
+        const d = distance();
+        if (Math.abs(d - startDist) < 8) return;
+        const next = Math.max(1, Math.min(2.2, startZoom * (d / startDist)));
+        this.setBoardZoom(next);
+      }
+    });
+
+    const release = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) startDist = 0;
+    };
+    wrap.addEventListener('pointerup', release);
+    wrap.addEventListener('pointercancel', release);
+    wrap.addEventListener('pointerleave', release);
+  }
+
+  /** 设置棋盘缩放倍数（移动端双指缩放） */
+  setBoardZoom(z) {
+    this.boardZoom = z;
+    const canvas = this.el['board-canvas'];
+    if (!canvas) return;
+    canvas.style.transformOrigin = 'center center';
+    canvas.style.transform = z > 1.01 ? `scale(${z.toFixed(3)})` : '';
+  }
+
+  /** 打开资产排行弹窗 */
+  openRankModal() {
+    const state = this.state;
+    if (!state) return;
+    renderRank(this.el['rank-list'], state, (p, rank) => {
+      this.closeRankModal();
+      this.openPlayerDetail(p, rank);
+    });
+    this.el['rank-root'].hidden = false;
+  }
+
+  closeRankModal() {
+    this.el['rank-root'].hidden = true;
+  }
+
+  /**
+   * 地块详情卡 —— 移动端点击格子后弹出，读出完整信息。
+   */
+  showCellDetail(index, px, py) {
+    const state = this.state;
+    const el = this.el['cell-detail'];
+    if (!state || !el) return;
+    const cell = BOARD_CELLS[index];
+    if (!cell) return;
+
+    const inst = this.renderer ? this.renderer.getInstitutionState(state, index) : null;
+    const parts = [];
+
+    // 站在该格上的所有玩家
+    const here = state.players.filter((pl) => !pl.bankrupt && pl.position === index);
+    if (here.length) {
+      parts.push(`<div class="cd-meta">在场：${here.map((pl) => escapeHtml(pl.name)).join('、')}</div>`);
+    }
+
+    if (cell.type === 'institution') {
+      const level = inst ? inst.level : cell.tier;
+      const price = cell.price[Math.min(4, level)] ?? cell.price[0];
+      parts.push(`<div class="cd-name">${escapeHtml(cell.name)}</div>`);
+      parts.push(`<div>价格 <span class="cd-price">￥${price}</span></div>`);
+      parts.push(`<div class="cd-meta">代码 ${cell.code} · 等级 ${level}/${cell.maxLevel}</div>`);
+      if (cell.regulator) {
+        parts.push(`<div class="cd-meta">监管机构 · 持有后不可升级</div>`);
+      }
+      if (inst) {
+        const owner = inst.player;
+        parts.push(`<div class="cd-meta">归属：${escapeHtml(owner.name)}</div>`);
+        if (inst.mortgaged) parts.push(`<div class="cd-meta">状态：已质押</div>`);
+        else {
+          const rent = cell.rent[Math.min(4, level)] ?? cell.rent[0];
+          parts.push(`<div class="cd-meta">租金 ￥${rent}</div>`);
+        }
+      } else {
+        parts.push(`<div class="cd-meta">状态：可购买</div>`);
+      }
+    } else {
+      const sp = cell.special;
+      parts.push(`<div class="cd-name">${escapeHtml(sp.name)}</div>`);
+      parts.push(`<div class="cd-meta">${escapeHtml(sp.desc || sp.short || '')}</div>`);
+      if (sp.amount) parts.push(`<div>费用 <span class="cd-price">-￥${sp.amount}</span></div>`);
+      if (sp.trap) parts.push(`<div class="cd-meta">状态：陷阱格</div>`);
+    }
+
+    el.innerHTML = parts.join('');
+    el.hidden = false;
+
+    // 定位：优先贴近点击点，超出容器时贴边
+    const wrapRect = this.el['board-wrap'].getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    let left = px + 14;
+    let top = py + 14;
+    if (left + box.width > wrapRect.width - 6) left = px - box.width - 14;
+    if (top + box.height > wrapRect.height - 6) top = py - box.height - 14;
+    el.style.left = `${Math.max(6, Math.min(left, wrapRect.width - box.width - 6))}px`;
+    el.style.top = `${Math.max(6, Math.min(top, wrapRect.height - box.height - 6))}px`;
+  }
+
+  hideCellDetail() {
+    const el = this.el['cell-detail'];
+    if (el) el.hidden = true;
   }
 
   handleMenu() {
@@ -463,6 +640,29 @@ class Game {
       { text: '分享战绩', primary: true, onClick: () => this.handleShare() },
       { text: '我的机构', onClick: () => this.handleShowAssets() },
       { text: '财务指标总览', onClick: () => this.openPlayerDetail(currentPlayer(this.state), null) },
+      {
+        text: `音效：${this.sfx.enabled ? '开' : '关'}`,
+        onClick: () => {
+          this.sfx.setEnabled(!this.sfx.enabled);
+          this.toast(this.sfx.enabled ? '音效开启' : '音效关闭');
+        },
+      },
+      {
+        text: `特效：${this.effectsEnabled ? '开' : '关'}`,
+        onClick: () => {
+          this.effectsEnabled = !this.effectsEnabled;
+          this.effects.enabled = this.effectsEnabled;
+          document.body.classList.toggle('no-anim', !this.effectsEnabled);
+          this.toast(this.effectsEnabled ? '特效开启' : '特效关闭（保帧率）');
+        },
+      },
+      {
+        text: `主题：${document.body.classList.contains('theme-light') ? '亮色' : '暗色'}`,
+        onClick: () => {
+          document.body.classList.toggle('theme-light');
+          this.toast(document.body.classList.contains('theme-light') ? '亮色主题' : '暗色主题');
+        },
+      },
       { text: '规则引擎自检', onClick: () => this.runSelfTest() },
       { text: '返回开局界面', onClick: () => this.backToSetup() },
     ]);
@@ -620,8 +820,9 @@ class Game {
     const passedOverStart = path.length > 0 && path.some((idx) => idx === 0) && !landedOnStart;
 
     if (landedOnStart || passedOverStart || passedStart) {
-      // 绕圈跨过起点（未落在起点）→ 允许再次发放下一圈补贴
-      if (passedStart && !landedOnStart) {
+      // 跨过 / 恰好落在起点（新的一圈开始）→ 重置发放标记。
+      // 「落在起点」同样要重置，否则上一圈刚发过的标记会把本圈补贴挡掉。
+      if (passedStart) {
         player._startBonusGranted = false;
       }
       const startCell = state.board[0];
@@ -722,6 +923,10 @@ class Game {
             });
             return;
           }
+          break;
+        }
+        case 'mortgaged-no-rent': {
+          log(state, 'sys', `${r.cell.name} 已被 ${r.ownerName} 质押，暂停产生管理费`, '质押');
           break;
         }
         case 'charge': {
@@ -827,7 +1032,8 @@ class Game {
         case 'bond-offer': {
           // 再融资窗口 —— 向其他玩家发行债券
           if (player.isAI) {
-            this.aiBond(player);
+            // 真人玩家在场时弹窗征询认购，流程挂起由弹窗回调恢复
+            if (this.aiBond(player) === false) return;
           } else {
             this.busy = false;
             showBondDialog(player, this.state,
@@ -892,26 +1098,81 @@ class Game {
     }
   }
 
-  /** AI 发行债券 —— 逐一征询其他玩家认购意愿 */
+  /**
+   * AI 发行债券 —— 逐一征询其他玩家认购意愿。
+   * 真人玩家必须弹窗确认，不再被 AI 代扣资金；弹窗打开时返回 false 挂起流程。
+   */
   aiBond(player) {
     const state = this.state;
     const decisions = [];
+    const human = state.players.find((o) => o.id !== player.id && !o.bankrupt && !o.isAI) || null;
+
     for (const other of state.players) {
-      if (other.id === player.id || other.bankrupt) continue;
+      if (other.id === player.id || other.bankrupt || !other.isAI) continue;
       const d = decideBondSubscription(state, other, player);
       decisions.push({ playerId: other.id, subscribed: d.subscribed, reason: d.reason });
+      log(state, 'ai', `${other.name} ${d.subscribed ? '认购' : '放弃'}：${d.reason}`, playerPersonality(other).tag);
     }
-    const res = issueBond(state, player, decisions);
-    if (res.ok) {
-      log(state, 'ai', `${player.name} 成功发行债券，募资 ￥${res.raised}`, playerPersonality(player).tag);
-      for (const d of decisions) {
-        const buyer = state.players.find((p) => p.id === d.playerId);
-        // 认购方可能是真人玩家（personality 为 null），需回退到默认性格标签
-        if (buyer) log(state, 'ai', `${buyer.name} ${d.subscribed ? '认购' : '放弃'}：${d.reason}`, playerPersonality(buyer).tag);
+
+    const finalize = (humanDecision) => {
+      const all = humanDecision ? decisions.concat(humanDecision) : decisions;
+      const res = issueBond(state, player, all);
+      if (humanDecision) {
+        log(state, humanDecision[0].subscribed ? 'self' : 'sys',
+          `你${humanDecision[0].subscribed ? '认购了' : '放弃了'} ${player.name} 的债券`, '债券');
       }
-    } else {
-      log(state, 'ai', `${player.name} 债券发行失败：${res.reason}`, playerPersonality(player).tag);
+      if (res.ok) {
+        log(state, 'ai', `${player.name} 成功发行债券，募资 ￥${res.raised}`, playerPersonality(player).tag);
+      } else {
+        log(state, 'ai', `${player.name} 债券发行失败：${res.reason}`, playerPersonality(player).tag);
+      }
+      return res;
+    };
+
+    if (!human) {
+      finalize(null);
+      return true;
     }
+
+    // 真人玩家：弹窗征询是否认购（AI 不得代扣资金）
+    this.busy = false;
+    const issuerAssets = Math.max(0, totalAssets(player, state));
+    const body = document.createElement('div');
+    body.className = 'modal-text';
+    body.innerHTML = `
+      <span class="hl">${escapeHtml(player.name)}</span> 正在发行公司债券，邀请你认购。<br>
+      面值 <span class="hl">￥${CONFIG.bondFace}</span> · 票息
+      <span class="hl">${Math.round(CONFIG.bondCoupon * 100)}%/圈</span> ·
+      期限 <span class="hl">${CONFIG.bondTerm} 圈</span><br>
+      持有到期共可获
+      <span class="hl-green">￥${Math.round(CONFIG.bondFace * (1 + CONFIG.bondCoupon * CONFIG.bondTerm))}</span><br>
+      <span class="dim">发行方总资产 ￥${issuerAssets} · 你当前现金 ￥${human.cash}（若发行方中途爆仓，可能损失本金与票息）</span>
+    `;
+    openModal({
+      title: '债券认购征询',
+      body,
+      dismissible: false,
+      actions: [
+        {
+          text: '放弃认购',
+          onClick: () => {
+            finalize([{ playerId: human.id, subscribed: false }]);
+            this.busy = true;
+            this.continueAfterSettlement(player);
+          },
+        },
+        {
+          text: `认购 ￥${CONFIG.bondFace}`,
+          primary: true,
+          onClick: () => {
+            finalize([{ playerId: human.id, subscribed: true }]);
+            this.busy = true;
+            this.continueAfterSettlement(player);
+          },
+        },
+      ],
+    });
+    return false; // 告知调用方流程已挂起，由弹窗回调恢复
   }
 
   applyEvent(player, card) {
@@ -978,6 +1239,17 @@ class Game {
       if (d.action === 'mortgage') {
         mortgageInstitution(state, player, d.cellIndex);
         log(state, 'ai', `${player.name}：${d.reason}`, playerPersonality(player).tag);
+      }
+    } else if (plan.wantRedeem) {
+      // 现金充裕时赎回质押机构，恢复租金收入与完整市值
+      const d = decide(state, player, 'redeem');
+      if (d.action === 'redeem') {
+        const res = redeemInstitution(state, player, d.cellIndex);
+        if (res.ok) {
+          const r = this.cellCenter(d.cellIndex);
+          this.effects.dust(r.x, r.y, 10);
+          log(state, 'ai', `${player.name}：${d.reason}`, playerPersonality(player).tag);
+        }
       }
     }
 
@@ -1123,7 +1395,7 @@ class Game {
         const res = redeemInstitution(this.state, p, cellIndex);
         if (res.ok) {
           self.sfx.buy();
-          self.toast(`赎回完成，支付 ￥${res.fee}`, 't-good');
+          self.toast(`赎回完成，归还本金+解押费共 ￥${res.total}`, 't-good');
           self.syncLog();
           self.updateHUD();
           self.openAssetsDialog(p);
@@ -1219,8 +1491,7 @@ class Game {
       }
       : null;
 
-    this.renderer.draw(state, { elapsed: now, moveAnim, effects: this.effects });
-    drawKline(this.el['kline-canvas'], state, now);
+    this.renderer.draw(state, { elapsed: now, time: now, moveAnim, effects: this.effects });
   }
 
   /**
@@ -1257,15 +1528,32 @@ class Game {
     const sw = stage ? Math.floor(stage.clientWidth) : window.innerWidth;
     const sh = stage ? Math.floor(stage.clientHeight) : window.innerHeight;
 
+    // 底部 HUD 预留：主行动按钮（掷骰子）浮在棋盘正下方，
+    // 棋盘整体上移，保证底边一排格子永不被按钮遮挡。
+    const bottomBar = this.el['hud-bottom'];
+    let reserve = 0;
+    if (bottomBar) {
+      const br = bottomBar.getBoundingClientRect();
+      const wrapRect = wrap ? wrap.getBoundingClientRect() : null;
+      if (br.height > 0 && wrapRect) {
+        // 按钮底边到棋盘容器底边的距离 + 按钮高度 + 一点安全间隙
+        const gap = Math.max(0, wrapRect.bottom - br.bottom);
+        reserve = Math.ceil(br.height + gap + 8);
+      }
+    }
+
     // 幂等：尺寸没变就直接跳过，避免无谓地重设 canvas.width/height
     // （重设会清空画布并触发 ResizeObserver 的再次通知）。
     const stageChanged = sw !== this._lastStageW || sh !== this._lastStageH;
     const boardChanged = bw !== this.renderer.w || bh !== this.renderer.h;
-    if (!stageChanged && !boardChanged) return;
+    if (!stageChanged && !boardChanged && reserve === this._lastReserve) return;
 
     this._lastStageW = sw;
     this._lastStageH = sh;
+    this._lastReserve = reserve;
     this.renderer.resize(bw, bh, dpr);
+    // resize 之后再设预留：setBottomReserve 会重算布局，需要正确的 w/h
+    this.renderer.setBottomReserve(reserve);
     this.background.resize(Math.max(1, sw), Math.max(1, sh));
     this.resizeStageBg(sw, sh);
   }
@@ -1308,28 +1596,60 @@ class Game {
     if (!state) return;
 
     const p = currentPlayer(state);
-    this.el['hud-turn-name'].textContent = p ? p.name : '—';
 
+    // ===== 左上角：当前玩家紧凑单条 =====
+    const card = this.el['active-player-card'];
+    if (p) {
+      const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
+      card.style.borderLeft = `4px solid ${pc.main}`;
+      this.el['active-player-name'].textContent = p.name;
+      this.el['active-player-cash'].textContent = `￥${p.cash}`;
+      const cnt = p.institutions.length;
+      this.el['active-player-sub'].textContent = p.bankrupt
+        ? '已退市'
+        : `控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`;
+
+      // 头像
+      const avatarCanvas = this.el['active-avatar'];
+      const icon = getAvatarIcon(p.avatar, p.colorIndex);
+      const actx = avatarCanvas.getContext('2d');
+      actx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+      actx.imageSmoothingEnabled = false;
+      actx.drawImage(icon, 0, 0, icon.width, icon.height, 0, 0, avatarCanvas.width, avatarCanvas.height);
+    }
+
+    // ===== 右上角：回合数 + 市场 =====
+    this.el['hud-round'].textContent = String(state.round || 1);
     const mk = this.el['hud-market'];
-    mk.textContent = `市场：${this.marketName(state.market)}`;
+    mk.textContent = this.marketName(state.market);
     mk.className = 'hud-market ' + (state.market === 'bull' ? 'is-bull' : state.market === 'bear' ? 'is-bear' : '');
 
-    renderPlayerCards(this.el['player-cards'], state, (p2) => {
-      this.toast(`${p2.name} · 资产 ￥${totalAssets(p2, state)} · 控股 ${p2.institutions.length} 家`);
-    });
-    renderRank(this.el['rank-list'], state, (p, rank) => {
-      this.openPlayerDetail(p, rank);
-    });
-
+    // ===== 底部：主行动 + 常用操作按钮 =====
     const isPlayer = p && !p.isAI && !p.bankrupt;
-    this.el['btn-roll'].disabled = !isPlayer || this.busy || state.phase !== 'await-roll';
+    const canRoll = isPlayer && !this.busy && state.phase === 'await-roll';
+    this.el['btn-roll'].disabled = !canRoll;
+    // 主按钮随回合阶段切换文案（保持只有一个主行动）
+    const rollBtn = this.el['btn-roll'];
+    const nextLabel = canRoll ? '掷 骰 子'
+      : (isPlayer && state.phase !== 'await-roll' ? '结 算 中' : '等 待 AI');
+    if (rollBtn.textContent.trim() !== nextLabel) {
+      rollBtn.textContent = nextLabel;
+    }
     this.el['btn-assets'].disabled = !isPlayer;
     this.el['btn-mortgage'].disabled = !isPlayer;
     this.el['btn-endturn'].disabled = !isPlayer || state.phase === 'await-roll';
 
-    // HUD 内容变化（玩家卡片增减）会改变中栏可用高度，
-    // 这里同步一次棋盘画布尺寸，保证任何时候棋盘都完整可见。
-    if (this.renderer) this.syncBoardSize();
+    // ===== 右侧常驻面板：资产排行 + 全玩家财务对比 =====
+    renderRank(this.el['rank-side'], state, (p2, rank) => this.openPlayerDetail(p2, rank));
+    renderFinanceCompare(this.el['fin-compare'], state);
+
+    // 排行弹窗（窄屏入口）内容保持最新（打开时立即可见）
+    if (!this.el['rank-root'].hidden) {
+      renderRank(this.el['rank-list'], state, (p2, rank) => {
+        this.closeRankModal();
+        this.openPlayerDetail(p2, rank);
+      });
+    }
   }
 
   syncLog() {
@@ -1338,6 +1658,9 @@ class Game {
     if (!state) return;
     clearLog(el);
     for (const entry of state.log.slice(-60)) appendLog(el, entry);
+    // 折叠条显示最新 1 条
+    const latest = state.log[state.log.length - 1];
+    this.el['feed-latest'].textContent = latest ? `${latest.tag} ${latest.text}` : '等待开局…';
   }
 
   /* ==================== 特效辅助 ==================== */
@@ -1409,6 +1732,16 @@ class Game {
     this.refreshAiPreview();
     this.toast(`已载入分享局（种子 ${params.seed}），点击"开局"复现`, 't-gold');
   }
+}
+
+/** HTML 转义 —— 防止玩家昵称 / 机构名注入到 innerHTML */
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 const game = new Game();

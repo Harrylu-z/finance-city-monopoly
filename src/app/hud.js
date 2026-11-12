@@ -4,7 +4,7 @@
 
 import { PLAYER_COLORS, PALETTE } from '../core/palette.js';
 import { getAvatarIcon } from '../art/avatars.js';
-import { totalAssets } from '../core/economy.js';
+import { totalAssets, financialMetrics } from '../core/economy.js';
 import { institutionCount } from '../core/rules.js';
 
 /** 渲染玩家卡片 */
@@ -134,6 +134,113 @@ export function renderRank(el, state, onPick) {
 
     el.appendChild(row);
   });
+}
+
+/* ===================================================================
+ * 财务对比表 —— 右侧常驻面板
+ *
+ * 行 = 关键财务指标；列 = 玩家（按资产排名排序）。
+ * 指标全部来自 economy.js 的 financialMetrics（单一数据源），
+ * 每行最优值金色加粗，真人玩家所在列高亮 —— 无需点开弹窗即可横向对比。
+ * =================================================================== */
+
+const COMPARE_ROWS = [
+  { key: 'assets',     label: '总资产',   fmt: (m) => `￥${Math.max(0, m.assets)}`, dir: 'max' },
+  { key: 'cash',       label: '现金',     fmt: (m) => `￥${m.cash}`,                dir: 'max' },
+  { key: 'netWorth',   label: '净资产',   fmt: (m) => `￥${m.netWorth}`,            dir: 'max' },
+  { key: 'debt',       label: '总负债',   fmt: (m) => `￥${m.debt}`,                dir: 'min' },
+  { key: 'debtRatio',  label: '负债率',   fmt: (m) => `${m.debtRatio}%`,            dir: 'min' },
+  { key: 'rentIncome', label: '每圈收入', fmt: (m) => `￥${m.rentIncome}`,          dir: 'max' },
+  { key: 'activeCount',label: '在营机构', fmt: (m) => `${m.activeCount}`,           dir: 'max' },
+  { key: 'institutionCount', label: '控股总数', fmt: (m) => `${m.institutionCount}`, dir: 'max' },
+];
+
+/**
+ * 渲染全玩家财务对比表。
+ * @param {HTMLElement} el 表格容器
+ * @param {object} state 游戏状态
+ */
+export function renderFinanceCompare(el, state) {
+  el.innerHTML = '';
+  if (!state || !state.players || !state.players.length) return;
+
+  const ranked = state.players
+    .map((p) => ({ p, assets: totalAssets(p, state) }))
+    .sort((a, b) => {
+      if (a.p.bankrupt !== b.p.bankrupt) return a.p.bankrupt ? 1 : -1;
+      return b.assets - a.assets;
+    })
+    .map((e) => ({ p: e.p, m: financialMetrics(e.p, state) }));
+
+  const table = document.createElement('table');
+  table.className = 'fin-cmp-table';
+
+  // ===== 表头：指标 | 玩家 1..N =====
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  const corner = document.createElement('th');
+  corner.textContent = '指标';
+  headRow.appendChild(corner);
+  for (const e of ranked) {
+    const pc = PLAYER_COLORS[e.p.colorIndex % PLAYER_COLORS.length];
+    const th = document.createElement('th');
+    th.className = 'fin-cmp-head' + (e.p.bankrupt ? ' is-dead' : '');
+    if (!e.p.isAI) th.classList.add('is-me');
+    const dot = document.createElement('i');
+    dot.className = 'fin-cmp-dot';
+    dot.style.background = pc.main;
+    th.appendChild(dot);
+    const nm = document.createElement('span');
+    nm.textContent = e.p.name.length > 4 ? e.p.name.slice(0, 4) : e.p.name;
+    nm.title = e.p.name;
+    th.appendChild(nm);
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  // ===== 表体 =====
+  const tbody = document.createElement('tbody');
+  for (const row of COMPARE_ROWS) {
+    const values = ranked.map((e) => row.fmt(e.m));
+    const nums = ranked.map((e) => {
+      const n = Number(e.m[row.key]);
+      return Number.isFinite(n) ? n : null;
+    });
+    // 每行最优值（破产玩家不参与「最优」评选）
+    let bestIdx = -1;
+    const liveIdx = ranked.map((e, i) => (e.p.bankrupt ? -1 : i)).filter((i) => i >= 0);
+    if (liveIdx.length >= 2) {
+      let best = null;
+      for (const i of liveIdx) {
+        const v = nums[i];
+        if (v == null) continue;
+        if (best == null
+          || (row.dir === 'max' && v > nums[best])
+          || (row.dir === 'min' && v < nums[best])) best = i;
+      }
+      // 只有当最优值确实优于别人时才标注
+      const distinct = [...new Set(liveIdx.map((i) => nums[i]))];
+      if (best != null && distinct.length > 1) bestIdx = best;
+    }
+
+    const tr = document.createElement('tr');
+    const label = document.createElement('td');
+    label.textContent = row.label;
+    tr.appendChild(label);
+    ranked.forEach((e, i) => {
+      const td = document.createElement('td');
+      td.textContent = e.p.bankrupt && row.key === 'assets' ? '已清算' : values[i];
+      if (!e.p.isAI) td.classList.add('is-me');
+      if (i === bestIdx) td.classList.add('is-best');
+      if (row.key === 'debtRatio' && e.m.debtRatio >= 100) td.classList.add('is-bad');
+      if (row.key === 'cash' && e.m.cash < 0) td.classList.add('is-bad');
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  el.appendChild(table);
 }
 
 /** 追加日志 */

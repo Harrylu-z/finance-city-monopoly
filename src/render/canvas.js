@@ -1,23 +1,59 @@
 /**
  * 棋盘渲染器 —— Canvas 2D，像素硬边。
  *
- * 布局：56 格环形棋盘（7 列 × 8 行的非正方形布局），中央为金融城广场。
- * 每格：机构像素立绘 / 特殊格图标、名称、代码牌、归属标记。
+ * ================== 版图 ==================
+ * 经典**正方形环道**（不旋转）：63 格沿正方形四边逆时针排布，
+ * 全部文字严格水平，可读性第一。
  *
- * 视觉区分：
- *   普通机构格 —— 集团色顶条 + 等级星标 + 归属色带
- *   监管机构格 —— 紫金警示边框 + 「监管」角标 + 天平徽章（不可升级）
- *   特殊格     —— 按类型分配底色 + 图标（与普通格明显不同）
- *   陷阱格     —— 斜向警戒纹 + 红色角标
+ * ================== 每格三要素 ==================
+ *   ① 顶部产权组色条（主色 + 亮部高光 + 暗部阴影三层）
+ *   ② 机构名称 / 特殊格标题（字号 ≥ 格子高度的 1/4，自动降级不裁切）
+ *   ③ 价格 / 功能说明（等宽数字，紧贴底部）
+ *
+ * ================== 格子底色 ==================
+ * 浅米色（#e8ddc4）—— 与深色背景形成强烈图地分离，
+ * 深色文字压在浅底上，边缘清晰可读。
+ *
+ * ================== 全局状态语言 ==================
+ *   当前玩家所在格 → 黄色呼吸光圈 + 脉冲
+ *   已购买格       → 归属玩家色边框 + 小旗帜
+ *   可购买格       → 轻微绿色渐变提示
+ *   抵押 / 禁用格  → 降饱和 + 斜线纹理
  */
 
-import { BOARD_CELLS, BOARD_SIZE, BOARD_SHAPE } from '../core/board.js';
-import { PLAYER_COLORS, PALETTE } from '../core/palette.js';
+import {
+  BOARD_CELLS, BOARD_SIZE, BOARD_SHAPE, TRACK_POINTS, PLAZA_CENTER, SIDE_COUNTS,
+} from '../core/board.js';
+import { PLAYER_COLORS, PALETTE, GROUP_COLORS, REGULATOR_COLOR } from '../core/palette.js';
 import { getInstitutionSprite } from '../art/buildings.js';
+import { getCompactIcon } from '../art/compact-icons.js';
 import { getAvatarSprites } from '../art/avatars.js';
 import { getSpecialIcon, getTickerPlate, getFlagIcon } from '../art/ui-icons.js';
 
 const GROUP_INDEX = { bank: 0, broker: 1, insurer: 2, asset: 3 };
+
+/** 像素字体栈 —— 与 CSS 保持一致 */
+const FONT_UI = '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif';
+const FONT_NUM = '"Consolas", "Menlo", monospace';
+
+/** 特殊格底色（浅色系，特殊格用不同纹理区分） */
+const SPECIAL_TINT = {
+  start:        { bg: '#f0d79a', edge: PALETTE.goldDk },
+  clearing:     { bg: '#cfe6ee', edge: '#1c6b88' },
+  metro:        { bg: '#f2c6bd', edge: PALETTE.redDk },
+  crossborder:  { bg: '#cfe8d0', edge: '#336b38' },
+  tax:          { bg: '#e4d3c4', edge: '#6b5a48' },
+  charity:      { bg: '#f2d6d2', edge: PALETTE.redDk },
+  fine:         { bg: '#ecd4b6', edge: PALETTE.goldDk },
+  event:        { bg: '#dcd8ea', edge: '#5c3a86' },
+  market:       { bg: '#dcd8ea', edge: '#4a5266' },
+  audit:        { bg: '#e8c4bc', edge: PALETTE.redDk },
+  risk:         { bg: '#e8c4bc', edge: PALETTE.redDk },
+  refinance:    { bg: '#cfe6d8', edge: '#336b38' },
+  rating:       { bg: '#f0d79a', edge: PALETTE.goldDk },
+  commodity:    { bg: '#e8dcc0', edge: '#8a6d2c' },
+  roadshow:     { bg: '#cfe6ee', edge: '#1c6b88' },
+};
 
 export class BoardRenderer {
   constructor(canvas) {
@@ -26,6 +62,21 @@ export class BoardRenderer {
     this.ctx.imageSmoothingEnabled = false;
     this.hoverCell = -1;
     this.scale = 2;
+    this.time = 0;
+    // 底部为 HUD 主行动按钮预留的像素高度（0 = 不预留）
+    this.bottomReserve = 0;
+  }
+
+  /**
+   * 设置底部 HUD 预留高度 —— 棋盘自动上移，避免被主按钮压住。
+   *
+   * @param {number} px 预留像素高度
+   */
+  setBottomReserve(px) {
+    const next = Math.max(0, Math.round(px || 0));
+    if (next === this.bottomReserve) return;
+    this.bottomReserve = next;
+    this.computeLayout();
   }
 
   /**
@@ -43,8 +94,6 @@ export class BoardRenderer {
     const ph = Math.max(1, Math.floor(ch * dpr));
     if (this.canvas.width !== pw) this.canvas.width = pw;
     if (this.canvas.height !== ph) this.canvas.height = ph;
-    // 注意：画布的 CSS 尺寸由样式表控制（width/height: 100%），
-    // 这里不再写死 px，避免与容器实际尺寸脱节。
     this.ctx.imageSmoothingEnabled = false;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.w = cw;
@@ -53,98 +102,120 @@ export class BoardRenderer {
   }
 
   /**
-   * 计算棋盘几何布局。
+   * 计算棋盘几何布局 —— 严格正方形。
    *
-   * 棋盘容器（#board-wrap）已经是「不遮挡」的区域，因此这里不再为
-   * HUD 预留上下留白 —— 直接在可用矩形内把 9×7 棋盘居中。
-   * 格子宽高按固定 9:7 比例推导，避免被容器压扁。
-   * 顶部额外预留「金融城广场」横幅的高度（不占用格子）。
+   * 正方形环道：上/右/左三边各 17 格、底边 16 格（合计 63）。
+   * 因为环道包围盒本身就是正方形，只需让 trackW === trackH 即可。
+   *
+   * ⚠ 关键：格子是以轨道点**为中心**绘制的，所以轨道包围盒必须
+   *   比棋盘可用区域**内缩半格**，否则贴边的格子会有一半露到画布外
+   *   （左侧格子 x 为负、被裁掉）。这里先按 17 格估算格宽，再回填内缩量。
    */
   computeLayout() {
-    const margin = 12;
-    const bannerH = 30;   // 横幅 + 边框留白
-    const availW = Math.max(1, this.w - margin * 2);
-    const availH = Math.max(1, this.h - margin * 2 - bannerH);
+    // 边距收紧到 6px —— 尽量把每一像素留给格子，提升名称与立绘可读性
+    const margin = 6;
 
-    const cols = BOARD_SHAPE.cols;
-    const rows = BOARD_SHAPE.rows;
+    // ===== 底部预留：主行动按钮（掷骰子）浮在棋盘下方居中 =====
+    // 棋盘必须整体上移，避免底边一排格子被按钮压住。
+    const bottomReserve = this.bottomReserve || 0;
 
-    // 单元格宽高可以不同 —— 适配 9×7 的横向长方形棋盘
-    let cellW = Math.floor(availW / cols);
-    let cellH = Math.floor(availH / rows);
+    // ===== 第一步：按可用区域估算格边长 =====
+    const avail = Math.max(80, Math.min(
+      this.w - margin * 2,
+      this.h - margin * 2 - bottomReserve,
+    ));
 
-    // 9:7 是棋盘的天然比例：若容器比例不匹配，按比例收缩，避免格子被拉长
-    const naturalCell = cellW / (cols / rows);
-    if (cellH > naturalCell) cellH = Math.floor(naturalCell);
-    else cellW = Math.floor(cellH * (cols / rows));
+    // ===== 第二步：求解格边长 =====
+    // 轨道点归一化到 0..1000。17 格一边的**中心**首尾相距 1000 单位，
+    // 即相邻中心间距 = 1000/16 = 62.5 单位。
+    // 映射到像素：cell = trackW × 62.5/1000 = trackW / 16
+    //   → trackW = 16 × cell
+    // 但格子是以中心绘制的，首尾两格各向外探出半格，
+    // 所以棋盘实际占宽 = trackW + cell = 17 × cell，必须 ≤ 可用区域。
+    //   → cell = avail / 17
+    const cell = Math.max(14, Math.floor(avail / 17));
+    const trackW = cell * 16;
+    const trackH = cell * 16;
 
-    cellW = Math.max(12, cellW);
-    cellH = Math.max(12, cellH);
+    // ===== 第三步：居中（水平居中；垂直方向在「上方可用区」内居中）=====
+    // 垂直可用区 = [margin, this.h - margin - bottomReserve]
+    const usableH = this.h - margin * 2 - bottomReserve;
+    const trackX = Math.floor((this.w - trackW) / 2);
+    const trackY = Math.floor(margin + (usableH - trackH) / 2);
 
-    // 整数倍缩放：保证立绘完整显示且不糊
-    const s = Math.max(1, Math.min(3, Math.floor(Math.min(cellW / 2, cellH) / 32) || 1));
+    const cellW = cell;
+    const cellH = cell;
+
+    // 整数倍缩放 —— 保证立绘边缘绝对锐利（nearest-neighbor）。
+    // 紧凑图标原生 16×16，按「格子可用高度 / 16」取最大整数倍。
+    const iconZone = Math.round(cell * 0.46);
+    const s = Math.max(1, Math.min(4, Math.floor(iconZone / 16) || 1));
     this.scale = s;
     this.cellW = cellW;
     this.cellH = cellH;
 
-    const boardW = cols * cellW;
-    const boardH = rows * cellH;
-    // 横幅在格子上方，因此整个棋盘（含横幅）整体居中
-    const totalH = boardH + bannerH;
-    this.boardX = Math.floor((this.w - boardW) / 2);
-    this.boardY = Math.floor((this.h - totalH) / 2) + bannerH;
+    this.trackW = trackW;
+    this.trackH = trackH;
+    this.trackX = trackX;
+    this.trackY = trackY;
 
-    this.layout = { cols, rows, cellW, cellH, boardX: this.boardX, boardY: this.boardY, bannerH };
+    this.layout = {
+      cellW, cellH,
+      trackX: this.trackX, trackY: this.trackY,
+      trackW, trackH,
+    };
   }
 
   /**
    * 格子索引 → 屏幕矩形。
    *
-   * 棋盘是 9 列 × 7 行的**填满矩阵**（63 格全部可玩），移动顺序采用
-   * 蛇形（boustrophedon）折返：自底行起，逐行左右交替推进。
+   * 棋盘是**一条连续闭合的环道**：index 0..62 沿正方形逆时针推进，
+   * index 62 与 index 0 相邻 —— 棋子绕圈全程连贯，不存在瞬移。
    *
-   *   index  0.. 8 → 底行，从左到右
-   *   index  9..17 → 倒数第 2 行，从右到左
-   *   index 18..26 → 第 3 行，从左到右 …… 以此类推
-   *   index 54..62 → 顶行，从左到右
-   *
-   * 这样每一行首尾与相邻行首尾在屏幕上直接相接，棋子沿行推进时
-   * 视觉上是连贯的「U 形赛道」；行末即折返，最后一行回到起点，
-   * 形成闭合的环形拓扑（index 62 → 0 即「经过起点」）。
-   *
-   * 注意：9×7 的格点图无法构成真正的哈密顿环（63 为奇数），
-   * 因此收尾格与起点格在几何上并非紧邻 —— 这与大富翁类棋盘
-   * 「起点单独成格、经过起点触发补贴」的通行做法一致。
+   * 每条边按「边内序号」精确切分：
+   *   右边 17 格、上边 17 格、左边 17 格、底边 16 格。
+   * 格子以轨道点为中心，左右/上下边严格对齐，形成无缝棋盘。
    */
   cellRect(index) {
-    const { cols, rows, cellW, cellH, boardX, boardY } = this.layout;
+    const { cellW, cellH, trackX, trackY, trackW, trackH } = this.layout;
     const idx = ((index % BOARD_SIZE) + BOARD_SIZE) % BOARD_SIZE;
-
-    // 每行 cols 格，共 rows 行
-    const band = Math.floor(idx / cols);   // 0 = 底行
-    const pos = idx % cols;                // 行内序号
-    const row = rows - 1 - band;           // 屏幕行号（0 = 顶行）
-    // 偶数带（自底向上数）从左向右，奇数带从右向左
-    const col = (band % 2 === 0) ? pos : (cols - 1 - pos);
-
-    return { x: boardX + col * cellW, y: boardY + row * cellH, w: cellW, h: cellH, col, row };
+    const p = TRACK_POINTS[idx];
+    if (!p) {
+      return { x: trackX, y: trackY, w: cellW, h: cellH };
+    }
+    const cx = trackX + (p[0] / 1000) * trackW;
+    const cy = trackY + (p[1] / 1000) * trackH;
+    return {
+      x: Math.round(cx - cellW / 2),
+      y: Math.round(cy - cellH / 2),
+      w: cellW, h: cellH,
+      cx, cy,
+    };
   }
 
-  /** 屏幕坐标 → 格子索引（cellRect 的严格逆运算） */
+  /** 屏幕坐标 → 格子索引（取中心距离最近的一格） */
   cellAt(px, py) {
-    const { cols, rows, cellW, cellH, boardX, boardY } = this.layout;
-    const col = Math.floor((px - boardX) / cellW);
-    const row = Math.floor((py - boardY) / cellH);
-    if (col < 0 || col >= cols || row < 0 || row >= rows) return -1;
-    const band = rows - 1 - row;
-    const pos = (band % 2 === 0) ? col : (cols - 1 - col);
-    return band * cols + pos;
+    const { trackX, trackY, trackW, trackH } = this.layout;
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < TRACK_POINTS.length; i++) {
+      const p = TRACK_POINTS[i];
+      const cx = trackX + (p[0] / 1000) * trackW;
+      const cy = trackY + (p[1] / 1000) * trackH;
+      const d = (px - cx) ** 2 + (py - cy) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
   }
 
   draw(state, view) {
     const ctx = this.ctx;
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, this.w, this.h);
+    this.time = view.time || 0;
 
     this.drawBoardBase(ctx, state);
 
@@ -158,120 +229,218 @@ export class BoardRenderer {
   }
 
   /**
-   * 棋盘底板 —— 外框 + 「金融城广场」横幅 + 市场周期徽章。
-   *
-   * 63 个格子会把 9×7 的格点矩阵铺满，因此中央不再留出空洞；
-   * 原设计的「中央金融城广场」改为棋盘上方的横幅条，
-   * 承载天际线徽章与市场周期指示（牛市 / 熊市 / 震荡）。
+   * 棋盘底板 —— 实体正方形棋盘（2px 深描边 + 内侧高光）。
    */
   drawBoardBase(ctx, state) {
-    const { boardX, boardY, cols, rows, cellW, cellH } = this.layout;
-    const w = cols * cellW;
-    const h = rows * cellH;
+    const { trackX, trackY, trackW, trackH, cellW, cellH } = this.layout;
 
-    rect(ctx, boardX - 6, boardY - 6, w + 12, h + 12, 'ink');
-    rect(ctx, boardX - 4, boardY - 4, w + 8, h + 8, 'glassDk');
-    rect(ctx, boardX, boardY, w, h, 'navyDk');
+    // 外框比轨道包围盒外扩半格，把贴边的格子完整包进来
+    const pad = Math.ceil(Math.max(cellW, cellH) / 2) + 1;
+    const bx = trackX - pad;
+    const by = trackY - pad;
+    const boardW = trackW + pad * 2;
+    const boardH = trackH + pad * 2;
 
-    // ---- 金融城广场横幅（画在格子上层，不遮挡任何格子）----
-    const bannerH = 26;
-    const by = boardY - bannerH - 4;
-    rect(ctx, boardX, by, w, bannerH, 'navy');
-    strokeRect(ctx, boardX, by, w, bannerH, 'goldDk');
-    for (let y = by + 3; y < by + bannerH - 2; y += 6) {
-      for (let x = boardX + 3; x < boardX + w - 2; x += 6) {
-        ctx.fillStyle = ((x + y) % 12 === 0) ? PALETTE.navyLt : PALETTE.navyDk;
-        ctx.fillRect(x, y, 4, 4);
-      }
+    // ===== 实体板质感：外描边 → 暗边 → 内高光 =====
+    // 最外层：深墨描边（2px）
+    rect(ctx, bx - 4, by - 4, boardW + 8, boardH + 8, PALETTE.ink);
+    // 次层：板框（中灰）
+    rect(ctx, bx - 2, by - 2, boardW + 4, boardH + 4, '#39415a');
+    // 板面（比格子底色稍暗，作为环道底）
+    rect(ctx, bx, by, boardW, boardH, PALETTE.boardDk);
+    // 内侧微弱高光（1px 顶部 + 左侧）
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillRect(bx + 1, by + 1, boardW - 2, 1);
+    ctx.fillRect(bx + 1, by + 1, 1, boardH - 2);
+
+    // ---- 中心广场（环道围出的中心区域）----
+    this.drawCenterPlaza(ctx, state);
+  }
+
+  /**
+   * 中心广场 —— LOGO + 当前回合信息 + 骰子动画区。
+   *
+   * 不做虚线点阵装饰，改为功能性的信息中枢：
+   *   ① 顶部：天际线像素 LOGO + 「中国金融城」标题
+   *   ② 中部：当前回合玩家 + 市场周期徽章
+   *   ③ 底部：骰子动画舞台（骰子精灵在此翻滚）
+   */
+  drawCenterPlaza(ctx, state) {
+    const { trackX, trackY, trackW, trackH } = this.layout;
+
+    // 广场尺寸 = 环道包围盒的 64%（去掉两侧各 18% 的环带）
+    const pw = Math.round(trackW * 0.64);
+    const ph = Math.round(trackH * 0.64);
+    if (pw < 80 || ph < 80) return;
+    const px = Math.round(trackX + (trackW - pw) / 2);
+    const py = Math.round(trackY + (trackH - ph) / 2);
+
+    // 广场底板（深色面板，与浅色格子形成对比）
+    rect(ctx, px, py, pw, ph, PALETTE.panel);
+    // 像素描边（阶梯感：外墨线 + 内金线）
+    strokeRect(ctx, px, py, pw, ph, PALETTE.ink);
+    strokeRect(ctx, px + 2, py + 2, pw - 4, ph - 4, PALETTE.goldDk);
+    // 四角像素装饰
+    for (const [ox, oy] of [[0, 0], [pw - 8, 0], [0, ph - 8], [pw - 8, ph - 8]]) {
+      rect(ctx, px + ox, py + oy, 8, 8, PALETTE.gold);
+      rect(ctx, px + ox + 2, py + oy + 2, 4, 4, PALETTE.panel);
     }
 
-    // 天际线徽章（横幅左侧）
-    const mx = boardX + 34;
-    const my = by + bannerH / 2;
-    this.drawSkylineMark(ctx, mx, my);
+    const cx = Math.round(px + pw / 2);
 
-    // 市场周期指示（横幅右侧）
+    // ===== ① LOGO 区 =====
+    const logoY = py + 16;
+    this.drawSkylineMark(ctx, cx, logoY + 14, 2);
+
+    ctx.fillStyle = PALETTE.gold;
+    ctx.font = `bold 16px ${FONT_UI}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('中国金融城', cx, logoY + 42);
+    ctx.fillStyle = PALETTE.paper;
+    ctx.font = `10px ${FONT_UI}`;
+    ctx.fillText('像素大富翁 · 金融机构争夺战', cx, logoY + 60);
+
+    // ===== ② 当前回合信息 =====
+    const infoY = py + ph * 0.52;
+    const cur = state.players && state.players[state.currentPlayerIndex];
+    ctx.fillStyle = PALETTE.dim;
+    ctx.font = `10px ${FONT_UI}`;
+    ctx.fillText('当 前 回 合', cx, infoY);
+
+    if (cur) {
+      const pc = PLAYER_COLORS[cur.colorIndex % PLAYER_COLORS.length];
+      // 玩家色底牌
+      const name = cur.name.length > 8 ? cur.name.slice(0, 8) : cur.name;
+      ctx.font = `bold 16px ${FONT_UI}`;
+      const tw = ctx.measureText(name).width;
+      const bw = tw + 26;
+      rect(ctx, cx - bw / 2, infoY + 10, bw, 24, PALETTE.ink);
+      strokeRect(ctx, cx - bw / 2, infoY + 10, bw, 24, pc.main);
+      rect(ctx, cx - bw / 2, infoY + 10, 5, 24, pc.main);
+      ctx.fillStyle = pc.lt;
+      ctx.fillText(name, cx + 5, infoY + 22);
+    }
+
+    // 市场周期徽章
     const isBull = state.market === 'bull';
     const isBear = state.market === 'bear';
     const label = isBull ? '牛市' : isBear ? '熊市' : '震荡';
-    const c = isBull ? 'red' : isBear ? 'jade' : 'glass';
-    const bw = 54;
-    const bx = Math.round(boardX + w - bw - 8);
-    const bh = 15;
-    const bly = Math.round(by + (bannerH - bh) / 2);
-    rect(ctx, bx, bly, bw, bh, PALETTE.ink);
-    strokeRect(ctx, bx, bly, bw, bh, PALETTE[c]);
-    ctx.fillStyle = PALETTE[c];
-    ctx.fillRect(bx + 2, bly + 2, bw - 4, bh - 4);
-    ctx.fillStyle = PALETTE.ink;
-    ctx.font = '10px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, bx + bw / 2, bly + bh / 2);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
+    const mc = isBull ? PALETTE.red : isBear ? PALETTE.green : PALETTE.dim;
+    ctx.font = `10px ${FONT_UI}`;
+    const mw = ctx.measureText(label).width + 16;
+    const mx = Math.round(cx - mw / 2);
+    const my = Math.round(infoY + 40);
+    rect(ctx, mx, my, mw, 16, PALETTE.ink);
+    strokeRect(ctx, mx, my, mw, 16, mc);
+    ctx.fillStyle = mc;
+    ctx.fillText(label, cx, my + 8);
 
-    // 横幅标题
-    ctx.font = '10px "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = PALETTE.goldLt;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('金融城广场', boardX + w / 2, by + bannerH / 2);
+    // ===== ③ 骰子动画舞台 =====
+    const stageH = Math.max(28, Math.round(ph * 0.16));
+    const stageY = py + ph - stageH - 10;
+    rect(ctx, px + 12, stageY, pw - 24, stageH, PALETTE.ink);
+    strokeRect(ctx, px + 12, stageY, pw - 24, stageH, '#39415a');
+    ctx.fillStyle = PALETTE.dim;
+    ctx.font = `9px ${FONT_UI}`;
+    ctx.fillText('骰 子 舞 台', cx, stageY + stageH / 2);
+
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
   }
 
-  /** 横幅左侧的天际线徽章 */
-  drawSkylineMark(ctx, cx, cy) {
-    const baseY = cy + 7;
+  /** 天际线像素徽章 */
+  drawSkylineMark(ctx, cx, cy, s = 1) {
+    const baseY = cy + 8 * s;
     const tower = (bx, bw, bh, color) => {
-      rect(ctx, bx, baseY - bh, bw, bh, color);
-      rect(ctx, bx, baseY - bh, bw, 1, PALETTE.goldLt);
-      for (let i = 2; i < bh - 1; i += 3) rect(ctx, bx + 1, baseY - bh + i, bw - 2, 1, PALETTE.ink);
+      rect(ctx, bx, baseY - bh * s, bw * s, bh * s, color);
+      rect(ctx, bx, baseY - bh * s, bw * s, 1 * s, PALETTE.goldLt);
+      for (let i = 2; i < bh * s; i += 3 * s) rect(ctx, bx + s, baseY - bh * s + i, bw * s - 2 * s, 1, PALETTE.ink);
     };
-    tower(cx - 16, 7, 12, PALETTE.glassDk);
-    tower(cx - 6, 10, 18, PALETTE.goldDk);
-    tower(cx + 6, 6, 10, PALETTE.glassDk);
-    rect(ctx, cx - 1, baseY - 22, 2, 4, PALETTE.gold);
-    rect(ctx, cx - 2, baseY - 23, 4, 1, PALETTE.goldLt);
-    rect(ctx, cx - 19, baseY, 38, 2, PALETTE.ink);
-    hline(ctx, cx - 19, baseY, 38, PALETTE.goldDk);
+    tower(cx - 16 * s, 7 * s, 12 * s, '#39415a');
+    tower(cx - 6 * s, 10 * s, 18 * s, PALETTE.goldDk);
+    tower(cx + 6 * s, 6 * s, 10 * s, '#39415a');
+    rect(ctx, cx - 1 * s, baseY - 22 * s, 2 * s, 4 * s, PALETTE.gold);
+    rect(ctx, cx - 2 * s, baseY - 23 * s, 4 * s, 1 * s, PALETTE.goldLt);
+    rect(ctx, cx - 19 * s, baseY, 38 * s, 2 * s, PALETTE.ink);
+    hline(ctx, cx - 19 * s, baseY, 38 * s, PALETTE.goldDk);
   }
 
   drawCell(ctx, state, index, view) {
     const cell = BOARD_CELLS[index];
     const r = this.cellRect(index);
     const inst = this.getInstitutionState(state, index);
+    const isCorner = BOARD_SHAPE.cornerIndices.includes(index);
 
-    rect(ctx, r.x, r.y, r.w, r.h, this.cellBaseColor(index, inst));
+    // ===== ① 格子底色：浅米色 + 图地分离 =====
+    const bg = this.cellBaseColor(index, inst, isCorner);
+    rect(ctx, r.x, r.y, r.w, r.h, bg);
 
-    ctx.fillStyle = PALETTE.ink;
-    ctx.fillRect(r.x, r.y, r.w, 1);
-    ctx.fillRect(r.x, r.y + r.h - 1, r.w, 1);
-    ctx.fillRect(r.x, r.y, 1, r.h);
-    ctx.fillRect(r.x + r.w - 1, r.y, 1, r.h);
+    // ===== ② 顶部产权组色条（三层色阶）=====
+    this.drawGroupBar(ctx, cell, r, inst);
 
-    if (this.hoverCell === index) {
-      ctx.fillStyle = 'rgba(224,165,63,0.18)';
-      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-    }
+    // ===== ③ 边框：普通 1px 墨线 =====
+    strokeRect(ctx, r.x, r.y, r.w, r.h, PALETTE.ink);
 
+    // ===== ④ 状态叠加（在文字之前，画在底色层）=====
+    this.drawCellStateOverlay(ctx, state, index, r, inst);
+
+    // ===== ⑤ 主体内容 =====
     if (cell.type === 'institution') {
-      this.drawInstitutionCell(ctx, state, cell, r, inst, view);
+      this.drawInstitutionCell(ctx, state, cell, r, inst, view, isCorner);
     } else {
-      this.drawSpecialCell(ctx, state, cell, r, view);
+      this.drawSpecialCell(ctx, state, cell, r, view, isCorner);
     }
+
+    // ===== ⑥ 当前玩家所在格：黄色呼吸光圈（画在最上层）=====
+    this.drawActiveHalo(ctx, state, index, r);
   }
 
-  cellBaseColor(index, inst) {
+  /**
+   * 顶部产权组色条 —— 主色 + 顶部亮部高光 + 底部暗部阴影。
+   */
+  drawGroupBar(ctx, cell, r, inst) {
+    const barH = Math.max(4, Math.round(r.h * 0.12));
+    let base = PALETTE.dim;
+    let lt = PALETTE.dim;
+    let dk = PALETTE.dim;
+    if (cell.type === 'institution') {
+      if (cell.regulator) {
+        base = REGULATOR_COLOR.base;
+        lt = REGULATOR_COLOR.lt;
+        dk = REGULATOR_COLOR.dk;
+      } else {
+        const g = GROUP_COLORS[cell.group] || GROUP_COLORS.bank;
+        base = g.base; lt = g.lt; dk = g.dk;
+      }
+    } else {
+      const tint = SPECIAL_TINT[cell.special?.id] || { edge: PALETTE.dim };
+      base = tint.edge;
+      lt = tint.edge;
+      dk = PALETTE.ink;
+    }
+    // 抵押 → 降饱和：改用中性灰
+    if (inst && inst.mortgaged) {
+      base = PALETTE.dim; lt = '#6b7488'; dk = '#2c3244';
+    }
+    rect(ctx, r.x + 1, r.y + 1, r.w - 2, barH, base);
+    rect(ctx, r.x + 1, r.y + 1, r.w - 2, 1, lt);      // 顶部高光
+    rect(ctx, r.x + 1, r.y + barH, r.w - 2, 1, dk);  // 底部阴影
+  }
+
+  /**
+   * 格子底色 —— 浅米色系；特殊格用不同底色纹理区分。
+   */
+  cellBaseColor(index, inst, isCorner = false) {
     const cell = BOARD_CELLS[index];
     if (cell.type === 'special') {
-      // 特殊格底色由 drawSpecialCell 覆盖
-      return PALETTE.navyDk;
+      const tint = SPECIAL_TINT[cell.special?.id];
+      if (tint) return tint.bg;
+      return PALETTE.board;
     }
-    if (cell.regulator) return PALETTE.purpleDk || PALETTE.navy;
-    if (inst && inst.mortgaged) return PALETTE.ink;
-    return PALETTE.navy;
+    if (isCorner) return '#ded0b2';
+    if (inst && inst.mortgaged) return '#cfc9bd';  // 降饱和
+    return PALETTE.board;
   }
 
   getInstitutionState(state, index) {
@@ -283,236 +452,398 @@ export class BoardRenderer {
     return null;
   }
 
-  drawInstitutionCell(ctx, state, cell, r, inst, view) {
+  /**
+   * 状态视觉语言 —— 全局统一，四种状态叠加在底色层。
+   *
+   *   · 可购买（未持有、当前玩家够钱）→ 轻微绿色渐变提示
+   *   · 已购买 → 归属玩家色边框 + 小旗帜
+   *   · 抵押 / 禁用 → 降饱和 + 斜线纹理
+   */
+  drawCellStateOverlay(ctx, state, index, r, inst) {
+    const cell = BOARD_CELLS[index];
+
+    // ---- 抵押 / 禁用：斜线纹理 ----
+    if (inst && inst.mortgaged) {
+      this.drawHazardStripes(ctx, r, 'rgba(21,26,38,0.22)');
+    }
+
+    // ---- 可购买：轻微绿色渐变提示 ----
+    if (cell.type === 'institution' && !inst && !cell.regulator) {
+      const cur = state.players && state.players[state.currentPlayerIndex];
+      const isTurn = cur && !cur.isAI && !cur.bankrupt;
+      if (isTurn) {
+        const g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
+        g.addColorStop(0, 'rgba(79,157,85,0.22)');
+        g.addColorStop(1, 'rgba(79,157,85,0.04)');
+        ctx.fillStyle = g;
+        ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+      }
+    }
+
+    // ---- 已购买：归属玩家色边框 + 右上角小旗帜 ----
+    if (inst && inst.player) {
+      const pc = PLAYER_COLORS[inst.player.colorIndex % PLAYER_COLORS.length];
+      // 内描边（2px 玩家色）
+      ctx.fillStyle = pc.main;
+      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, 2);
+      ctx.fillRect(r.x + 1, r.y + r.h - 3, r.w - 2, 2);
+      ctx.fillRect(r.x + 1, r.y + 1, 2, r.h - 2);
+      ctx.fillRect(r.x + r.w - 3, r.y + 1, 2, r.h - 2);
+      // 右上角小旗帜
+      this.drawOwnerFlag(ctx, r, pc.main, pc.lt);
+    }
+  }
+
+  /** 右上角归属小旗 */
+  drawOwnerFlag(ctx, r, color, light) {
+    const fx = r.x + r.w - 9;
+    const fy = r.y + 3;
+    rect(ctx, fx, fy, 1, 8, PALETTE.ink);
+    rect(ctx, fx + 1, fy + 1, 5, 4, color);
+    rect(ctx, fx + 1, fy + 1, 5, 1, light);
+  }
+
+  /**
+   * 当前玩家所在格 —— 黄色呼吸光圈 + 脉冲。
+   *
+   * 呼吸：亮度按时间正弦变化；脉冲：外圈半径周期性扩张。
+   * prefers-reduced-motion 时由调用方冻结 this.time（静态高亮）。
+   */
+  drawActiveHalo(ctx, state, index, r) {
+    const cur = state.players && state.players[state.currentPlayerIndex];
+    if (!cur) return;
+    if (cur.position !== index) return;
+
+    const t = this.time / 900;
+    const pulse = (Math.sin(t * Math.PI * 2) + 1) / 2;   // 0..1
+    const thickness = Math.max(2, Math.round(Math.min(r.w, r.h) * 0.06));
+
+    // 外层脉冲圈（渐隐的黄色描边）
+    const spread = Math.round(1 + pulse * 3);
+    ctx.fillStyle = `rgba(232,169,60,${(0.85 - pulse * 0.45).toFixed(3)})`;
+    ctx.fillRect(r.x - spread, r.y - spread, r.w + spread * 2, thickness);
+    ctx.fillRect(r.x - spread, r.y + r.h - thickness + spread, r.w + spread * 2, thickness);
+    ctx.fillRect(r.x - spread, r.y - spread, thickness, r.h + spread * 2);
+    ctx.fillRect(r.x + r.w - thickness + spread, r.y - spread, thickness, r.h + spread * 2);
+
+    // 内层实心描边（稳定黄框，一眼定位）
+    ctx.fillStyle = PALETTE.gold;
+    ctx.fillRect(r.x, r.y, r.w, thickness);
+    ctx.fillRect(r.x, r.y + r.h - thickness, r.w, thickness);
+    ctx.fillRect(r.x, r.y, thickness, r.h);
+    ctx.fillRect(r.x + r.w - thickness, r.y, thickness, r.h);
+  }
+
+  /**
+   * 机构格 —— 三要素布局：顶部色条 / 名称 / 价格。
+   *
+   * 格子内部结构（自上而下）：
+   *   ① 顶部产权组色条（主 + 亮 + 暗三层）
+   *   ② 机构名称 —— **独占整行宽度**，字号 ≥ 格子高度 1/4，绝不截断
+   *   ③ 价格（左）+ 16×16 建筑图标（右下角徽记）
+   *
+   * ⚠ 可读性铁律：名称必须拿到格子的**全部**宽度。
+   *   旧版「左图标 + 右文字」并排会把 56px 的格子切成 34px 文字区，
+   *   导致「中国工商银行」被截成「中国…」（63 格中 62 格截断）。
+   *   现改为纵向布局：名称独占 52px，4 个汉字完整显示；
+   *   图标挪到右下角与价格同行，避开了名称。
+   */
+  drawInstitutionCell(ctx, state, cell, r, inst, view, isCorner) {
     const gi = GROUP_INDEX[cell.group] ?? 0;
     const isReg = !!cell.regulator;
     const level = inst ? inst.level : cell.tier;
     const owner = inst ? inst.player : null;
     const ownerColor = owner ? PLAYER_COLORS[owner.colorIndex % PLAYER_COLORS.length].main : null;
 
-    const groupBar = { bank: PALETTE.red, broker: PALETTE.neon, insurer: PALETTE.jade, asset: PALETTE.gold }[cell.group] || PALETTE.glass;
+    const barH = Math.max(5, Math.round(r.h * 0.13));
+    const bodyTop = r.y + barH + 1;
+    const bodyH = r.h - barH - 2;
 
-    if (isReg) {
-      // 监管机构格 —— 紫金警示边框 + 专用底色，与普通机构明显不同
-      rect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, PALETTE.purpleDeep);
-      // 双层金边
-      strokeRect(ctx, r.x + 2, r.y + 2, r.w - 4, r.h - 4, PALETTE.gold);
-      strokeRect(ctx, r.x + 4, r.y + 4, r.w - 8, r.h - 8, PALETTE.goldDk);
-      rect(ctx, r.x + 1, r.y + 1, r.w - 2, 3, PALETTE.purple);
-    } else {
-      rect(ctx, r.x + 1, r.y + 1, r.w - 2, 3, groupBar);
+    // ===== 紧凑图标（16×16 原生，整数倍放大），作右下角徽记 =====
+    const icon = getCompactIcon({
+      kind: cell.kind, level, group: cell.group,
+      seed: gi * 31 + (cell.index || 0), regulatorId: cell.regulatorId,
+    });
+    // 图标贴着格子右下角，超出部分允许压到格子边缘（视觉上像徽章）
+    const iconScale = Math.max(1, Math.min(3, Math.floor((r.h * 0.42) / 16) || 1));
+    const iw = icon.width * iconScale;
+    const ih = icon.height * iconScale;
+
+    // ===== 名称：独占整行宽度，必要时拆两行，绝不截断 =====
+    const textX = r.x + 3;
+    const textW = r.w - 6;
+    const { lines: nameLines, size: nameSize } = this.splitNameLines(
+      cell.name, textW, Math.max(12, Math.round(r.h * 0.22)), Math.min(20, Math.round(r.h * 0.32)),
+    );
+    const lineH = Math.ceil(nameSize * 1.12);
+    const priceSize = Math.max(11, Math.min(15, Math.round(r.h * 0.2)));
+    const priceH = Math.ceil(priceSize * 1.2);
+
+    // 名称占据「色条之下、价格之上」的空间，两行则垂直居中
+    const textAreaH = Math.max(lineH * nameLines.length, bodyH - priceH);
+    const nameBlockH = lineH * nameLines.length;
+    const nameTop = bodyTop + (textAreaH - nameBlockH) / 2;
+
+    // ===== 名称 =====
+    ctx.font = `bold ${nameSize}px ${FONT_UI}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = inst && inst.mortgaged ? PALETTE.dim : PALETTE.ink;
+    nameLines.forEach((ln, li) => {
+      const y = nameTop + lineH * li + lineH / 2;
+      ctx.fillText(ln, textX, Math.round(y));
+    });
+
+    // ===== 价格（底部左侧，给右下角图标留出位置）=====
+    const priceText = isReg
+      ? `￥${cell.price}`
+      : `￥${(cell.price[Math.min(4, level)] ?? cell.price[0])}`;
+    const priceY = r.y + r.h - priceH / 2 - 2;
+    const priceW = textW - iw;
+    ctx.font = `bold ${priceSize}px ${FONT_NUM}`;
+    ctx.fillStyle = inst && inst.mortgaged ? PALETTE.dim : PALETTE.redDk;
+    ctx.fillText(this.fitText(ctx, priceText, priceW), textX, Math.round(priceY));
+
+    // ===== 建筑图标（右下角徽记）=====
+    if (iw > 0) {
+      const ix = Math.round(r.x + r.w - iw - 1);
+      const iy = Math.round(r.y + r.h - ih - 1);
+      // 图标底部 1px 墨色投影，把建筑「压」在浅底格子上
+      ctx.fillStyle = 'rgba(21,26,38,0.22)';
+      ctx.fillRect(ix + 2, iy + ih, Math.max(1, iw - 4), 1);
+      ctx.drawImage(icon, ix, iy, iw, ih);
     }
 
-    const sprite = getInstitutionSprite(cell, level, ownerColor, gi);
-    const s = this.scale;
-    const sw = sprite.width * s;
-    const sh = sprite.height * s;
-    // ===== 分区布局 =====
-    // 顶部条：等级 + 名称（高 18px）
-    // 左侧：机构立绘（宽 spriteW）
-    // 右侧：棋子的行走/站位区（其余宽度）
-    // 底部条：归属牌 / 代码（高 16px）
-    const topBar = 18;
-    const botBar = 16;
-    const bodyTop = r.y + topBar;
-    const bodyH = r.h - topBar - botBar;
-    const bodyW = r.w - 4;
-
-    // 立绘：占据左侧 spriteW 宽度，垂直居中于主体区
-    const spriteZoneW = Math.min(bodyW - 34, Math.max(sw + 2, Math.floor(bodyW * 0.34)));
-    const sx = Math.round(r.x + 2 + (spriteZoneW - sw) / 2);
-    const sy = Math.round(bodyTop + (bodyH - sh) / 2 + (bodyH - sh) * 0.12);
-
-    ctx.fillStyle = PALETTE.ink;
-    ctx.fillRect(sx + 2, sy + sh - 1, sw - 4, 1);
-    ctx.drawImage(sprite, sx, sy, sw, sh);
-
-    if (cell.landmark) {
-      ctx.fillStyle = PALETTE.goldDk;
-      ctx.fillRect(sx - 1, sy - 1, sw + 2, 1);
-      ctx.fillRect(sx - 1, sy + sh, sw + 2, 1);
-      ctx.fillRect(sx - 1, sy, 1, sh);
-      ctx.fillRect(sx + sw, sy, 1, sh);
-    }
-
-    // ===== 顶部信息栏：等级 + 名称 =====
-    const barY = r.y + 5;
+    // ===== 监管角标（右上角）=====
     if (isReg) {
       this.drawRegulatorBadge(ctx, r);
-    } else {
+    }
+
+    // ===== 等级星标（左上角，压在色条上）=====
+    if (!isReg) {
       this.drawLevelBadge(ctx, r, level);
     }
 
-    ctx.font = '10px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = inst && inst.mortgaged ? PALETTE.glassDk : PALETTE.paper;
-    const nameX = r.x + (isReg ? 6 : 28);
-    ctx.fillText(this.shortName(cell.name), nameX, barY + 9);
-
-    // ===== 底部信息栏：归属牌 / 代码 =====
+    // ===== 归属标记 =====
     if (owner) {
-      const plate = getTickerPlate(cell.code, ownerColor, Math.min(30, Math.max(16, r.w - 10)), 7);
-      const pw = plate.width;
-      ctx.drawImage(plate, Math.round(r.x + (r.w - pw) / 2), r.y + r.h - 9);
-      // 归属色带 —— 沿格子右侧竖条，玩家一眼可辨归属
-      rect(ctx, r.x + r.w - 4, r.y + 5, 3, r.h - 6, ownerColor);
-      // 归属者首字标记
-      ctx.font = '9px "Microsoft YaHei", sans-serif';
-      ctx.fillStyle = ownerColor;
-      ctx.textAlign = 'right';
-      ctx.fillText(owner.name.slice(0, 1), r.x + r.w - 6, barY + 9);
-      ctx.textAlign = 'left';
-    } else {
-      ctx.font = '8px monospace';
-      ctx.fillStyle = PALETTE.glass;
+      const pc = PLAYER_COLORS[owner.colorIndex % PLAYER_COLORS.length];
+      rect(ctx, r.x + 2, r.y + r.h - 4, 10, 2, pc.main);
+    } else if (inst && inst.mortgaged) {
+      ctx.font = `${Math.max(8, Math.round(r.h * 0.13))}px ${FONT_UI}`;
+      ctx.fillStyle = PALETTE.dim;
       ctx.textAlign = 'center';
-      ctx.fillText(cell.code, Math.round(r.x + r.w / 2), r.y + r.h - 4);
-      ctx.textAlign = 'left';
+      ctx.fillText('已质押', Math.round(r.x + r.w / 2), Math.round(r.y + r.h - 8));
     }
 
-    if (inst && inst.mortgaged) {
-      const flag = getFlagIcon(PALETTE.glass);
-      ctx.drawImage(flag, r.x + 2, r.y + r.h - 26, flag.width, flag.height);
-      ctx.font = '8px "Microsoft YaHei", sans-serif';
-      ctx.fillStyle = PALETTE.glass;
-      ctx.fillText('质押', r.x + 11, r.y + r.h - 18);
-    }
-  }
-
-  /** 等级徽章 —— 左上角实心方块 + Lv 数字，深底保证可读 */
-  drawLevelBadge(ctx, r, level) {
-    const n = Math.max(0, Math.min(4, level));
-    const x0 = r.x + 3;
-    const y = r.y + 6;
-    rect(ctx, x0 - 1, y - 1, n * 4 + 3, 5, PALETTE.ink);
-    for (let i = 0; i < n; i++) {
-      ctx.fillStyle = PALETTE.gold;
-      ctx.fillRect(x0 + i * 4, y, 3, 3);
-      ctx.fillStyle = PALETTE.goldLt;
-      ctx.fillRect(x0 + i * 4, y, 3, 1);
-    }
-    ctx.font = '8px monospace';
-    ctx.fillStyle = PALETTE.goldLt;
-    ctx.textAlign = 'left';
-    ctx.fillText(`L${n}`, x0 + n * 4 + 2, y + 3);
-    ctx.textAlign = 'left';
-  }
-
-  /** 监管机构角标 —— 「监管」二字 + 不可升级提示 */
-  drawRegulatorBadge(ctx, r) {
-    const label = '监管';
-    ctx.font = '9px "Microsoft YaHei", sans-serif';
-    const w = ctx.measureText(label).width + 6;
-    const bx = r.x + 3;
-    const by = r.y + 5;
-    rect(ctx, bx, by, w, 11, PALETTE.purple);
-    rect(ctx, bx, by, w, 1, PALETTE.gold);
-    ctx.fillStyle = PALETTE.goldLt;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, bx + w / 2, by + 6);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
   }
 
-  drawSpecialCell(ctx, state, cell, r, view) {
-    const sp = cell.special;
-    const specialBg = {
-      start: 'goldDk', clearing: 'neonDk', metro: 'redDk',
-      crossborder: 'jadeDk', tax: 'glassDk', charity: 'redDeep',
-      fine: 'amberDk', event: 'navyLt', market: 'glassDeep',
-      audit: 'redDk', risk: 'amberDk', refinance: 'jadeDk',
-      rating: 'goldDk', commodity: 'amberDk', roadshow: 'neonDk',
-    }[sp.id] || 'navyDk';
-
-    rect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, specialBg);
-    ctx.fillStyle = PALETTE.ink;
-    ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, 1);
-
-    // 陷阱格 —— 斜向警戒纹，视觉上与普通特殊格区分开
-    if (sp.trap) {
-      this.drawHazardStripes(ctx, r);
-      // 红色警戒角标
-      rect(ctx, r.x + 1, r.y + 1, 5, 5, PALETTE.red);
-      rect(ctx, r.x + 1, r.y + 1, 3, 3, PALETTE.redLt || PALETTE.paper);
-    } else {
-      // 普通特殊格顶部加一条装饰边，标记其为「功能格」
-      rect(ctx, r.x + 1, r.y + 1, r.w - 2, 2, PALETTE.goldDk);
+  /**
+   * 等级徽章 —— 顶部色条上的金色方块（墨色描边，等级越高块越多）。
+   * 压在深色组色条上依然醒目，一眼读出「网点/支行/分行/总部/地标」档位。
+   */
+  drawLevelBadge(ctx, r, level) {
+    const n = Math.max(0, Math.min(4, level));
+    if (n <= 0) return;
+    const s = Math.max(4, Math.min(6, Math.round(r.h * 0.085)));
+    const y = r.y + 1;
+    const x0 = r.x + 2;
+    for (let i = 0; i < n; i++) {
+      const x = x0 + i * (s + 1);
+      ctx.fillStyle = PALETTE.ink;      // 墨色描边
+      ctx.fillRect(x, y, s + 1, s + 1);
+      ctx.fillStyle = PALETTE.goldLt;   // 亮金填充
+      ctx.fillRect(x, y, s, s);
     }
-
-    const icon = getSpecialIcon(sp.icon);
-    const s = this.scale;
-    const iw = icon.width * s;
-    const ih = icon.height * s;
-    // 与普通机构格一致：图标在左侧，右侧留给棋子
-    const topBar = 18;
-    const botBar = 16;
-    const bodyTop = r.y + topBar;
-    const bodyH = r.h - topBar - botBar;
-    const spriteZoneW = Math.min(r.w - 4 - 34, Math.max(iw + 2, Math.floor((r.w - 4) * 0.34)));
-    const ix = Math.round(r.x + 2 + (spriteZoneW - iw) / 2);
-    const iy = Math.round(bodyTop + (bodyH - ih) / 2 + (bodyH - ih) * 0.12);
-    ctx.drawImage(icon, ix, iy, iw, ih);
-
-    // 顶部：名称（特殊格用金色小标区分）
-    ctx.font = '10px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = PALETTE.goldLt;
-    ctx.fillText(this.shortName(sp.short, 8), r.x + 5, r.y + 14);
-
-    // 底部：金额 / 说明
-    ctx.textAlign = 'center';
-    if (sp.amount) {
-      ctx.font = '9px monospace';
-      ctx.fillStyle = PALETTE.amber;
-      ctx.fillText(`-${sp.amount}`, Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    } else if (sp.amountRange) {
-      const lo = Math.min(...sp.amountRange);
-      const hi = Math.max(...sp.amountRange);
-      ctx.font = '9px monospace';
-      ctx.fillStyle = PALETTE.amber;
-      ctx.fillText(`-${lo}~${hi}`, Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    } else if (sp.trap) {
-      ctx.font = '9px "Microsoft YaHei", sans-serif';
-      ctx.fillStyle = PALETTE.redLt || PALETTE.paper;
-      ctx.fillText('陷阱 · 监管处罚', Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    } else if (sp.id === 'refinance') {
-      ctx.font = '9px monospace';
-      ctx.fillStyle = PALETTE.jadeLt || PALETTE.paper;
-      ctx.fillText('债券发行 · 需≥2人认购', Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    } else if (sp.id === 'start') {
-      ctx.font = '9px monospace';
-      ctx.fillStyle = PALETTE.goldLt;
-      ctx.fillText('每圈补贴 ￥200 · 可贷款', Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    } else {
-      ctx.font = '9px monospace';
-      ctx.fillStyle = PALETTE.glass;
-      ctx.fillText(sp.code || '', Math.round(r.x + r.w / 2), r.y + r.h - 3);
-    }
-    ctx.textAlign = 'left';
   }
 
-  /** 陷阱格斜向警戒纹 */
-  drawHazardStripes(ctx, r) {
-    const step = 7;
+  /** 监管机构角标 —— 紫底金字 */
+  drawRegulatorBadge(ctx, r) {
+    const label = '监管';
+    const fs = Math.max(8, Math.min(11, Math.round(r.h * 0.13)));
+    ctx.font = `${fs}px ${FONT_UI}`;
+    const w = ctx.measureText(label).width + 6;
+    const h = fs + 3;
+    const bx = r.x + r.w - w - 2;
+    const by = r.y + 2;
+    rect(ctx, bx, by, w, h, REGULATOR_COLOR.base);
+    ctx.fillStyle = PALETTE.goldLt;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, bx + w / 2, by + h / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * 特殊格 —— 大图标 + 标题 + 功能说明。
+   * 角格（起点等）用更大的图标与专属底色纹理，与普通特殊格明显区分。
+   */
+  drawSpecialCell(ctx, state, cell, r, view, isCorner) {
+    const sp = cell.special;
+    const barH = Math.max(5, Math.round(r.h * 0.13));
+    const bodyTop = r.y + barH + 1;
+    const bodyH = r.h - barH - 2;
+
+    // ---- 陷阱格：斜向警戒纹（只铺在顶部色条带内，不横穿文字）----
+    if (sp.trap) {
+      this.drawHazardStripesIn(ctx, r, 'rgba(200,57,43,0.30)', r.y + 1, barH);
+      rect(ctx, r.x + 2, r.y + 2, 6, 6, PALETTE.red);
+      rect(ctx, r.x + 3, r.y + 3, 4, 4, PALETTE.redLt);
+    }
+
+    // ---- 大图标（右上角徽记，整数倍放大）----
+    const descH = Math.max(10, Math.round(r.h * 0.19));
+    const iconScale = Math.max(1, Math.min(4, Math.floor((r.h * 0.46) / 16)));
+    const icon = getSpecialIcon(sp.icon);
+    let iw = icon.width * iconScale;
+    let ih = icon.height * iconScale;
+    const maxH = bodyH - 4;
+    const maxW = r.w - 8;
+    if (ih > maxH || iw > maxW) {
+      const k = Math.max(1, Math.floor(Math.min(maxH / icon.height, maxW / icon.width)));
+      iw = icon.width * k;
+      ih = icon.height * k;
+    }
+
+    // ---- 标题：独占整行宽度，必要时拆两行 ----
+    const titleText = sp.short || sp.name;
+    const textX = r.x + 3;
+    const textW = r.w - 6;
+    const { lines: titleLines, size: titleSize } = this.splitNameLines(
+      titleText, textW, Math.max(12, Math.round(r.h * 0.22)), Math.min(20, Math.round(r.h * 0.32)),
+    );
+    const titleLineH = Math.ceil(titleSize * 1.12);
+    const descSize = Math.max(10, Math.min(13, Math.round(r.h * 0.17)));
+
+    // 标题块占据「色条之下、说明之上」
+    const titleBlockH = titleLineH * titleLines.length;
+    const titleAreaH = Math.max(titleBlockH, bodyH - descH);
+    const titleTop = bodyTop + (titleAreaH - titleBlockH) / 2;
+
+    ctx.font = `bold ${titleSize}px ${FONT_UI}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = PALETTE.ink;
+    titleLines.forEach((ln, li) => {
+      const y = titleTop + titleLineH * li + titleLineH / 2;
+      ctx.fillText(ln, textX, Math.round(y));
+    });
+
+    // 图标放右上角，压在色条上（背景浅，不与文字冲突）
+    if (iw > 0) {
+      const ix = Math.round(r.x + r.w - iw - 2);
+      const iy = Math.round(r.y + 1);
+      ctx.drawImage(icon, ix, iy, iw, ih);
+    }
+
+    // ---- 说明文字（底部一行）----
+    let desc = '';
+    if (sp.amount) desc = `-￥${sp.amount}`;
+    else if (sp.amountRange) {
+      const lo = Math.min(...sp.amountRange);
+      const hi = Math.max(...sp.amountRange);
+      desc = `-￥${lo}~${hi}`;
+    } else if (sp.trap) desc = '陷阱 · 处罚';
+    else if (sp.id === 'refinance') desc = '债券发行';
+    else if (sp.id === 'start') desc = '每圈+￥200';
+    else desc = sp.code || '';
+
+    ctx.font = `${descSize}px ${FONT_UI}`;
+    ctx.fillStyle = sp.trap ? PALETTE.redDk : PALETTE.dim;
+    ctx.fillText(this.fitText(ctx, desc, textW), textX, Math.round(r.y + r.h - descH / 2 - 2));
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /** 斜线纹理（禁用 / 陷阱）—— 铺满整格 */
+  drawHazardStripes(ctx, r, color) {
+    this.drawHazardStripesIn(ctx, r, color, r.y + 1, r.h - 2);
+  }
+
+  /**
+   * 斜线纹理 —— 只在指定高度区间内绘制。
+   *
+   * 陷阱格若整格铺斜线，会横穿标题文字，严重损害可读性。
+   * 这里把斜纹限制在「顶部色条」高度内：既能一眼看出是陷阱格，
+   * 又不会干扰下方的机构名与说明文字。
+   */
+  drawHazardStripesIn(ctx, r, color, top, height) {
+    const step = 8;
+    if (height <= 0) return;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    ctx.rect(r.x + 1, top, r.w - 2, height);
     ctx.clip();
-    for (let d = -r.h; d < r.w + r.h; d += step) {
-      for (let y = r.y + 1; y < r.y + r.h - 1; y += step) {
-        ctx.fillStyle = ((Math.floor((y - r.y) / step) % 2 === 0) ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.05)');
+    ctx.fillStyle = color;
+    for (let d = -height; d < r.w + height; d += step) {
+      for (let y = top; y < top + height; y += step) {
         ctx.fillRect(r.x + 1 + d, y, step, step);
       }
     }
     ctx.restore();
   }
 
-  shortName(name, max = 7) {
-    if (name.length <= max) return name;
-    let s = name.replace(/^中国/, '').replace(/股份有限公司$/, '');
-    if (s.length <= max) return s;
-    return s.slice(0, max - 1) + '…';
+  /**
+   * 字号自适应 —— 保证不超出给定宽度，且不低于下限。
+   */
+  fitFontSize(maxWidth, minSize, maxSize, text) {
+    const len = Math.max(1, text.length);
+    let size = Math.floor(maxSize);
+    while (size > minSize && size * len > maxWidth * 1.05) {
+      size -= 1;
+    }
+    return Math.max(Math.floor(minSize), size);
+  }
+
+  /**
+   * 把过长的中文名**拆成两行**（而不是截断成「中国…」）。
+   *
+   * 可读性铁律：地块名必须完整可读。56px 的格子在 14px 字号下
+   * 一行只放得下 3 个汉字，「中国工商银行」会被截成「中国…」。
+   * 这里按「尽量均分」把名字切成两行：
+   *   「中国工商银行」 → 「中国工商」/「银行」
+   *   「城东银行」     → 「城东」/「银行」（≤4 字则仍单行）
+   *
+   * @returns {{lines: string[], size: number}}
+   */
+  splitNameLines(name, maxWidth, minSize, maxSize) {
+    if (!name) return { lines: [''], size: maxSize };
+
+    // 单行能放下就单行（字号取上限）
+    const single = this.fitFontSize(maxWidth, minSize, maxSize, name);
+    this.ctx.font = `bold ${single}px ${FONT_UI}`;
+    if (this.ctx.measureText(name).width <= maxWidth) {
+      return { lines: [name], size: single };
+    }
+
+    // 需要两行：在 [minSize, maxSize] 内找一个能放下半名的字号
+    const mid = Math.ceil(name.length / 2);
+    let size = Math.floor(maxSize);
+    while (size > minSize) {
+      this.ctx.font = `bold ${size}px ${FONT_UI}`;
+      const w1 = this.ctx.measureText(name.slice(0, mid)).width;
+      const w2 = this.ctx.measureText(name.slice(mid)).width;
+      if (Math.max(w1, w2) <= maxWidth) break;
+      size -= 1;
+    }
+    this.ctx.font = `bold ${size}px ${FONT_UI}`;
+    return { lines: [name.slice(0, mid), name.slice(mid)], size };
+  }
+
+  /**
+   * 文本裁剪 —— 按可用宽度截断并加省略号。
+   */
+  fitText(ctx, text, maxWidth) {
+    if (!text) return '';
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let s = text;
+    while (s.length > 1 && ctx.measureText(s + '…').width > maxWidth) {
+      s = s.slice(0, -1);
+    }
+    return s + '…';
   }
 
   drawTokens(ctx, state, view) {
@@ -520,7 +851,6 @@ export class BoardRenderer {
     const movingId = view.moveAnim ? view.moveAnim.playerId : null;
     for (const p of state.players) {
       if (p.bankrupt) continue;
-      // 正在移动的玩家由动画单独绘制，不参与静态站位排布
       if (movingId !== null && p.id === movingId) continue;
       if (!byCell.has(p.position)) byCell.set(p.position, []);
       byCell.get(p.position).push(p);
@@ -529,8 +859,8 @@ export class BoardRenderer {
     for (const [cellIndex, players] of byCell) {
       const r = this.cellRect(cellIndex);
       const n = players.length;
-      // 多人同格 —— 在格子底部的「站位区」内均匀分布，避免互相遮挡
       const slots = this.tokenSlots(r, n);
+      const ts = this.tokenScale(r);
       players.forEach((p, i) => {
         const sprites = getAvatarSprites(p.avatar, p.colorIndex);
         const anim = view.moveAnim && view.moveAnim.playerId === p.id ? view.moveAnim : null;
@@ -539,8 +869,6 @@ export class BoardRenderer {
         if (anim) {
           tx = anim.x;
           ty = anim.y;
-          // sprites 是 { down, up, left, right, idle } 的方向字典，
-          // 每项为 2 帧行走循环。anim.dir 由 MoveAnimator 依据移动方向给出。
           const dirSprites = sprites[anim.dir] || sprites.down;
           sprite = dirSprites[anim.frame % dirSprites.length] || sprites.down[0];
         } else {
@@ -550,27 +878,21 @@ export class BoardRenderer {
           sprite = sprites.down[0];
         }
 
-        const s = this.scale;
+        const s = ts;
         const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
 
-        // ===== 棋子底座 =====
-        // 站台圆盘把棋子与地面分隔开，避免与机构建筑「融」在一起。
-        // 底座用原生像素坐标绘制，再按 scale 放大，边缘保持锐利。
+        // 底座对齐到棋子脚下（16×24 原生，脚底 = y + 24*s）
         const baseCx = tx + 8 * s;
         const baseCy = ty + 23 * s;
         this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main);
 
         if (anim && anim.squash) {
-          // 挤压动画：整体压扁 / 拉长。
-          // 描边必须跟着一起缩放，否则轮廓会与剪影错位 —— 所以先把
-          // 「带描边的精灵」烘焙到离屏画布，再整体缩放绘制。
           const sq = anim.squash;
           const outlined = this.outlinedSprite(sprite, pc.main);
-          const pad = 2; // outlinedSprite 的留白
+          const pad = 2;
           ctx.save();
           ctx.translate(Math.round(tx + 8 * s), Math.round(ty + 24 * s));
           ctx.scale(sq.sx, sq.sy);
-          // outlined 画布比本体大 pad*2，绘制时向左上偏移 pad 并放大到本体尺寸+留白
           ctx.drawImage(
             outlined,
             -(8 + pad) * s,
@@ -580,26 +902,23 @@ export class BoardRenderer {
           );
           ctx.restore();
         } else {
-          // 双层描边：墨色压边 + 玩家亮色识别边，紧贴人物剪影
           this.drawTokenOutline(ctx, sprite, tx, ty, s, pc.main);
         }
 
-        // 玩家名牌（仅当前回合玩家显示，避免拥挤）
-        if (state.currentPlayerIndex === p.index && !anim) {
-          this.drawTurnArrow(ctx, tx + 8 * s, ty - 7);
-          this.drawTokenNameTag(ctx, tx + 8 * s, ty - 10, p.name, pc.main);
+        // 名牌 —— 站在格子上的**所有玩家**都挂名牌；当前回合玩家额外有箭头 + 金色高亮
+        if (!anim) {
+          const isCur = state.currentPlayerIndex === p.index;
+          if (isCur) this.drawTurnArrow(ctx, tx + 8 * s, ty - 7);
+          this.drawTokenNameTag(ctx, tx + 8 * s, ty - 10, p.name, pc.main, isCur);
         }
       });
     }
   }
 
-  /**
-   * 绘制棋子底座（深色站台圆盘 + 玩家色高光边）。
-   */
+  /** 棋子底座（深色站台 + 玩家色高光边） */
   drawTokenBase(ctx, cx, cy, s, glow) {
     const rx = Math.round(7 * s);
     const ry = Math.max(2, Math.round(3 * s));
-    // 主体：逐行椭圆
     for (let y = -ry; y <= ry; y++) {
       const t = (y + ry) / (ry * 2);
       const k = Math.sqrt(Math.max(0, 1 - (t * 2 - 1) ** 2));
@@ -608,17 +927,11 @@ export class BoardRenderer {
       ctx.fillStyle = PALETTE.ink;
       ctx.fillRect(Math.round(cx - rowRx), Math.round(cy - ry + y), rowRx * 2 + 1, 1);
     }
-    // 上缘亮色高光（1px），让底座有受光感
     ctx.fillStyle = glow;
     ctx.fillRect(Math.round(cx - rx + 1), Math.round(cy - ry), Math.max(0, (rx - 1) * 2), 1);
   }
 
-  /**
-   * 绘制棋子描边 —— 墨色压边 + 玩家亮色识别边。
-   *
-   * 直接沿人物剪影描边（而非套矩形框），这样披风 / 金锭 / 公文包伸出身体时
-   * 轮廓依然贴合，能与建筑立绘明确区分开。
-   */
+  /** 棋子双层描边 */
   drawTokenOutline(ctx, sprite, x, y, s, glow) {
     const w = sprite.width;
     const h = sprite.height;
@@ -628,15 +941,9 @@ export class BoardRenderer {
       return;
     }
     this.paintOutline(ctx, alpha, w, h, x, y, s, glow);
-    // ---- 本体 ----
     ctx.drawImage(sprite, Math.round(x), Math.round(y), w * s, h * s);
   }
 
-  /**
-   * 生成「带描边的棋子精灵」离屏画布 —— 供挤压动画整体缩放使用。
-   *
-   * 描边先烘焙进精灵，再跟随 squash 一起缩放，轮廓与剪影始终贴合。
-   */
   outlinedSprite(sprite, glow) {
     if (!this._outlinedCache) this._outlinedCache = new WeakMap();
     const cached = this._outlinedCache.get(sprite);
@@ -644,7 +951,7 @@ export class BoardRenderer {
 
     const w = sprite.width;
     const h = sprite.height;
-    const pad = 2; // 墨色外扩 2px 的留白
+    const pad = 2;
     const cv = document.createElement('canvas');
     cv.width = w + pad * 2;
     cv.height = h + pad * 2;
@@ -655,7 +962,6 @@ export class BoardRenderer {
     if (!alpha) {
       ctx.drawImage(sprite, pad, pad);
     } else {
-      // 在留白画布上以 pad 为原点描边
       this.paintOutline(ctx, alpha, w, h, pad, pad, 1, glow);
       ctx.drawImage(sprite, pad, pad);
     }
@@ -664,22 +970,15 @@ export class BoardRenderer {
     return cv;
   }
 
-  /**
-   * 在目标上下文上沿剪影绘制双层描边（不含本体）。
-   *
-   * 第一层：墨色外扩 2px —— 把人物从深色背景里「抠」出来；
-   * 第二层：玩家亮色 1px —— 紧贴剪影，标记归属玩家。
-   */
   paintOutline(ctx, alpha, w, h, x, y, s, glow) {
     const ink = PALETTE.ink;
-    // ---- 第一层：墨色外扩 2px（把人物从背景抠出来）----
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
         if (alpha[py * w + px] !== 0) continue;
         if (!this.nearOpaque(alpha, w, h, px, py)) continue;
         for (let oy = -2; oy <= 2; oy++) {
           for (let ox = -2; ox <= 2; ox++) {
-            if (Math.abs(ox) < 2 && Math.abs(oy) < 2) continue; // 内圈留给亮色边
+            if (Math.abs(ox) < 2 && Math.abs(oy) < 2) continue;
             const nx = px + ox;
             const ny = py + oy;
             if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
@@ -690,7 +989,6 @@ export class BoardRenderer {
         }
       }
     }
-    // ---- 第二层：玩家亮色识别边（紧贴剪影 1px）----
     ctx.fillStyle = glow;
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
@@ -701,11 +999,10 @@ export class BoardRenderer {
     }
   }
 
-  /** 取精灵 alpha 通道（带缓存） */
   tokenAlpha(sprite) {
     if (!sprite || !sprite.getContext) return null;
-    if (this._alphaCache && this._alphaCache.has(sprite)) return this._alphaCache.get(sprite);
     if (!this._alphaCache) this._alphaCache = new WeakMap();
+    if (this._alphaCache.has(sprite)) return this._alphaCache.get(sprite);
     let alpha = null;
     try {
       const sctx = sprite.getContext('2d');
@@ -719,7 +1016,6 @@ export class BoardRenderer {
     return alpha;
   }
 
-  /** 8 邻域是否有不透明像素 */
   nearOpaque(alpha, w, h, px, py) {
     for (let oy = -1; oy <= 1; oy++) {
       for (let ox = -1; ox <= 1; ox++) {
@@ -734,123 +1030,80 @@ export class BoardRenderer {
   }
 
   /**
-   * 计算同一格内 N 个棋子的站位（绝对坐标）。
-   * 棋子站在格子底部靠下方的「站台带」上，按人数排成 1~2 排，
-   * 既不会压住机构立绘，也不会彼此重叠。
+   * 棋子缩放倍数 —— 按格子实际尺寸自适应，始终**整数倍**（nearest-neighbor）。
+   *
+   * 棋子原生 16×24。格子 60px 时 1 倍只有 24px 高（占 40%），
+   * 太小看不清；2 倍则 48px 高会盖住名称。这里取「能塞进站立带的最大整数倍」。
    */
+  tokenScale(r) {
+    const bandH = Math.max(16, Math.round(r.h * 0.34));   // 底部站立带高度
+    return Math.max(1, Math.min(3, Math.floor(bandH / 24)));
+  }
+
   /**
-   * 计算同一格内 N 个棋子的站位。
+   * 同一格内 N 个棋子的站位。
    *
-   * 分区规则：
-   *   顶部条 18px（等级 / 名称） + 底部条 16px（归属牌 / 代码）
-   *   中间主体区左侧留给机构立绘，右侧是棋子的行走与站位区
-   *
-   * 站位策略（按主体区实际高度自适应）：
-   *   · 高度够时 —— 排成 1~3 列 × N 排，后排抬高形成前后层次；
-   *   · 高度不够时（小窗口 / scale=1）—— 改用「横向错位单排」，
-   *     每个人依次向右偏移半个身位并交替上下微调，保证四人同格也能互相区分，
-   *     不会像旧实现那样全部被 Math.max 钳制到同一个坐标而完全重叠。
+   * 棋子统一站在格子**底部的站台带**上，横向排布：
+   *   · 永远完整落在格子内（不越界、不被画布裁掉）；
+   *   · 多人同格时按列排开，超出宽度则错位成多排并抬高后排；
+   *   · 不遮挡上方的机构名称与价格（可读性优先）。
    */
   tokenSlots(r, n) {
-    const s = this.scale;
+    const s = this.tokenScale(r);
     const w = 16 * s;
     const h = 24 * s;
-    const topBar = 18;
-    const botBar = 16;
-    const bodyTop = r.y + topBar;
-    const bodyH = r.h - topBar - botBar;
-
-    // 左侧立绘区宽度（与 drawInstitutionCell 保持一致）
-    const spriteZoneW = Math.min(r.w - 4 - 34, Math.max(w + 2, Math.floor((r.w - 4) * 0.34)));
-    // 站位区起点
-    const zoneX = r.x + 2 + spriteZoneW;
-    const zoneW = Math.max(w, r.w - 4 - spriteZoneW);
+    const barH = Math.max(4, Math.round(r.h * 0.12));
+    const bodyTop = r.y + barH + 1;
+    const bodyH = r.h - barH - 2;
 
     const slots = [];
+    const availW = r.w - 4;
+    const perRow = Math.max(1, Math.min(n, Math.floor((availW + 1) / (w + 1)) || 1));
+    const rows = Math.ceil(n / perRow);
 
-    // ===== 情况 A：主体区够高 —— 正常多排布局 =====
-    if (bodyH >= h * 0.75) {
-      const perRow = Math.max(1, Math.min(3, Math.floor((zoneW - 2) / (w + 1))));
-      const rows = Math.ceil(n / perRow);
-      for (let i = 0; i < n; i++) {
-        const row = Math.floor(i / perRow);
-        const col = i % perRow;
-        const inRow = Math.min(perRow, n - row * perRow);
-        // 每排水平居中（相对站位区）
-        const rowW = inRow * (w + 1) - 1;
-        const startX = zoneX + Math.floor((zoneW - rowW) / 2);
-        // 多排时后排抬高，形成前后层次
-        const rowLift = (rows - 1 - row) * Math.floor(h * 0.22);
-        const baseY = bodyTop + bodyH - h - 1;
-        const y = Math.max(bodyTop + 1, baseY - rowLift);
-        const x = startX + col * (w + 1);
-        slots.push({ x, y, dx: x - r.x, dy: y - r.y });
-      }
-      return slots;
-    }
+    // 站立带：贴在格子底部，棋子脚底不越过格子下沿
+    const bandTop = bodyTop + bodyH - h;
+    const rowLift = Math.max(1, Math.floor(h * 0.16));
 
-    // ===== 情况 B：高度不足 —— 横向错位单排 =====
-    // 站位区放不下 n 个人时，允许向左溢出到立绘区（立绘在下方，错位不遮主体），
-    // 让每个人至少错开约 1/4 身位，配合上下微调保证四人同格也能互相区分。
-    // 绝不退化成「全部同一坐标」—— 那样旧实现会出现四人完全重叠、只剩一个的情况。
-    const avail = Math.max(1, zoneW - 2);
-    // 理想步长：身位的 1/4，至少 1px
-    const ideal = Math.max(1, Math.floor(w * 0.25));
-    // 站位区最多能提供的步长
-    const zoneStep = n > 1 ? Math.floor((avail - w) / (n - 1)) : 0;
-    // 若站位区不够，允许向左溢出到立绘区（最多溢出整格宽度的一半）
-    const overflow = Math.max(0, Math.floor((ideal * (n - 1) - Math.max(0, zoneStep)) / (n - 1)));
-    const step = n > 1
-      ? Math.max(1, Math.min(ideal, Math.max(zoneStep, 0) + overflow))
-      : 0;
-
-    // 单排时贴着底边；上下微调让剪影错开
-    // 注意：上下错位以「钳制后的 bodyTop+1」为基准向上/下微调，
-    // 而不是先钳制再加 jitter —— 否则 jitter 会被 Math.max 再次吃掉。
-    const floorY = bodyTop + 1;
-    const ceilY = bodyTop + bodyH - 1;
-    const jitterStep = Math.max(1, Math.round(s));
     for (let i = 0; i < n; i++) {
-      const x = zoneX + i * step;
-      // 奇数位下移 1 格、偶数位上移 1 格，形成锯齿状前后层次
-      // （下移方向朝格子底部，更贴近「站台」）
-      const jitter = (i % 2 === 1 ? 1 : -1) * jitterStep;
-      const y = Math.max(floorY, Math.min(ceilY, floorY + jitter));
+      const row = Math.floor(i / perRow);
+      const col = i % perRow;
+      const inRow = Math.min(perRow, n - row * perRow);
+      const rowW = inRow * (w + 1) - 1;
+      const startX = r.x + 2 + Math.floor((availW - rowW) / 2);
+      // 后排抬高，形成前后层次（但仍在格子内）
+      const y = Math.max(bodyTop + 1, bandTop - (rows - 1 - row) * rowLift);
+      const x = startX + col * (w + 1);
       slots.push({ x, y, dx: x - r.x, dy: y - r.y });
     }
     return slots;
   }
 
-  /**
-   * 供 MoveAnimator 使用的站位查询 —— 返回格内偏移。
-   *
-   * 若该格内有其他玩家，则依次排布；当前移动的玩家占据其应有槽位。
-   * 这样走完最后一格时，人物正好站在与静止态一致的槽位上，不会跳位。
-   */
   slotOffsetFor(state, cellIndex) {
     const r = this.cellRect(cellIndex);
     const others = state.players.filter((p) => !p.bankrupt && p.position === cellIndex);
     const n = Math.max(1, others.length);
     const slots = this.tokenSlots(r, n);
-    // 优先返回第一个槽位（大多数情况下只有一人）
     const slot = slots[0];
     return { dx: slot.dx, dy: slot.dy };
   }
 
-  /** 玩家名小标签 */
-  drawTokenNameTag(ctx, cx, cy, name, color) {
+  /** 玩家名小标签 —— 所有在场玩家都显示；当前回合玩家字号更大、金色顶条 */
+  drawTokenNameTag(ctx, cx, cy, name, color, isCurrent = false) {
     const text = (name || '').slice(0, 4);
-    ctx.font = '9px "Microsoft YaHei", sans-serif';
+    const fs = isCurrent ? 9 : 8;
+    const h = isCurrent ? 12 : 11;
+    ctx.font = `bold ${fs}px ${FONT_UI}`;
     const tw = ctx.measureText(text).width;
     const bw = tw + 6;
     const bx = Math.round(cx - bw / 2);
     const by = Math.round(cy - 10);
-    rect(ctx, bx, by, bw, 11, PALETTE.ink);
-    rect(ctx, bx, by, bw, 1, color);
-    ctx.fillStyle = color;
+    rect(ctx, bx, by, bw, h, PALETTE.ink);
+    rect(ctx, bx, by, bw, 1, isCurrent ? PALETTE.gold : color);
+    ctx.fillStyle = PALETTE.paper;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, Math.round(cx), by + 6);
+    ctx.fillText(text, Math.round(cx), by + h / 2 + 0.5);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
   }

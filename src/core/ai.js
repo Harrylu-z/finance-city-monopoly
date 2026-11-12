@@ -165,6 +165,9 @@ export function decide(state, player, decision, ctx = {}) {
   if (decision === 'mortgage') {
     return decideMortgage(state, player, p, diff);
   }
+  if (decision === 'redeem') {
+    return decideRedeem(state, player, p, diff);
+  }
   return { action: 'idle', reason: '观望' };
 }
 
@@ -293,6 +296,28 @@ function decideMortgage(state, player, p, diff) {
   return { action: 'mortgage', reason, cellIndex: pick.cellIndex };
 }
 
+/** 赎回决策 —— 现金充裕时赎回质押机构，恢复管理费收入与完整市值 */
+function decideRedeem(state, player, p, diff) {
+  const rng = state.rng;
+  const candidates = player.institutions.filter((i) => i.mortgaged);
+  if (!candidates.length) return { action: 'idle', reason: '没有待赎回的资产' };
+
+  // 优先赎回质押额最高的一家 —— 恢复的租金与市值最多
+  let pick = candidates[0];
+  let maxPrincipal = -Infinity;
+  for (const inst of candidates) {
+    const v = inst.mortgageAmount || 0;
+    if (v > maxPrincipal) { maxPrincipal = v; pick = inst; }
+  }
+  const cost = Math.round(maxPrincipal * (1 + CONFIG.redeemFee));
+  // 赎回后仍需留出运营现金，避免刚赎回又被迫质押
+  if (player.cash < cost + 400) {
+    return { action: 'idle', reason: '现金尚不宽裕，暂不赎回' };
+  }
+  const c = BOARD_CELLS[pick.cellIndex];
+  return { action: 'redeem', reason: `赎回${c.name}，恢复管理费收入`, cellIndex: pick.cellIndex, cost };
+}
+
 /** 决策理由模板 —— 按性格挑话术 */
 function pickReason(rng, p, cell, type) {
   const group = GROUP_META[cell.group];
@@ -367,11 +392,17 @@ export function planTurn(state, player) {
 
   const wantMortgage = player.cash < 200 || (p.id === 'leveraged' && rng.next() < 0.22);
 
+  // 质押机构赎回意图：现金足以覆盖「本金+解押费」且留有运营余量
+  const mortgaged = player.institutions.filter((i) => i.mortgaged);
+  const redeemCost = mortgaged.reduce((s, i) => s + Math.round((i.mortgageAmount || 0) * (1 + CONFIG.redeemFee)), 0);
+  const wantRedeem = mortgaged.length > 0 && player.cash >= redeemCost + 400;
+
   let note = '';
   if (wantMortgage) note = '准备质押融资';
+  else if (wantRedeem) note = '现金充裕，考虑赎回质押机构';
   else if (wantUpgrade) note = '现金充裕，考虑扩表';
 
-  return { wantUpgrade, wantMortgage, note };
+  return { wantUpgrade, wantMortgage, wantRedeem, note };
 }
 
 /**

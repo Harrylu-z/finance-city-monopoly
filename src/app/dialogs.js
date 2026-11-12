@@ -248,11 +248,14 @@ export function showInstitutionDialog(player, state, onUpgrade, onMortgage, onRe
       });
       btns.appendChild(bm);
     } else {
-      const fee = redeemFee(inst.mortgageAmount);
+      const principal = inst.mortgageAmount || 0;
+      const fee = redeemFee(principal);
+      const total = principal + fee;
       const br = document.createElement('button');
       br.className = 'pixel-btn pixel-btn-xs';
-      br.textContent = `赎回 ￥${fee}`;
-      br.disabled = player.cash < fee;
+      br.textContent = `赎回 ￥${total}`;
+      br.disabled = player.cash < total;
+      br.title = `需归还质押本金 ￥${principal} + 解押费 ￥${fee}`;
       br.addEventListener('click', (e) => {
         e.stopPropagation();
         onRedeem(inst.cellIndex);

@@ -5,7 +5,8 @@
 import {
   BOARD_CELLS, BOARD_SIZE, BOARD_SHAPE, GROUP_CELLS, REGULATOR_CELLS,
   UPGRADABLE_CELLS, REGULATORS, TRAP_CARDS, SPECIAL, validateBoard, LEVELS,
-  CLEARING_TARGETS,
+  CLEARING_TARGETS, TRACK_POINTS, trackSpacing, trackGap,
+  SIDE_COUNTS, CORNER_INDICES, cellSideInfo,
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
@@ -76,7 +77,7 @@ export function runAll() {
     assert(errors.length === 0, errors.join('; '));
     assert(BOARD_CELLS.length === BOARD_SIZE, `格数 ${BOARD_CELLS.length}`);
     assert(BOARD_SIZE === 63, `应为 63 格，实际 ${BOARD_SIZE}`);
-    assert(BOARD_SHAPE.cols === 9 && BOARD_SHAPE.rows === 7, '应为 9×7 非正方形布局');
+    assert(BOARD_SHAPE.count === 63, '应为正方形环道布局（63 格）');
     assert(GROUP_CELLS.bank.length === 12, `银行组 ${GROUP_CELLS.bank.length} 格（应为 12）`);
     assert(GROUP_CELLS.broker.length === 12, `券商组 ${GROUP_CELLS.broker.length} 格（应为 12）`);
     assert(GROUP_CELLS.insurer.length === 12, `保险组 ${GROUP_CELLS.insurer.length} 格（应为 12）`);
@@ -85,9 +86,146 @@ export function runAll() {
     assert(UPGRADABLE_CELLS.length === 45, `可升级格 ${UPGRADABLE_CELLS.length} 个（应为 45）`);
     const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
     assert(specials === 14, `特殊格 ${specials} 个（应为 14）`);
-    // 环形拓扑闭合：每条边 9 格
-    assert(BOARD_SIZE % BOARD_SHAPE.cols === 0, '每条边格数应为整数');
-    return '63 格 · 9×7 非正方形 · 四大监管机构齐备';
+    return '63 格 · 正方形连续环道 · 四大监管机构齐备';
+  });
+
+  check(results, '棋盘轮廓为严格正方形（宽高比 = 1，不旋转）', () => {
+    const ratio = BOARD_SHAPE.aspect;
+    assert(Math.abs(ratio - 1) < 1e-9, `棋盘宽高比应为 1，实际 ${ratio.toFixed(3)}`);
+    // 轨道包围盒必须也是正方形：所有轨道点的 x/y 极值对称
+    const xs = TRACK_POINTS.map((p) => p[0]);
+    const ys = TRACK_POINTS.map((p) => p[1]);
+    assert(Math.min(...xs) === 0 && Math.max(...xs) === 1000,
+      `轨道 x 范围应为 0..1000，实际 ${Math.min(...xs)}..${Math.max(...xs)}`);
+    assert(Math.min(...ys) === 0 && Math.max(...ys) === 1000,
+      `轨道 y 范围应为 0..1000，实际 ${Math.min(...ys)}..${Math.max(...ys)}`);
+  });
+
+  check(results, '正方形环道：四边格子数正确且角格恰为 4 个', () => {
+    assert(SIDE_COUNTS.right === 17 && SIDE_COUNTS.top === 17 &&
+      SIDE_COUNTS.left === 17 && SIDE_COUNTS.bottom === 16,
+      `边长分配应为 17/17/17/16，实际 ${SIDE_COUNTS.right}/${SIDE_COUNTS.top}/${SIDE_COUNTS.left}/${SIDE_COUNTS.bottom}`);
+    const total = SIDE_COUNTS.right + SIDE_COUNTS.top + SIDE_COUNTS.left + SIDE_COUNTS.bottom - 4;
+    assert(total === BOARD_SIZE, `四边合计（去重角格）应为 ${BOARD_SIZE}，实际 ${total}`);
+    assert(CORNER_INDICES.length === 4, `角格应为 4 个，实际 ${CORNER_INDICES.length}`);
+    // 每个角格都必须落在包围盒四角
+    for (const i of CORNER_INDICES) {
+      const [x, y] = TRACK_POINTS[i];
+      const onCorner = (x === 0 || x === 1000) && (y === 0 || y === 1000);
+      assert(onCorner, `index ${i} 被标记为角格但坐标 (${x},${y}) 不在四角`);
+    }
+    // 每条边的格子数应与实际分布吻合。
+    // 归属约定：角格归「它开始的那条边」，因此每格恰好统计一次：
+    //   右边 16（idx 0..15，其中 0 是右下角）+ 右上角归上边
+    //   上边 16（idx 16..31，其中 16 是右上角）+ 左上角归左边
+    //   左边 16（idx 32..47，其中 32 是左上角）+ 左下角归底边
+    //   底边 15（idx 48..62，其中 48 是左下角）
+    // 合计 16 × 3 + 15 = 63 ✔
+    const counts = { right: 0, top: 0, left: 0, bottom: 0 };
+    for (let i = 0; i < BOARD_SIZE; i++) counts[cellSideInfo(i).side]++;
+    assert(counts.right === 16, `右边实际 ${counts.right} 格（应 16）`);
+    assert(counts.top === 16, `上边实际 ${counts.top} 格（应 16）`);
+    assert(counts.left === 16, `左边实际 ${counts.left} 格（应 16）`);
+    assert(counts.bottom === 15, `底边实际 ${counts.bottom} 格（应 15）`);
+    assert(counts.right + counts.top + counts.left + counts.bottom === BOARD_SIZE,
+      '四边合计应等于 63');
+  });
+
+  check(results, '轨道是单条闭合连续环道（无断裂、无瞬移）', () => {
+    assert(TRACK_POINTS.length === BOARD_SIZE, `轨道采样点 ${TRACK_POINTS.length} ≠ ${BOARD_SIZE}`);
+
+    // ① 采样点互不重合
+    const seen = new Set();
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const p = TRACK_POINTS[i];
+      assert(p, `index ${i} 无轨道坐标`);
+      const key = `${p[0]},${p[1]}`;
+      assert(!seen.has(key), `index ${i} 与其他格重叠于 (${key})`);
+      seen.add(key);
+    }
+
+    // ② 相邻间距必须均匀 —— 这是「连续」的核心保证。
+    //    上一版外环→内环处间距是普通间距的数倍，棋子会瞬移。
+    //    距离按「显示尺度」计算（x 映射 2a、y 映射 2b），
+    //    否则横向被误当成与纵向等长，均匀性结论会失真。
+    const dists = [];
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      dists.push(trackGap(i));
+    }
+    const avg = dists.reduce((s, d) => s + d, 0) / dists.length;
+    const maxD = Math.max(...dists);
+    const minD = Math.min(...dists);
+    assert(avg > 0, '轨道平均间距为 0');
+    // 最大间距不得超过平均间距的 1.2 倍 —— 杜绝「瞬移」
+    assert(maxD <= avg * 1.2,
+      `轨道间距不均：平均 ${avg.toFixed(4)}，最大 ${maxD.toFixed(4)}（#${dists.indexOf(maxD)}）`);
+    // 最小间距不能过小 —— 杜绝格子完全重叠
+    assert(minD >= avg * 0.8,
+      `轨道间距过小：平均 ${avg.toFixed(4)}，最小 ${minD.toFixed(4)}`);
+
+    // ③ 闭合边（62 → 0）也必须满足均匀性
+    const closeGap = dists[BOARD_SIZE - 1];
+    assert(closeGap <= avg * 1.2, `闭合边间距 ${closeGap.toFixed(4)} 过大，绕圈会跳格`);
+
+    // ④ trackSpacing 与实测一致
+    assert(Math.abs(trackSpacing() - avg) < 1e-6, 'trackSpacing 与实测平均间距不符');
+  });
+
+  check(results, '环道围出的中心留白可用于金融城广场', () => {
+    // 中心点 (500,500) 到最近轨道点的距离应足够大 —— 说明中心是空的
+    let minDist = Infinity;
+    for (const p of TRACK_POINTS) {
+      const d = Math.hypot(p[0] - 500, p[1] - 500);
+      if (d < minDist) minDist = d;
+    }
+    const avg = trackSpacing();
+    assert(minDist > avg * 2.5,
+      `中心留白过小：最近轨道点距中心 ${minDist.toFixed(1)}，间距 ${avg.toFixed(4)}`);
+  });
+
+  check(results, '轨道点严格落在包围盒内', () => {
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const [x, y] = TRACK_POINTS[i];
+      assert(x >= 0 && x <= 1000, `index ${i} 的 x=${x} 越界`);
+      assert(y >= 0 && y <= 1000, `index ${i} 的 y=${y} 越界`);
+    }
+  });
+
+  check(results, '所有格子严格水平/垂直对齐（文字绝不倾斜）', () => {
+    // 正方形环道的每条边必须完全水平或完全垂直 —— 这一点决定了
+    // 地块名称与价格永远是水平文字，不会出现菱形布局的斜字。
+    const edges = [
+      { side: 'right',  axis: 'x', value: 1000 },
+      { side: 'top',    axis: 'y', value: 0 },
+      { side: 'left',   axis: 'x', value: 0 },
+      { side: 'bottom', axis: 'y', value: 1000 },
+    ];
+    for (const e of edges) {
+      const idxs = [];
+      for (let i = 0; i < BOARD_SIZE; i++) {
+        if (cellSideInfo(i).side === e.side) idxs.push(i);
+      }
+      for (const i of idxs) {
+        const p = TRACK_POINTS[i];
+        const v = e.axis === 'x' ? p[0] : p[1];
+        assert(v === e.value,
+          `${e.side} 边的 index ${i} 坐标 ${v} 未对齐到 ${e.value}（会破坏水平文字）`);
+      }
+    }
+    // 非角格必须恰好落在一条边上（不可能同时属于两条边）
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const p = TRACK_POINTS[i];
+      const onX = p[0] === 0 || p[0] === 1000;
+      const onY = p[1] === 0 || p[1] === 1000;
+      const onCorner = onX && onY;
+      const side = cellSideInfo(i);
+      if (!onCorner) {
+        assert(onX || onY, `index ${i} 既不在边上也不在角上`);
+        assert(side.corner === false, `index ${i} 被误判为角格`);
+      } else {
+        assert(side.corner === true, `index ${i} 是角格但未被标记`);
+      }
+    }
   });
 
   check(results, '特殊格均匀穿插（任意两个功能格不相邻）', () => {
@@ -593,7 +731,7 @@ export function runAll() {
   });
 
   /* ---------- 质押与赎回 ---------- */
-  check(results, '质押融资与赎回', () => {
+  check(results, '质押融资与赎回（反套利）', () => {
     const state = makeTestState();
     const p = state.players[0];
     const idx = firstInstitution(state);
@@ -608,11 +746,68 @@ export function runAll() {
 
     const afterMv = p.cash;
     const fee = redeemFee(mv.amount);
+    const total = mv.amount + fee;   // 赎回 = 归还本金 + 解押费
     const rd = redeemInstitution(state, p, idx);
     assert(rd.ok, '赎回应成功');
-    assert(p.cash === afterMv - fee, `解押费未扣除：${afterMv} → ${p.cash}`);
+    assert(p.cash === afterMv - total, `赎回未足额扣款（本金+解押费）：${afterMv} → ${p.cash}`);
     assert(p.institutions[0].mortgaged === false, '未解除质押');
-    return `质押 +￥${mv.amount}，赎回 -￥${fee}`;
+    // 反套利核心断言：质押→赎回一进一出必须净亏损，杜绝回合内刷现金
+    assert(p.cash < before, `质押→赎回不应产生净收益：${before} → ${p.cash}`);
+    assert(rd.total === total, '赎回返回的总额应为「本金+解押费」');
+
+    // 现金不足以归还本金+解押费时必须拒绝赎回（旧版只验解押费，可无限套利）
+    const mv2 = mortgageInstitution(state, p, idx);
+    p.cash = redeemFee(mv2.amount);   // 只有解押费、没有本金
+    const rd2 = redeemInstitution(state, p, idx);
+    assert(!rd2.ok, '现金不足以归还本金时应拒绝赎回');
+    assert(p.institutions[0].mortgaged === true, '被拒绝的赎回不应解除质押');
+    return `质押 +￥${mv.amount}，赎回 -￥${total}（净 -￥${before - p.cash + mv2.amount}）`;
+  });
+
+  /* ---------- 质押机构暂停收租 ---------- */
+  check(results, '已质押机构不产生管理费', () => {
+    const state = makeTestState();
+    const owner = state.players[0];
+    const payer = state.players[1];
+    const idx = firstInstitution(state);
+    owner.institutions.push({ cellIndex: idx, level: 2, mortgaged: true, mortgageAmount: 500 });
+    owner.cash = 1000;
+    payer.cash = 1000;
+
+    const results2 = settleOnCell(state, payer, idx);
+    const noRent = results2.find((r) => r.kind === 'mortgaged-no-rent');
+    assert(!!noRent, '踩到已质押机构应触发「暂停收租」而非扣租');
+    assert(payer.cash === 1000, '已质押机构不应收取管理费');
+    assert(owner.cash === 1000, '已质押机构不应给归属人带来收入');
+
+    // 解押后恢复收租
+    owner.institutions[0].mortgaged = false;
+    owner.institutions[0].mortgageAmount = 0;
+    const results3 = settleOnCell(state, payer, idx);
+    const paid = results3.find((r) => r.kind === 'rent-paid');
+    assert(!!paid && paid.rent > 0, '解押后应恢复收取管理费');
+    return `质押 0 租金 → 解押后 ￥${paid ? paid.rent : 0}`;
+  });
+
+  /* ---------- 自身租金系数（评级展望）---------- */
+  check(results, '自身租金系数 selfRentMult 应生效', () => {
+    const state = makeTestState();
+    const owner = state.players[0];
+    const payer = state.players[1];
+    const idx = firstInstitution(state);
+    owner.institutions.push({ cellIndex: idx, level: 1, mortgaged: false, mortgageAmount: 0 });
+    payer.cash = 100000;
+
+    const results2 = settleOnCell(state, payer, idx);
+    const base = results2.find((r) => r.kind === 'rent-paid');
+    assert(!!base, '应产生租金');
+
+    owner.selfRentMult = 1.12;   // 评级上调
+    payer.position = idx;        // 重置位置，再次结算
+    const results3 = settleOnCell(state, payer, idx);
+    const up = results3.find((r) => r.kind === 'rent-paid');
+    assert(up.rent === Math.round(base.rent * 1.12), `评级上调后租金应 ×1.12：${base.rent} → ${up.rent}`);
+    return `基础 ￥${base.rent} → 上调后 ￥${up.rent}`;
   });
 
   /* ---------- 破产判定 ---------- */

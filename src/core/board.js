@@ -302,14 +302,21 @@ export const SPECIAL = {
 export const SPECIAL_IDS = Object.keys(SPECIAL);
 
 /**
- * 棋盘形状 —— 非正方形：9 列 × 7 行 = 63 格
- * 渲染层依此计算每格矩形，逻辑层仍按 index 顺时针推进。
- * 63 可被 9 整除，每条边恰好 7 格，环形拓扑闭合无误差。
- * 横向略宽的版式更适合宽屏 —— 单元格接近正方形，立绘与文字都不挤。
+ * 棋盘形状 —— **经典正方形环道**（不旋转、文字严格水平），共 63 格。
+ *
+ * 四个角各属于两条边。上 / 右 / 左三边各 17 格、底边 16 格，
+ * 合计 17 + 17 + 17 + 16 − 4 = 63 格，环道首尾相连、绝不断裂。
+ * 正方形外形 + 轴对齐格子 → 所有文字严格水平，可读性拉满。
+ *
+ * 形状数据集中在 core/board-shape.js，渲染层依此计算每格矩形，
+ * 逻辑层仍按 index 逆时针推进。
  */
-export const BOARD_SHAPE = { cols: 9, rows: 7 };
+export {
+  BOARD_SHAPE, BOARD_GRID, TRACK, TRACK_POINTS, SIDE_COUNTS, CORNER_INDICES,
+  cellTrackPos, trackSpacing, trackGap, PLAZA_CENTER, cellSideInfo,
+} from './board-shape.js';
 
-export const BOARD_SIZE = BOARD_SHAPE.cols * BOARD_SHAPE.rows; // 63
+export const BOARD_SIZE = 63;
 
 function makeInstitution(groupId, e) {
   const isReg = !!e.regulator;

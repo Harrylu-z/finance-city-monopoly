@@ -211,25 +211,37 @@ export function settleOnCell(state, player, cellIndex) {
     } else {
       // 收租 —— 租金受集团 Buff 与监管效果影响
       const inst = owner.institutions.find((i) => i.cellIndex === cellIndex);
-      const buffMult = buffMultiplierFor(owner, cell.group, state);
-      const rent = calculateRent(cell, inst.level, {
-        market: state.market, eventMult: state.eventMult, buffMult,
-      });
-      player.cash -= rent;
-      owner.cash += rent;
-      player.stats.rentsPaid += rent;
-      owner.stats.rentsCollected += rent;
-      if (rent > owner.stats.largestRent) owner.stats.largestRent = rent;
-      results.push({
-        kind: 'rent-paid', cellIndex, cell, rent,
-        from: player.id, to: owner.id, ownerName: owner.name, buffMult,
-        // 弹窗展示用：基础租金、机构等级、归属人配色、市场系数说明
-        baseRent: cell.rent[inst.level] ?? cell.rent[0] ?? rent,
-        level: inst.level,
-        ownerColorIndex: owner.colorIndex,
-        marketNote: marketNoteFor(state.market),
-      });
-      emit(state, 'rent-paid', { from: player.id, to: owner.id, rent, cellIndex });
+
+      // 已质押的机构暂停产生管理费（质押融资的核心代价）
+      if (inst.mortgaged) {
+        results.push({
+          kind: 'mortgaged-no-rent', cellIndex, cell,
+          ownerName: owner.name,
+        });
+      } else {
+        const buffMult = buffMultiplierFor(owner, cell.group, state);
+        // 归属人的自身租金系数（信用评级展望 / 自查类事件卡）
+        const selfMult = owner.selfRentMult ?? 1;
+        const rent = Math.round(calculateRent(cell, inst.level, {
+          market: state.market, eventMult: state.eventMult, buffMult,
+        }) * selfMult);
+        player.cash -= rent;
+        owner.cash += rent;
+        player.stats.rentsPaid += rent;
+        owner.stats.rentsCollected += rent;
+        if (rent > owner.stats.largestRent) owner.stats.largestRent = rent;
+        results.push({
+          kind: 'rent-paid', cellIndex, cell, rent,
+          from: player.id, to: owner.id, ownerName: owner.name, buffMult, selfMult,
+          // 弹窗展示用：基础租金、机构等级、归属人配色、市场系数说明
+          baseRent: cell.rent[inst.level] ?? cell.rent[0] ?? rent,
+          level: inst.level,
+          ownerColorIndex: owner.colorIndex,
+          marketNote: marketNoteFor(state.market)
+            + (selfMult !== 1 ? ` × 自身系数 ${selfMult.toFixed(2)}` : ''),
+        });
+        emit(state, 'rent-paid', { from: player.id, to: owner.id, rent, cellIndex });
+      }
     }
   } else {
     // 特殊格
@@ -666,26 +678,37 @@ export function mortgageInstitution(state, player, cellIndex) {
 }
 
 /**
- * 赎回机构。
+ * 赎回机构 —— 必须一次性归还「质押本金 + 解押费」。
+ *
+ * 反套利约束：质押可得本金（市值×0.55），赎回须还本金并额外支付 12% 解押费，
+ * 因此「质押→赎回」一进一出必为净亏损，无法在一回合内反复刷现金。
  */
 export function redeemInstitution(state, player, cellIndex) {
   const inst = player.institutions.find((i) => i.cellIndex === cellIndex);
   if (!inst) return { ok: false, reason: '未持有该机构' };
   if (!inst.mortgaged) return { ok: false, reason: '该机构未质押' };
 
-  const fee = redeemFee(inst.mortgageAmount);
-  if (player.cash < fee) return { ok: false, reason: `赎回需 ￥${fee}，现金不足`, cost: fee };
+  const principal = inst.mortgageAmount || 0;
+  const fee = redeemFee(principal);
+  const total = principal + fee;
+  if (player.cash < total) {
+    return {
+      ok: false,
+      reason: `赎回需 ￥${total}（本金 ￥${principal} + 解押费 ￥${fee}），现金不足`,
+      cost: total,
+    };
+  }
 
   const cell = BOARD_CELLS[cellIndex];
-  player.cash -= fee;
-  player.stats.redeemSpend += fee;
+  player.cash -= total;
+  player.stats.redeemSpend += total;
   inst.mortgaged = false;
   inst.mortgageAmount = 0;
-  emit(state, 'redeem', { playerId: player.id, cellIndex, fee });
+  emit(state, 'redeem', { playerId: player.id, cellIndex, fee, total });
   log(state, player.isAI ? 'ai' : 'self',
-    `${player.name} 赎回 ${cell.name}，支付解押费 ￥${fee}`,
+    `${player.name} 赎回 ${cell.name}，归还本金 ￥${principal} + 解押费 ￥${fee}`,
     '赎回');
-  return { ok: true, fee };
+  return { ok: true, fee, total };
 }
 
 /** 回合结束 —— 轮转下一个未破产玩家 */

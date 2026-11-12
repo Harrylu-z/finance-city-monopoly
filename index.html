@@ -99,60 +99,87 @@
       <!-- 背景层：始终铺满整个 stage（天际线视差） -->
       <canvas id="stage-bg" class="stage-bg" aria-hidden="true"></canvas>
 
-      <!-- 顶部条：回合信息 + 图标按钮 -->
-      <div id="hud-top" class="hud hud-top">
-        <div class="hud-turn pixel-panel">
-          <span id="hud-turn-label" class="hud-turn-label">当前回合</span>
-          <span id="hud-turn-name" class="hud-turn-name">—</span>
-          <span id="hud-market" class="hud-market">市场：—</span>
-        </div>
-        <div class="hud-actions">
-          <button id="btn-sound" class="pixel-btn pixel-btn-icon" title="音效开关" aria-label="音效开关">♪</button>
-          <button id="btn-anim" class="pixel-btn pixel-btn-icon" title="特效开关" aria-label="特效开关">✦</button>
-          <button id="btn-theme" class="pixel-btn pixel-btn-icon" title="主题" aria-label="主题">◐</button>
-          <button id="btn-menu" class="pixel-btn pixel-btn-icon" title="菜单" aria-label="菜单">≡</button>
+      <!-- ===== 顶部左角：当前玩家紧凑单条 ===== -->
+      <div id="hud-player" class="hud hud-player">
+        <div id="active-player-card" class="active-card pixel-panel">
+          <canvas id="active-avatar" class="active-avatar" width="20" height="30" aria-hidden="true"></canvas>
+          <div class="active-info">
+            <span id="active-player-name" class="active-name">—</span>
+            <span id="active-player-cash" class="active-cash">￥0</span>
+          </div>
+          <span id="active-player-sub" class="active-sub">—</span>
         </div>
       </div>
 
-      <!-- 左栏：玩家信息 -->
-      <div id="player-cards" class="player-cards"></div>
+      <!-- ===== 顶部右角：回合数 + 骰子指示 + 排行榜 ===== -->
+      <div id="hud-top-right" class="hud hud-top-right">
+        <div class="turn-badge pixel-panel">
+          <span class="turn-badge-label">回合</span>
+          <span id="hud-round" class="turn-badge-num">1</span>
+          <span id="hud-market" class="hud-market">震荡</span>
+        </div>
+        <button id="btn-rank" class="pixel-btn pixel-btn-icon" title="资产排行" aria-label="资产排行">≡</button>
+        <button id="btn-menu" class="pixel-btn pixel-btn-icon" title="菜单" aria-label="菜单">☰</button>
+      </div>
 
-      <!-- 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） -->
+      <!-- ===== 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） ===== -->
       <div id="board-wrap" class="board-wrap">
         <canvas id="board-canvas" class="board-canvas" aria-label="棋盘"></canvas>
         <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
         <div id="dice-tray" class="dice-tray" aria-live="polite"></div>
         <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
+        <!-- 移动端：点击地块弹出的详情卡 -->
+        <div id="cell-detail" class="cell-detail" hidden></div>
       </div>
 
-      <!-- 右栏：资产排行 + 行情灯带 -->
-      <div id="hud-right" class="hud hud-right">
-        <div class="rank-panel pixel-panel">
-          <h3 class="panel-title">资产排行</h3>
-          <div id="rank-list" class="rank-list"></div>
-        </div>
-        <div id="market-kline" class="kline-panel pixel-panel">
-          <h3 class="panel-title">行情灯带</h3>
-          <canvas id="kline-canvas" width="180" height="46"></canvas>
-        </div>
-      </div>
-
-      <!-- 底部条：回合播报 + 动作按钮 -->
-      <div id="hud-bottom" class="hud hud-bottom">
-        <div class="log-panel pixel-panel">
+      <!-- ===== 左侧窄条：回合播报（默认只显示最新 1 条，点击展开） ===== -->
+      <div id="hud-feed" class="hud hud-feed">
+        <button id="feed-toggle" class="feed-toggle pixel-panel" aria-expanded="false" aria-controls="log-list">
+          <span class="feed-toggle-icon">▸</span>
+          <span id="feed-latest" class="feed-latest">等待开局…</span>
+        </button>
+        <div id="log-panel" class="log-panel pixel-panel" hidden>
           <h3 class="panel-title">回合播报</h3>
           <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
         </div>
-        <div class="action-bar">
-          <button id="btn-roll" class="pixel-btn pixel-btn-primary pixel-btn-lg">掷 骰 子</button>
-          <button id="btn-assets" class="pixel-btn pixel-btn-lg">我的机构</button>
-          <button id="btn-mortgage" class="pixel-btn pixel-btn-lg">质押融资</button>
-          <button id="btn-endturn" class="pixel-btn pixel-btn-lg">结束回合</button>
+      </div>
+
+      <!-- ===== 底部中央：主行动按钮 + 常用操作（常驻，不再收进抽屉） ===== -->
+      <div id="hud-bottom" class="hud hud-bottom">
+        <div class="bottom-bar pixel-panel">
+          <button id="btn-roll" class="pixel-btn pixel-btn-primary pixel-btn-primary-xl">掷 骰 子</button>
+          <span class="bottom-sep" aria-hidden="true"></span>
+          <button id="btn-assets" class="pixel-btn bottom-act">我的机构</button>
+          <button id="btn-mortgage" class="pixel-btn bottom-act">质押融资</button>
+          <button id="btn-endturn" class="pixel-btn bottom-act bottom-act-end">结束回合</button>
         </div>
       </div>
 
+      <!-- ===== 右侧：资产排行 + 全玩家财务对比（常驻面板，窄屏自动收起） ===== -->
+      <aside id="hud-right" class="hud hud-right">
+        <div class="side-panel pixel-panel">
+          <div class="panel-title">资产排行</div>
+          <div id="rank-side" class="rank-list rank-list-side"></div>
+          <div class="panel-title">财务对比</div>
+          <div id="fin-compare" class="fin-compare"></div>
+          <div class="side-note">点击排行任意一行可查看该玩家完整财务指标</div>
+        </div>
+      </aside>
+
     </div>
   </section>
+
+  <!-- ============ 资产排行弹窗（不常驻） ============ -->
+  <div id="rank-root" class="modal-root" hidden>
+    <div id="rank-backdrop" class="modal-backdrop"></div>
+    <div id="rank-box" class="modal-box pixel-panel" role="dialog" aria-modal="true" aria-label="资产排行">
+      <h2 class="modal-title">资产排行</h2>
+      <div id="rank-list" class="rank-list rank-list-modal"></div>
+      <div class="modal-actions">
+        <button id="btn-rank-close" class="pixel-btn">关闭</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ============ 通用弹窗 ============ -->
   <div id="modal-root" class="modal-root" hidden>
