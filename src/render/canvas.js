@@ -36,14 +36,19 @@ export class BoardRenderer {
    * @param {number} dpr 设备像素比
    */
   resize(w, h, dpr = 1) {
-    this.canvas.width = Math.max(1, Math.floor(w * dpr));
-    this.canvas.height = Math.max(1, Math.floor(h * dpr));
-    this.canvas.style.width = w + 'px';
-    this.canvas.style.height = h + 'px';
+    const cw = Math.max(1, Math.floor(w));
+    const ch = Math.max(1, Math.floor(h));
+    // 只在尺寸真正变化时重建后备存储，避免每帧重置画布（会清空内容）
+    const pw = Math.max(1, Math.floor(cw * dpr));
+    const ph = Math.max(1, Math.floor(ch * dpr));
+    if (this.canvas.width !== pw) this.canvas.width = pw;
+    if (this.canvas.height !== ph) this.canvas.height = ph;
+    // 注意：画布的 CSS 尺寸由样式表控制（width/height: 100%），
+    // 这里不再写死 px，避免与容器实际尺寸脱节。
     this.ctx.imageSmoothingEnabled = false;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.w = w;
-    this.h = h;
+    this.w = cw;
+    this.h = ch;
     this.computeLayout();
   }
 
@@ -53,11 +58,13 @@ export class BoardRenderer {
    * 棋盘容器（#board-wrap）已经是「不遮挡」的区域，因此这里不再为
    * HUD 预留上下留白 —— 直接在可用矩形内把 9×7 棋盘居中。
    * 格子宽高按固定 9:7 比例推导，避免被容器压扁。
+   * 顶部额外预留「金融城广场」横幅的高度（不占用格子）。
    */
   computeLayout() {
     const margin = 12;
+    const bannerH = 30;   // 横幅 + 边框留白
     const availW = Math.max(1, this.w - margin * 2);
-    const availH = Math.max(1, this.h - margin * 2);
+    const availH = Math.max(1, this.h - margin * 2 - bannerH);
 
     const cols = BOARD_SHAPE.cols;
     const rows = BOARD_SHAPE.rows;
@@ -82,45 +89,56 @@ export class BoardRenderer {
 
     const boardW = cols * cellW;
     const boardH = rows * cellH;
+    // 横幅在格子上方，因此整个棋盘（含横幅）整体居中
+    const totalH = boardH + bannerH;
     this.boardX = Math.floor((this.w - boardW) / 2);
-    this.boardY = Math.floor((this.h - boardH) / 2);
+    this.boardY = Math.floor((this.h - totalH) / 2) + bannerH;
 
-    this.layout = { cols, rows, cellW, cellH, boardX: this.boardX, boardY: this.boardY };
+    this.layout = { cols, rows, cellW, cellH, boardX: this.boardX, boardY: this.boardY, bannerH };
   }
 
-  /** 格子索引 → 屏幕矩形 */
+  /**
+   * 格子索引 → 屏幕矩形。
+   *
+   * 棋盘是 9 列 × 7 行的**填满矩阵**（63 格全部可玩），移动顺序采用
+   * 蛇形（boustrophedon）折返：自底行起，逐行左右交替推进。
+   *
+   *   index  0.. 8 → 底行，从左到右
+   *   index  9..17 → 倒数第 2 行，从右到左
+   *   index 18..26 → 第 3 行，从左到右 …… 以此类推
+   *   index 54..62 → 顶行，从左到右
+   *
+   * 这样每一行首尾与相邻行首尾在屏幕上直接相接，棋子沿行推进时
+   * 视觉上是连贯的「U 形赛道」；行末即折返，最后一行回到起点，
+   * 形成闭合的环形拓扑（index 62 → 0 即「经过起点」）。
+   *
+   * 注意：9×7 的格点图无法构成真正的哈密顿环（63 为奇数），
+   * 因此收尾格与起点格在几何上并非紧邻 —— 这与大富翁类棋盘
+   * 「起点单独成格、经过起点触发补贴」的通行做法一致。
+   */
   cellRect(index) {
     const { cols, rows, cellW, cellH, boardX, boardY } = this.layout;
-    const perSide = BOARD_SIZE / cols;
     const idx = ((index % BOARD_SIZE) + BOARD_SIZE) % BOARD_SIZE;
 
-    const side = Math.floor(idx / perSide);
-    const pos = idx % perSide;
-    let col, row;
-
-    switch (side) {
-      case 0: col = cols - 1 - pos; row = rows - 1; break;
-      case 1: col = cols - 1;        row = rows - 1 - pos; break;
-      case 2: col = cols - 1 - pos;  row = 0; break;
-      default: col = 0;              row = pos; break;
-    }
+    // 每行 cols 格，共 rows 行
+    const band = Math.floor(idx / cols);   // 0 = 底行
+    const pos = idx % cols;                // 行内序号
+    const row = rows - 1 - band;           // 屏幕行号（0 = 顶行）
+    // 偶数带（自底向上数）从左向右，奇数带从右向左
+    const col = (band % 2 === 0) ? pos : (cols - 1 - pos);
 
     return { x: boardX + col * cellW, y: boardY + row * cellH, w: cellW, h: cellH, col, row };
   }
 
-  /** 屏幕坐标 → 格子索引 */
+  /** 屏幕坐标 → 格子索引（cellRect 的严格逆运算） */
   cellAt(px, py) {
     const { cols, rows, cellW, cellH, boardX, boardY } = this.layout;
     const col = Math.floor((px - boardX) / cellW);
     const row = Math.floor((py - boardY) / cellH);
     if (col < 0 || col >= cols || row < 0 || row >= rows) return -1;
-    const perSide = BOARD_SIZE / cols;
-    let idx;
-    if (row === rows - 1) idx = cols - 1 - col;
-    else if (col === cols - 1) idx = perSide + (rows - 1 - row);
-    else if (row === 0) idx = perSide * 2 + (cols - 1 - col);
-    else idx = perSide * 3 + row;
-    return idx;
+    const band = rows - 1 - row;
+    const pos = (band % 2 === 0) ? col : (cols - 1 - col);
+    return band * cols + pos;
   }
 
   draw(state, view) {
@@ -139,84 +157,85 @@ export class BoardRenderer {
     if (view.effects) view.effects.draw(ctx);
   }
 
+  /**
+   * 棋盘底板 —— 外框 + 「金融城广场」横幅 + 市场周期徽章。
+   *
+   * 63 个格子会把 9×7 的格点矩阵铺满，因此中央不再留出空洞；
+   * 原设计的「中央金融城广场」改为棋盘上方的横幅条，
+   * 承载天际线徽章与市场周期指示（牛市 / 熊市 / 震荡）。
+   */
   drawBoardBase(ctx, state) {
     const { boardX, boardY, cols, rows, cellW, cellH } = this.layout;
     const w = cols * cellW;
     const h = rows * cellH;
 
-    rect(ctx, boardX - 4, boardY - 4, w + 8, h + 8, 'ink');
-    rect(ctx, boardX - 2, boardY - 2, w + 4, h + 4, 'glassDk');
+    rect(ctx, boardX - 6, boardY - 6, w + 12, h + 12, 'ink');
+    rect(ctx, boardX - 4, boardY - 4, w + 8, h + 8, 'glassDk');
     rect(ctx, boardX, boardY, w, h, 'navyDk');
 
-    // 中央金融城广场
-    const cx = boardX + w / 2;
-    const cy = boardY + h / 2;
-    const pw = Math.min(w * 0.44, 250);
-    const ph = Math.min(h * 0.54, 280);
-    const px = Math.round(cx - pw / 2);
-    const py = Math.round(cy - ph / 2);
-    rect(ctx, px, py, Math.round(pw), Math.round(ph), 'navy');
-    strokeRect(ctx, px, py, Math.round(pw), Math.round(ph), 'goldDk');
-    for (let y = py + 3; y < py + ph - 2; y += 6) {
-      for (let x = px + 3; x < px + pw - 2; x += 6) {
+    // ---- 金融城广场横幅（画在格子上层，不遮挡任何格子）----
+    const bannerH = 26;
+    const by = boardY - bannerH - 4;
+    rect(ctx, boardX, by, w, bannerH, 'navy');
+    strokeRect(ctx, boardX, by, w, bannerH, 'goldDk');
+    for (let y = by + 3; y < by + bannerH - 2; y += 6) {
+      for (let x = boardX + 3; x < boardX + w - 2; x += 6) {
         ctx.fillStyle = ((x + y) % 12 === 0) ? PALETTE.navyLt : PALETTE.navyDk;
         ctx.fillRect(x, y, 4, 4);
       }
     }
-    this.drawCenterEmblem(ctx, cx, cy, state);
+
+    // 天际线徽章（横幅左侧）
+    const mx = boardX + 34;
+    const my = by + bannerH / 2;
+    this.drawSkylineMark(ctx, mx, my);
+
+    // 市场周期指示（横幅右侧）
+    const isBull = state.market === 'bull';
+    const isBear = state.market === 'bear';
+    const label = isBull ? '牛市' : isBear ? '熊市' : '震荡';
+    const c = isBull ? 'red' : isBear ? 'jade' : 'glass';
+    const bw = 54;
+    const bx = Math.round(boardX + w - bw - 8);
+    const bh = 15;
+    const bly = Math.round(by + (bannerH - bh) / 2);
+    rect(ctx, bx, bly, bw, bh, PALETTE.ink);
+    strokeRect(ctx, bx, bly, bw, bh, PALETTE[c]);
+    ctx.fillStyle = PALETTE[c];
+    ctx.fillRect(bx + 2, bly + 2, bw - 4, bh - 4);
+    ctx.fillStyle = PALETTE.ink;
+    ctx.font = '10px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, bx + bw / 2, bly + bh / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
+    // 横幅标题
+    ctx.font = '10px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = PALETTE.goldLt;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('金融城广场', boardX + w / 2, by + bannerH / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
-  drawCenterEmblem(ctx, cx, cy, state) {
-    const r = 30;
-    ctx.fillStyle = PALETTE.ink;
-    for (let y = -r; y <= r; y++) {
-      const span = Math.floor(Math.sqrt(Math.max(0, r * r - y * y)));
-      ctx.fillRect(Math.round(cx - span), Math.round(cy + y), span * 2 + 1, 1);
-    }
-    ctx.fillStyle = PALETTE.navyDk;
-    for (let y = -r + 2; y <= r - 2; y++) {
-      const span = Math.floor(Math.sqrt(Math.max(0, (r - 2) * (r - 2) - y * y)));
-      ctx.fillRect(Math.round(cx - span), Math.round(cy + y), span * 2 + 1, 1);
-    }
-    ctx.fillStyle = PALETTE.gold;
-    for (let y = -r; y <= r; y++) {
-      const span = Math.floor(Math.sqrt(Math.max(0, r * r - y * y)));
-      if (Math.abs(y) === r || Math.abs(y) === r - 1) {
-        ctx.fillRect(Math.round(cx - span), Math.round(cy + y), span * 2 + 1, 1);
-      }
-    }
-
-    const baseY = cy + 12;
+  /** 横幅左侧的天际线徽章 */
+  drawSkylineMark(ctx, cx, cy) {
+    const baseY = cy + 7;
     const tower = (bx, bw, bh, color) => {
       rect(ctx, bx, baseY - bh, bw, bh, color);
       rect(ctx, bx, baseY - bh, bw, 1, PALETTE.goldLt);
       for (let i = 2; i < bh - 1; i += 3) rect(ctx, bx + 1, baseY - bh + i, bw - 2, 1, PALETTE.ink);
     };
-    tower(cx - 22, 10, 20, PALETTE.glassDk);
-    tower(cx - 9, 14, 30, PALETTE.goldDk);
-    tower(cx + 8, 8, 16, PALETTE.glassDk);
-    rect(ctx, cx - 2, baseY - 36, 4, 6, PALETTE.gold);
-    rect(ctx, cx - 4, baseY - 37, 8, 2, PALETTE.goldLt);
-    rect(ctx, cx - 26, baseY, 52, 3, PALETTE.ink);
-    hline(ctx, cx - 26, baseY, 52, PALETTE.goldDk);
-
-    // 市场周期指示
-    const isBull = state.market === 'bull';
-    const isBear = state.market === 'bear';
-    const label = isBull ? '牛市' : isBear ? '熊市' : '震荡';
-    const c = isBull ? 'red' : isBear ? 'jade' : 'glass';
-    const ly = Math.round(cy - r - 14);
-    rect(ctx, Math.round(cx - 24), ly, 48, 13, PALETTE.ink);
-    strokeRect(ctx, Math.round(cx - 24), ly, 48, 13, PALETTE[c]);
-    ctx.fillStyle = PALETTE[c];
-    ctx.fillRect(Math.round(cx - 22), ly + 2, 44, 9);
-    ctx.fillStyle = PALETTE.ink;
-    ctx.font = '10px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, Math.round(cx), ly + 7);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
+    tower(cx - 16, 7, 12, PALETTE.glassDk);
+    tower(cx - 6, 10, 18, PALETTE.goldDk);
+    tower(cx + 6, 6, 10, PALETTE.glassDk);
+    rect(ctx, cx - 1, baseY - 22, 2, 4, PALETTE.gold);
+    rect(ctx, cx - 2, baseY - 23, 4, 1, PALETTE.goldLt);
+    rect(ctx, cx - 19, baseY, 38, 2, PALETTE.ink);
+    hline(ctx, cx - 19, baseY, 38, PALETTE.goldDk);
   }
 
   drawCell(ctx, state, index, view) {
