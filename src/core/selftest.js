@@ -57,7 +57,7 @@ function makeTestState(overrides = {}) {
     seed: 'selftest',
     players,
     diceCount: 2,
-    cash: 1600,
+    cash: CONFIG.cashLevels.standard,
     market: 'normal',
     difficulty: 'normal',
     ...overrides,
@@ -788,7 +788,7 @@ export function runAll() {
     assert(issuer.bonds.length === 1, '应记录 1 笔债券');
     assert(issuer.cash === before + CONFIG.bondFace * 2, `应募资 ${CONFIG.bondFace * 2}`);
     // 认购方扣款
-    assert(state.players[1].cash === 1600 - CONFIG.bondFace, '认购方应扣款');
+    assert(state.players[1].cash === CONFIG.cashLevels.standard - CONFIG.bondFace, '认购方应扣款');
     assert(state.players[1].subscribedBonds.length === 1, '认购方应记录持有债券');
     return `2 人认购成立，募资 ￥${res.raised}`;
   });

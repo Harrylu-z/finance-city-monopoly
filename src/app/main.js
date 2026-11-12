@@ -104,7 +104,7 @@ class Game {
     const ids = [
       'setup-screen', 'game-screen', 'setup-bg', 'logo-canvas',
       'input-nickname', 'avatar-picker', 'difficulty-picker', 'aicount-picker',
-      'theme-picker', 'rounds-picker', 'dice-picker', 'cash-picker', 'market-picker',
+      'theme-picker', 'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
       'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
       // HUD 容器（四角定位，用于测量与避让计算）
@@ -167,7 +167,6 @@ class Game {
       sound: settings.sound !== false,
       anim: settings.anim !== false,
       tutorial: settings.tutorial !== false,
-      rounds: 'standard',
     };
 
     this.el['input-nickname'].value = this.setup.nickname;
@@ -192,12 +191,6 @@ class Game {
       { id: 'classic', label: '经典' },
     ], (v) => { this.setup.theme = v; });
 
-    this.buildSegments('rounds-picker', [
-      { id: 'short', label: '速通局' },
-      { id: 'standard', label: '标准局' },
-      { id: 'long', label: '长局' },
-    ], (v) => { this.setup.rounds = v; });
-
     this.buildSegments('dice-picker', [
       { id: '1', label: '1 颗' },
       { id: '2', label: '2 颗' },
@@ -205,9 +198,9 @@ class Game {
     ], (v) => { this.setup.diceCount = parseInt(v, 10); });
 
     this.buildSegments('cash-picker', [
-      { id: 'tight', label: '紧巴 ￥1200' },
-      { id: 'standard', label: '标准 ￥1600' },
-      { id: 'loose', label: '宽裕 ￥2200' },
+      { id: 'tight', label: '紧巴 ￥2000' },
+      { id: 'standard', label: '标准 ￥2800' },
+      { id: 'loose', label: '宽裕 ￥3600' },
     ], (v) => { this.setup.cash = v; });
 
     this.buildSegments('market-picker', [
@@ -256,7 +249,6 @@ class Game {
       'difficulty-picker': () => this.setup.difficulty,
       'aicount-picker': () => String(this.setup.aiCount),
       'theme-picker': () => this.setup.theme,
-      'rounds-picker': () => this.setup.rounds,
       'dice-picker': () => String(this.setup.diceCount),
       'cash-picker': () => this.setup.cash,
       'market-picker': () => this.setup.market,
@@ -325,7 +317,6 @@ class Game {
       market: this.setup.market,
       nickname: this.setup.nickname,
       avatar: this.setup.avatar,
-      rounds: this.setup.rounds,
     };
     this.beginGame(this.config);
   }
@@ -364,8 +355,6 @@ class Game {
       theme: config.theme,
       aiCount: config.aiCount,
     });
-
-    this.state.maxTurns = config.rounds === 'short' ? 800 : config.rounds === 'long' ? 20000 : 5000;
 
     this.effects = new Effects();
     this.effects.enabled = this.setup.anim !== false;

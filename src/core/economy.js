@@ -27,7 +27,7 @@ export const CONFIG = {
   redeemFee: 0.12,
 
   // 起点补贴
-  startBonus: 200,
+  startBonus: 300,
 
   // 市场周期
   bullRentMult: 1.2,
@@ -43,11 +43,11 @@ export const CONFIG = {
     asset: 1.05,
   },
 
-  // 初始现金档位
+  // 初始现金档位（机构均价约 ￥590，地标级可达 ￥6000+）
   cashLevels: {
-    tight: 1200,
-    standard: 1600,
-    loose: 2200,
+    tight: 2000,
+    standard: 2800,
+    loose: 3600,
   },
 
   // 破产判定阈值
@@ -55,13 +55,13 @@ export const CONFIG = {
 
   // ===== 央行贷款（起点绕圈后可申请）=====
   // 单利 3%/回合；期限按「借款人自己的回合」计（与谁先绕圈无关）
-  // 额度越大期限越长：600→4 回合、1200→6 回合、2000→8 回合
+  // 额度越大期限越长：1200→4 回合、2400→6 回合、4000→8 回合
   // 「每回合付息、到期还本」：每个回合扣当期利息，本金到期一次性归还；
   // 现金不足时当期利息转为欠息，到期连同本金一并结清。
   loanTiers: [
-    { id: 'micro', name: '支小再贷款', amount: 600,  rate: 0.03, term: 4, desc: '小额流动性支持，期限最短' },
-    { id: 'bridge', name: '过桥资金',   amount: 1200, rate: 0.03, term: 6, desc: '过桥融资，额度与期限均衡' },
-    { id: 'relending', name: 'PSL 棚改', amount: 2000, rate: 0.03, term: 8, desc: '政策性工具，额度大、期限长' },
+    { id: 'micro', name: '支小再贷款', amount: 1200, rate: 0.03, term: 4, desc: '小额流动性支持，期限最短' },
+    { id: 'bridge', name: '过桥资金',   amount: 2400, rate: 0.03, term: 6, desc: '过桥融资，额度与期限均衡' },
+    { id: 'relending', name: 'PSL 棚改', amount: 4000, rate: 0.03, term: 8, desc: '政策性工具，额度大、期限长' },
   ],
   // 每圈最多可申请的贷款次数（同一圈只允许一次）
   maxLoansPerRound: 1,
@@ -70,7 +70,7 @@ export const CONFIG = {
 
   // ===== 债券融资（再融资窗口格）=====
   // 发行面值（每位认购者认购金额）
-  bondFace: 300,
+  bondFace: 800,
   // 债券票面利率（每圈结束时按比例付息）
   bondCoupon: 0.06,
   // 债券发行期限（圈数）
