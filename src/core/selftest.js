@@ -90,6 +90,45 @@ export function runAll() {
     return '63 格 · 9×7 非正方形 · 四大监管机构齐备';
   });
 
+  check(results, '特殊格均匀穿插（任意两个功能格不相邻）', () => {
+    // 「功能格」= 特殊格 + 监管机构格。它们必须被普通机构格隔开，
+    // 不能连成一片 —— 否则玩家的落点分布会严重偏斜。
+    const isFunctional = (c) => c.type === 'special' || c.regulator;
+    const functionalIdx = BOARD_CELLS.map((c, i) => (isFunctional(c) ? i : -1)).filter((i) => i >= 0);
+    assert(functionalIdx.length === 18, `功能格应为 18 个（14 特殊 + 4 监管），实际 ${functionalIdx.length}`);
+
+    // 环形相邻（含 62 → 0 的闭合边）不得出现功能格紧邻
+    for (let i = 0; i < BOARD_CELLS.length; i++) {
+      const a = BOARD_CELLS[i];
+      const b = BOARD_CELLS[(i + 1) % BOARD_CELLS.length];
+      assert(!(isFunctional(a) && isFunctional(b)),
+        `#${i} ${a.name} 与 #${(i + 1) % BOARD_CELLS.length} ${b.name} 功能格相邻`);
+    }
+
+    // 特殊格子集同样必须互不相邻（更严格的读法也成立）
+    const specialIdx = BOARD_CELLS.map((c, i) => (c.type === 'special' ? i : -1)).filter((i) => i >= 0);
+    assert(specialIdx.length === 14, `特殊格应为 14 个，实际 ${specialIdx.length}`);
+    for (let i = 0; i < specialIdx.length; i++) {
+      const a = specialIdx[i];
+      const b = specialIdx[(i + 1) % specialIdx.length];
+      const gap = (b - a + BOARD_SIZE) % BOARD_SIZE;
+      assert(gap >= 2, `特殊格 #${a} 与 #${b} 相邻（间隔 ${gap}）`);
+    }
+
+    // 起点必须是 index 0，且前后都隔着普通机构格
+    assert(BOARD_CELLS[0].special && BOARD_CELLS[0].special.id === 'start', 'index 0 应为起点');
+    assert(!isFunctional(BOARD_CELLS[1]), '起点后一格应为普通机构格');
+    assert(!isFunctional(BOARD_CELLS[BOARD_SIZE - 1]), '起点前一格（环形闭合）应为普通机构格');
+
+    // 分布均匀度：相邻功能格的最大间隔不应过大（避免大片连续普通格）
+    const gaps = functionalIdx.map((v, i) =>
+      (functionalIdx[(i + 1) % functionalIdx.length] - v + BOARD_SIZE) % BOARD_SIZE);
+    const maxGap = Math.max(...gaps);
+    assert(maxGap <= 8, `功能格最大间隔 ${maxGap} 过大，分布不均匀`);
+
+    return `18 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}`;
+  });
+
   check(results, '四大监管机构齐备且不可升级', () => {
     const ids = new Set();
     for (const i of REGULATOR_CELLS) {
