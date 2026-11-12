@@ -24,7 +24,7 @@ import { BoardRenderer } from '../render/canvas.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Sfx } from '../audio/sfx.js';
-import { renderRank, renderFinanceCompare, appendLog, clearLog } from './hud.js';
+import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog } from './hud.js';
 import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog, showMenuDialog,
@@ -111,7 +111,7 @@ class Game {
       'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
       // 左上：当前玩家紧凑单条
       'active-player-card', 'active-avatar', 'active-player-name',
-      'active-player-cash', 'active-player-sub',
+      'active-player-cash', 'active-player-sub', 'active-status',
       // 右上：回合徽章 + 按钮
       'hud-round', 'hud-market', 'btn-rank', 'btn-menu',
       // 左侧：可折叠播报
@@ -1642,6 +1642,17 @@ class Game {
       actx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
       actx.imageSmoothingEnabled = false;
       actx.drawImage(icon, 0, 0, icon.width, icon.height, 0, 0, avatarCanvas.width, avatarCanvas.height);
+
+      // 贷款 / 债券 / 限时状态提示（无内容时自动隐藏）
+      renderActiveStatus(this.el['active-status'], p, state);
+
+      // 播报栏跟随左上卡片高度下移，避免被状态芯片遮挡
+      const hud = this.el['hud-player'];
+      const feedTop = hud.offsetTop + hud.offsetHeight + 8;
+      if (feedTop !== this._feedTop) {
+        this._feedTop = feedTop;
+        this.el['hud-feed'].style.setProperty('--feed-top', `${feedTop}px`);
+      }
     }
 
     // ===== 右上角：回合数 + 市场 =====

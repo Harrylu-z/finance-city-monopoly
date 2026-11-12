@@ -243,6 +243,87 @@ export function renderFinanceCompare(el, state) {
   el.appendChild(table);
 }
 
+/**
+ * 左上角状态提示 —— 贷款 / 债券 / 限时状态。
+ *
+ * 只展示当前行动玩家（与上方玩家卡片一致）的负债与状态：
+ *   贷款    本金 + 欠息，剩余回合数
+ *   发行债券 募集金额，剩余圈数（到期需还本付息）
+ *   持有债券 认购面值合计
+ *   限时状态 buff 名称 + 剩余回合，坏状态用红色
+ *
+ * 无内容时整块隐藏，不占版面。最多展示 5 条，其余折叠为 +N。
+ */
+export function renderActiveStatus(el, player, state) {
+  if (!el) return;
+  if (!player || player.bankrupt) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+
+  const chips = [];
+
+  for (const l of player.loans || []) {
+    const left = Math.max(0, (l.term || 0) - (l.turnsElapsed || 0));
+    const owed = (l.amount || 0) + (l.accruedInterest || 0);
+    chips.push({
+      cls: 'is-debt',
+      text: `贷款 ￥${owed} · ${left > 0 ? `剩 ${left} 回合` : '本期到期'}`,
+      title: `${l.name || '银行贷款'}　本金 ￥${l.amount}`
+        + (l.accruedInterest ? `　欠息 ￥${l.accruedInterest}` : ''),
+    });
+  }
+
+  for (const b of player.bonds || []) {
+    const left = Math.max(0, (b.dueRound || 0) - (state.round || 1));
+    const raised = (b.face || 0) * ((b.subscribers || []).length);
+    chips.push({
+      cls: 'is-bond',
+      text: `发行债券 ￥${raised} · ${left > 0 ? `剩 ${left} 圈` : '本期到期'}`,
+      title: `票息 ${Math.round((b.coupon || 0) * 1000) / 10}%　到期需还本付息`,
+    });
+  }
+
+  const heldBond = (player.subscribedBonds || [])
+    .reduce((s, b) => s + (b.face || 0), 0);
+  if (heldBond > 0) {
+    chips.push({ cls: 'is-bond', text: `持有债券 ￥${heldBond}`, title: '已认购他人发行的债券' });
+  }
+
+  for (const f of player.buffs || []) {
+    chips.push({
+      cls: f.kind === 'bad' ? 'is-bad' : 'is-good',
+      text: `${f.name} · 剩 ${f.remaining} 回合`,
+      title: f.desc || '',
+    });
+  }
+
+  if (!chips.length) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+
+  const MAX = 5;
+  el.hidden = false;
+  el.replaceChildren();
+  for (const c of chips.slice(0, MAX)) {
+    const s = document.createElement('span');
+    s.className = `status-chip ${c.cls}`;
+    s.textContent = c.text;
+    if (c.title) s.title = c.title;
+    el.appendChild(s);
+  }
+  if (chips.length > MAX) {
+    const more = document.createElement('span');
+    more.className = 'status-chip is-more';
+    more.textContent = `+${chips.length - MAX}`;
+    more.title = chips.slice(MAX).map((c) => c.text).join(' / ');
+    el.appendChild(more);
+  }
+}
+
 /** 追加日志 */
 export function appendLog(el, entry) {
   const item = document.createElement('div');
