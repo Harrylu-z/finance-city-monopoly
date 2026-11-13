@@ -9,7 +9,7 @@
 
 import {
   BOARD_CELLS, BOARD_SIZE, LEVELS, EVENT_CARDS, TRAP_CARDS,
-  CLEARING_TARGETS, GROUP_META,
+  CLEARING_TARGETS, GROUP_META, SPECIAL,
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
@@ -454,10 +454,56 @@ export function tickBuffs(state, player) {
   }
 }
 
-/** 特殊格结算 */
+/**
+ * 特殊格结算。
+ *
+ * ================== 转盘格（kind = 'wheel'）==================
+ * 原来 13 个功能特殊格被合并成 4 个转盘格。踩到转盘时：
+ *   1. **转盘动画**由 UI 层（src/ui/wheel.js）负责 —— 它随机挑一个候选、
+ *      播完动画后把选中的效果 id 回传；
+ *   2. 本函数在拿到选中的 id 后，**复用该效果原有的 case 分支**结算。
+ *
+ * ⚠ 关键设计：这里**不复制粘贴** 13 个 case 的逻辑 —— 而是把
+ *   `switch` 的判定对象从「格子自身的 special」换成「实际要结算的 special」，
+ *   于是 wheel 分支只需先解析出候选的 special 对象，再 fallthrough 到对应 case。
+ *
+ * 若 UI 尚未回传选中效果（state.pending.wheelPick 为空），
+ * 则在此**就地随机**选一个（AI 玩家 / 降级路径），保证结算永远能走完。
+ */
 function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
   const results = [];
-  const sp = cell.special;
+  let sp = cell.special;
+
+  // ===== 转盘格：解析出真正要结算的效果 =====
+  if (sp && sp.kind === 'wheel') {
+    const pending = state.pending;
+    let pickedId = pending && pending.kind === 'wheel' ? pending.wheelPick : null;
+    if (!pickedId) {
+      // 兜底：就地随机选一个候选（AI 玩家 / 旧存档降级）
+      const outs = sp.outcomes || [];
+      if (!outs.length) return results;
+      pickedId = outs[state.rng.int(0, outs.length - 1)];
+    }
+    const picked = SPECIAL[pickedId];
+    if (!picked) {
+      // 候选 id 无效（数据异常）—— 记一条中性结果，不阻断回合
+      results.push({ kind: 'neutral', cell, reason: `转盘未抽到有效效果（${pickedId}）` });
+      return results;
+    }
+    // 记录抽中的效果（玩家要知道自己转到了什么）
+    const meta = (sp.outcomeData || []).find((o) => o.id === pickedId) || null;
+    results.push({
+      kind: 'wheel-result', cell, cellIndex,
+      wheelId: sp.wheelId, wheelName: sp.short || sp.name,
+      outcomeId: pickedId,
+      outcomeName: picked.name || picked.short || pickedId,
+      big: meta ? meta.big : '',
+      lbl: meta ? meta.lbl : '',
+      trap: meta ? !!meta.trap : !!picked.trap,
+    });
+    // 把结算目标换成抽中的效果 —— 下面的 switch 会直接命中它原有的 case
+    sp = picked;
+  }
 
   switch (sp.id) {
     case 'start': {
