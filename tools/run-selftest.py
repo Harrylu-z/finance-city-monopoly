@@ -138,10 +138,10 @@ def main():
                             const rng = rngm.makeRng('smoke-' + i);
                             const personalities = ai.assignPersonalities(rng, 3);
                             const players = [
-                                { id: 0, name: 'P0', isAI: false, avatar: 0, colorIndex: 0 },
-                                { id: 1, name: 'A1', isAI: true, avatar: 1, colorIndex: 1, personality: personalities[0] },
-                                { id: 2, name: 'A2', isAI: true, avatar: 2, colorIndex: 2, personality: personalities[1] },
-                                { id: 3, name: 'A3', isAI: true, avatar: 3, colorIndex: 3, personality: personalities[2] },
+                                { id: 0, name: 'P0', isAI: false, colorIndex: 0 },
+                                { id: 1, name: 'A1', isAI: true, colorIndex: 1, personality: personalities[0] },
+                                { id: 2, name: 'A2', isAI: true, colorIndex: 2, personality: personalities[1] },
+                                { id: 3, name: 'A3', isAI: true, colorIndex: 3, personality: personalities[2] },
                             ];
                             const state = rules.createState({
                                 seed: 'smoke-' + i, players,

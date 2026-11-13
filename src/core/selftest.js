@@ -29,9 +29,8 @@ import {
 import { makeRng, hashSeed } from './rng.js';
 import { getBuilding, getInstitutionSprite } from '../art/buildings.js';
 import { getCareerPieceSprites, pieceSignature } from '../art/career-pieces.js';
-import { getAvatarSprites } from '../art/avatars.js';
 import { getCardFace, getCardBack } from '../art/cards.js';
-import { CAREERS } from './careers.js';
+import { CAREERS, CAREER_BY_ID } from './careers.js';
 import { runAll as runCareerCasinoChecks } from './selftest-career-casino.js';
 import { runAll as runPersonalityChecks } from './selftest-personality.js';
 
@@ -54,10 +53,11 @@ function makeTestState(overrides = {}) {
   const rng = makeRng('selftest');
   const personalities = assignPersonalities(rng, 3);
   const players = [
-    { id: 0, name: '测试者', isAI: false, avatar: 0, colorIndex: 0 },
-    { id: 1, name: 'AI甲', isAI: true, avatar: 1, colorIndex: 1, personality: personalities[0] },
-    { id: 2, name: 'AI乙', isAI: true, avatar: 2, colorIndex: 2, personality: personalities[1] },
-    { id: 3, name: 'AI丙', isAI: true, avatar: 3, colorIndex: 3, personality: personalities[2] },
+    // 不传 avatar —— 立绘由职业唯一决定
+    { id: 0, name: '测试者', isAI: false, colorIndex: 0 },
+    { id: 1, name: 'AI甲', isAI: true, colorIndex: 1, personality: personalities[0] },
+    { id: 2, name: 'AI乙', isAI: true, colorIndex: 2, personality: personalities[1] },
+    { id: 3, name: 'AI丙', isAI: true, colorIndex: 3, personality: personalities[2] },
   ];
   return createState({
     seed: 'selftest',
@@ -1505,23 +1505,32 @@ export function runAll() {
     return '7 职业的正面≠背面、左侧≠右侧（朝向清晰可辨）';
   });
 
-  check(results, '职业立绘与经典棋子互不重复', () => {
-    // 经典 4 张棋子的像素指纹（通过 getAvatarSprites 取正面帧）
-    const classicSigs = new Set();
-    for (let i = 0; i < 4; i++) {
-      const set = getAvatarSprites(i, 0);
-      const cv = set.idle;
-      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-      let key = '';
-      for (let k = 0; k < d.length; k += 4) key += `${d[k]},${d[k + 1]},${d[k + 2]},${d[k + 3]};`;
-      classicSigs.add(key);
+  check(results, '棋子立绘由职业唯一决定（真人 / AI 皆然）', () => {
+    // 「选择棋子形象」功能已删除 —— 传入的 avatar 一律被忽略，
+    // 立绘必须严格等于该玩家职业的 pieceIndex。
+    const st = createState({
+      seed: 'bind-test',
+      players: [
+        { id: 0, name: '真人', isAI: false, careerId: 'ib', avatar: 2 },
+        { id: 1, name: 'AI', isAI: true, careerId: 'risk', avatar: 0 },
+      ],
+      cash: CONFIG.cashLevels.standard,
+    });
+    for (const p of st.players) {
+      const expected = CAREER_BY_ID[p.careerId].pieceIndex;
+      assert(p.avatar === expected,
+        `${p.name} 的立绘应为职业立绘 ${expected}，实际 ${p.avatar}`);
     }
-    assert(classicSigs.size === 4, `4 张经典棋子指纹应互不相同，实际 ${classicSigs.size}`);
-    for (const c of CAREERS) {
-      const sig = pieceSignature(c.pieceIndex, 0);
-      assert(!classicSigs.has(sig), `${c.name} 与某张经典棋子完全相同`);
+    return '真人与 AI 的立绘均严格绑定职业，旧 avatar 字段被忽略';
+  });
+
+  check(results, '立绘索引全部落在职业区间（7~13）', () => {
+    const st = makeTestState();
+    for (const p of st.players) {
+      assert(p.avatar >= 7 && p.avatar <= 13,
+        `${p.name} 的立绘索引 ${p.avatar} 越界（应 7~13）`);
     }
-    return '7 张职业立绘均与 4 张经典棋子不同';
+    return '所有玩家的立绘索引均在 7~13 职业区间内';
   });
 
   /* ============ 扑克牌渲染 ============ */

@@ -4,7 +4,7 @@
 
 import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
 import { getInstitutionSprite } from '../art/buildings.js';
-import { getAvatarSprites, makePlayerSpriteCanvas } from '../art/avatars.js';
+import { makePlayerSpriteCanvas } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
   groupBuffTier, globalRegulatorEffects, CONFIG, allGroupBuffs,

@@ -888,7 +888,7 @@ export class BoardRenderer {
         const s = ts;
         const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
 
-        // 立绘尺寸（经典棋子 16×24，职业立绘 32×40）
+        // 立绘尺寸（职业矢量立绘 32×40）
         const sw = sprite.width;
         const sh = sprite.height;
         const halfW = sw / 2;
@@ -1045,8 +1045,7 @@ export class BoardRenderer {
   /**
    * 棋子缩放倍数 —— 按**立绘实际尺寸**自适应，始终**整数倍**（nearest-neighbor）。
    *
-   * 经典棋子是 16×24 像素小人，职业立绘是 32×40 矢量形象，原生尺寸不同，
-   * 但都要保证：
+   * 棋子统一是职业矢量立绘（32×40），但仍要保证：
    *   · 完整落在格子的站立带内（不越界、不盖住机构名称）；
    *   · 缩放为整数倍（像素棋子不糊；矢量立绘本就抗锯齿，整数倍更锐利）。
    */

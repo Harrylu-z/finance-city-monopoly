@@ -120,14 +120,15 @@ export function showPokerTable(opts) {
 
       const av = document.createElement('canvas');
       av.className = 'poker-avatar';
-      av.width = 16;
-      av.height = 24;
-      const actx = av.getContext('2d');
-      actx.imageSmoothingEnabled = false;
       const sprites = getAvatarSprites(
         game.seatAvatarIndex?.[seat.playerId] ?? 0,
         game.seatColorIndex?.[seat.playerId] ?? seat.seat,
       );
+      // 立绘统一为职业矢量立绘（32×40）—— 直接沿用原生尺寸，避免压扁变形
+      av.width = sprites.idle.width;
+      av.height = sprites.idle.height;
+      const actx = av.getContext('2d');
+      actx.imageSmoothingEnabled = true;
       actx.drawImage(sprites.idle, 0, 0);
       headRow.appendChild(av);
 

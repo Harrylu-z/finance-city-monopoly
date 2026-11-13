@@ -36,7 +36,7 @@ import {
 import { showTutorial } from './tutorial.js';
 import { openShareDialog, parseShareUrl } from './share.js';
 import { saveRecord, saveSettings, loadSettings } from './persist.js';
-import { AVATARS, getAvatarIcon } from '../art/avatars.js';
+import { getAvatarIcon } from '../art/avatars.js';
 import { showPokerTable, showPokerResult, closePokerTable } from './poker-ui.js';
 import { abortPokerGame } from '../core/poker.js';
 import { getCareerPieceIcon, ensurePortraitsReady } from '../art/career-pieces.js';
@@ -109,8 +109,8 @@ class Game {
   cacheElements() {
     const ids = [
       'setup-screen', 'game-screen', 'setup-bg', 'logo-canvas',
-      'input-nickname', 'avatar-picker', 'career-picker', 'difficulty-picker', 'aicount-picker',
-      'theme-picker', 'dice-picker', 'cash-picker', 'market-picker',
+      'input-nickname', 'career-picker', 'difficulty-picker', 'aicount-picker',
+      'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
       'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
       // HUD 容器（四角定位，用于测量与避让计算）
@@ -139,35 +139,12 @@ class Game {
   setupSetupScreen() {
     const settings = loadSettings();
 
-    const ap = this.el['avatar-picker'];
-    ap.innerHTML = '';
-    AVATARS.forEach((a, i) => {
-      const btn = document.createElement('button');
-      btn.className = 'avatar-opt';
-      btn.type = 'button';
-      btn.title = `${a.name} —— ${a.desc}`;
-      btn.setAttribute('role', 'radio');
-      btn.setAttribute('aria-label', a.name);
-      const cv = getAvatarIcon(i, 0);
-      cv.style.width = '32px';
-      cv.style.height = '48px';
-      btn.appendChild(cv);
-      btn.addEventListener('click', () => {
-        this.setup.avatar = i;
-        this.refreshAvatars();
-        this.sfx.unlock();
-        this.sfx.click();
-      });
-      ap.appendChild(btn);
-    });
-
+    // **没有「选择棋子形象」** —— 立绘由职业唯一决定，用户不再能自由选外观。
     this.setup = {
       nickname: settings.nickname || '你',
-      avatar: settings.avatar ?? 0,
       careerId: settings.careerId || CAREERS[0].id,
       difficulty: settings.difficulty || 'normal',
       aiCount: settings.aiCount ?? 3,
-      theme: settings.theme || 'finance',
       diceCount: settings.diceCount ?? 2,
       cash: settings.cash || 'standard',
       market: settings.market || 'normal',
@@ -223,11 +200,6 @@ class Game {
       { id: '3', label: '3 位' },
     ], (v) => { this.setup.aiCount = parseInt(v, 10); this.refreshAiPreview(); });
 
-    this.buildSegments('theme-picker', [
-      { id: 'finance', label: '金融城' },
-      { id: 'classic', label: '经典' },
-    ], (v) => { this.setup.theme = v; });
-
     this.buildSegments('dice-picker', [
       { id: '1', label: '1 颗' },
       { id: '2', label: '2 颗' },
@@ -250,7 +222,6 @@ class Game {
     this.el['chk-anim'].checked = this.setup.anim;
     this.el['chk-tutorial'].checked = this.setup.tutorial;
 
-    this.refreshAvatars();
     this.refreshCareers();
     this.refreshSegments();
     this.refreshAiPreview();
@@ -286,7 +257,6 @@ class Game {
     const map = {
       'difficulty-picker': () => this.setup.difficulty,
       'aicount-picker': () => String(this.setup.aiCount),
-      'theme-picker': () => this.setup.theme,
       'dice-picker': () => String(this.setup.diceCount),
       'cash-picker': () => this.setup.cash,
       'market-picker': () => this.setup.market,
@@ -298,13 +268,6 @@ class Game {
         b.setAttribute('aria-checked', b.dataset.id === cur ? 'true' : 'false');
       });
     }
-  }
-
-  refreshAvatars() {
-    [...this.el['avatar-picker'].children].forEach((b, i) => {
-      b.classList.toggle('is-sel', i === this.setup.avatar);
-      b.setAttribute('aria-checked', i === this.setup.avatar ? 'true' : 'false');
-    });
   }
 
   /** 刷新职业选择器的高亮状态 */
@@ -371,7 +334,6 @@ class Game {
       cash: this.setup.cash,
       market: this.setup.market,
       nickname: this.setup.nickname,
-      avatar: this.setup.avatar,
       careerId: this.setup.careerId,
     };
     this.beginGame(this.config);
@@ -387,7 +349,7 @@ class Game {
 
     const players = [{
       id: 0, name: config.nickname || '你', isAI: false,
-      avatar: config.avatar, colorIndex: 0,
+      colorIndex: 0,
       // 真人玩家：**不分配性格**（personalityId 为 null）
       personalityId: null, personality: null,
       careerId: config.careerId || CAREERS[0].id,
@@ -399,8 +361,7 @@ class Game {
         name: aiName(rng, p),
         isAI: true,
         // 不指定 avatar —— createState 会按职业自动选用**职业专属立绘**
-        colorIndex: i + 1,
-        // 性格：AI 独有
+        colorIndex: i + 1,        // 性格：AI 独有
         personalityId: p.id,
         personality: p,
         // 职业：AI 独有（与性格正交，任一职业可配任一性格）
@@ -417,7 +378,6 @@ class Game {
       cash,
       market: config.market,
       difficulty: config.difficulty,
-      theme: config.theme,
       aiCount: config.aiCount,
     });
 
@@ -1866,7 +1826,7 @@ class Game {
           ? `${roleText} · 控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`
           : `控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`);
 
-      // 头像（保持宽高比：职业立绘 32×40 与经典棋子 16×24 比例不同，居中适配）
+      // 头像（职业立绘 32×40，居中适配到 HUD 画布）
       const avatarCanvas = this.el['active-avatar'];
       const icon = getAvatarIcon(p.avatar, p.colorIndex);
       const actx = avatarCanvas.getContext('2d');
@@ -1999,7 +1959,8 @@ class Game {
     // 记录分享 seed：开局时沿用，保证 AI 的「职业 + 性格」组合可复现
     this.shareSeed = params.seed;
     this.setup.nickname = params.nickname || this.setup.nickname;
-    this.setup.avatar = params.avatar ?? this.setup.avatar;
+    // 旧分享链接可能带 `av`（棋子形象）参数 —— **直接忽略**，
+    // 立绘已由职业唯一决定，无需也不能再从链接恢复外观。
     if (params.careerId && CAREER_BY_ID[params.careerId]) {
       this.setup.careerId = params.careerId;
     }
@@ -2009,7 +1970,6 @@ class Game {
     this.setup.cash = params.cash;
     this.setup.market = params.market;
     this.el['input-nickname'].value = this.setup.nickname;
-    this.refreshAvatars();
     this.refreshCareers();
     this.refreshSegments();
     this.refreshAiPreview();

@@ -46,10 +46,11 @@ function assert(cond, msg) {
 /** 构造 4 人测试局 */
 function makeCasinoState(overrides = {}) {
   const players = [
-    { id: 0, name: '测试者', isAI: false, avatar: 0, colorIndex: 0, careerId: 'ib' },
-    { id: 1, name: 'AI甲', isAI: true, avatar: 1, colorIndex: 1, careerId: 'risk' },
-    { id: 2, name: 'AI乙', isAI: true, avatar: 2, colorIndex: 2, careerId: 'actuary' },
-    { id: 3, name: 'AI丙', isAI: true, avatar: 3, colorIndex: 3, careerId: 'king' },
+    // 不传 avatar —— 立绘由职业唯一决定（createState 会忽略旧存档里的该字段）
+    { id: 0, name: '测试者', isAI: false, colorIndex: 0, careerId: 'ib' },
+    { id: 1, name: 'AI甲', isAI: true, colorIndex: 1, careerId: 'risk' },
+    { id: 2, name: 'AI乙', isAI: true, colorIndex: 2, careerId: 'actuary' },
+    { id: 3, name: 'AI丙', isAI: true, colorIndex: 3, careerId: 'king' },
   ];
   return createState({
     seed: 'casino-test',
@@ -102,6 +103,16 @@ export function runCareerChecks() {
         `${c.id} 的 pieceIndex=${c.pieceIndex} 越界（应 7~13）`);
     }
     return `棋子索引 ${pieces.join(' / ')} —— 7 种职业 7 张专属形象`;
+  });
+
+  check(results, '真人玩家的立绘同样绑定职业', () => {
+    // 「选择棋子形象」已删除 —— 真人也不能挑外观，只能由职业决定。
+    const st = makeCasinoState();
+    const human = st.players.find((p) => !p.isAI);
+    assert(human, '找不到真人玩家');
+    assert(human.avatar === CAREER_BY_ID[human.careerId].pieceIndex,
+      `真人立绘未绑定职业（avatar=${human.avatar}, career=${human.careerId}）`);
+    return `真人「${human.name}」使用职业「${human.careerId}」的专属立绘（索引 ${human.avatar}）`;
   });
 
   check(results, '「赌王」职业存在且带额外底牌被动', () => {

@@ -63,6 +63,35 @@ def main():
             page.goto(f"http://127.0.0.1:{PORT}/index.html", wait_until="load")
             page.wait_for_timeout(500)
 
+            # ---- 0) 「选择棋子形象」与「选择题材皮肤」功能已删除 ----
+            removed_ui = page.evaluate(
+                """() => ({
+                    avatarPicker: !!document.getElementById('avatar-picker'),
+                    avatarOpts: document.querySelectorAll('.avatar-opt').length,
+                    themePicker: !!document.getElementById('theme-picker'),
+                    themeLabels: [...document.querySelectorAll('.field-label')]
+                        .map(e => e.textContent.trim())
+                        .filter(t => /题材|皮肤|棋子形象/.test(t)),
+                    setupAvatarField: !!(window.__game && window.__game.setup
+                        && 'avatar' in window.__game.setup),
+                    setupThemeField: !!(window.__game && window.__game.setup
+                        && 'theme' in window.__game.setup),
+                })"""
+            )
+            print("[0] 已移除的选择项：", removed_ui)
+            if removed_ui.get("avatarPicker"):
+                failures.append("开局界面仍存在「选择棋子形象」(#avatar-picker)")
+            if removed_ui.get("avatarOpts"):
+                failures.append(f"仍存在棋子形象选项按钮：{removed_ui.get('avatarOpts')} 个")
+            if removed_ui.get("themePicker"):
+                failures.append("开局界面仍存在「选择题材皮肤」(#theme-picker)")
+            if removed_ui.get("themeLabels"):
+                failures.append(f"开局界面仍有题材/形象相关文案：{removed_ui.get('themeLabels')}")
+            if removed_ui.get("setupAvatarField"):
+                failures.append("setup 状态仍残留 avatar 字段")
+            if removed_ui.get("setupThemeField"):
+                failures.append("setup 状态仍残留 theme 字段")
+
             # ---- 1) 开局界面职业选择器 ----
             career_count = page.locator("#career-picker .career-opt").count()
             print(f"[1] 职业选择器选项数：{career_count}")
@@ -104,6 +133,31 @@ def main():
             print(f"[5] 玩家职业（运行时状态）：{player_career}")
             if player_career and player_career != "actuary":
                 failures.append(f"玩家职业应为 actuary，实际 {player_career}")
+
+            # ---- 2b) 棋子立绘由职业唯一决定（真人 / AI 都是） ----
+            binding = page.evaluate(
+                """async () => {
+                    const careers = await import('/src/core/careers.js');
+                    const st = window.__game.state;
+                    return st.players.map(p => ({
+                        name: p.name,
+                        isAI: p.isAI,
+                        careerId: p.careerId,
+                        avatar: p.avatar,
+                        expected: careers.CAREER_BY_ID[p.careerId]?.pieceIndex,
+                    }));
+                }"""
+            )
+            print("[5b] 立绘绑定：", binding)
+            if not binding:
+                failures.append("未能读取玩家立绘绑定信息")
+            for b in binding or []:
+                if b["avatar"] != b["expected"]:
+                    failures.append(
+                        f"{b['name']} 的立绘未绑定职业：avatar={b['avatar']} "
+                        f"应为 {b['expected']}（职业 {b['careerId']}）")
+                if not (7 <= (b["avatar"] or 0) <= 13):
+                    failures.append(f"{b['name']} 的立绘索引越界：{b['avatar']}")
 
             # ---- 3) 赌场 UI 渲染 ----
             poker_ok = page.evaluate(

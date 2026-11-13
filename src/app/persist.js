@@ -60,21 +60,28 @@ export function saveSettings(settings) {
   return write(KEY_SETTINGS, settings);
 }
 
+/**
+ * 读取设置项。
+ *
+ * ================== 兼容规则 ==================
+ * 旧存档可能仍带 `avatar`（棋子形象）与 `theme`（题材皮肤）字段 ——
+ * 这两个功能已删除，读取时**直接忽略**，不影响其余设置项的恢复。
+ * 未知的旧字段不会导致崩溃，也不会被写回。
+ */
 export function loadSettings() {
-  return read(KEY_SETTINGS, {
-    nickname: '',
-    avatar: 0,
-    careerId: 'ib',          // 出场职业（旧存档无此字段时降级为投行家）
-    difficulty: 'normal',
-    aiCount: 3,
-    diceCount: 2,
-    cash: 'standard',
-    market: 'normal',
-    theme: 'finance',
-    sound: true,
-    anim: true,
-    tutorial: true,
-  });
+  const s = read(KEY_SETTINGS, null) || {};
+  return {
+    nickname: typeof s.nickname === 'string' ? s.nickname : '',
+    careerId: typeof s.careerId === 'string' && s.careerId ? s.careerId : 'ib',
+    difficulty: s.difficulty || 'normal',
+    aiCount: Number.isFinite(s.aiCount) ? s.aiCount : 3,
+    diceCount: Number.isFinite(s.diceCount) ? s.diceCount : 2,
+    cash: s.cash || 'standard',
+    market: s.market || 'normal',
+    sound: s.sound !== false,
+    anim: s.anim !== false,
+    tutorial: s.tutorial !== false,
+  };
 }
 
 /** 排行榜（按玩家名聚合胜率） */

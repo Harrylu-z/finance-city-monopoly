@@ -258,8 +258,8 @@ function svgToCanvas(svg) {
 
   const entry = svgImageEntry(svg);
   entry.targets.add(cv);
-  // 若已解码完成，直接画一次
-  if (entry.loaded) {
+  // 若已解码完成，直接画一次（解码失败的条目跳过，避免对 broken 图片 drawImage）
+  if (entry.loaded && !entry.failed) {
     ctx.drawImage(entry.img, 0, 0, PORTRAIT_W, PORTRAIT_H);
   }
   return cv;
@@ -273,11 +273,12 @@ function svgImageEntry(svg) {
   if (entry) return entry;
 
   const img = new Image();
-  entry = { img, loaded: false, targets: new Set(), pending: [] };
+  entry = { img, loaded: false, failed: false, targets: new Set(), pending: [] };
   svgImages.set(svg, entry);
 
   entry.pending.push(new Promise((resolve) => {
-    const finish = () => {
+    // 解码成功 → 把 SVG 画进所有目标 canvas
+    const onLoad = () => {
       if (entry.loaded) return;
       entry.loaded = true;
       for (const cv of entry.targets) {
@@ -290,8 +291,17 @@ function svgImageEntry(svg) {
       }
       resolve();
     };
-    img.addEventListener('load', finish);
-    img.addEventListener('error', finish);
+    // 解码失败 → **不要**去 drawImage（图片处于 broken 状态，
+    // drawImage 会抛 InvalidStateError）。留空 canvas 即可，
+    // 游戏继续运行，只是这一个立绘缺失。
+    const onError = () => {
+      if (entry.loaded) return;
+      entry.loaded = true;
+      entry.failed = true;
+      resolve();
+    };
+    img.addEventListener('load', onLoad);
+    img.addEventListener('error', onError);
   }));
 
   img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;

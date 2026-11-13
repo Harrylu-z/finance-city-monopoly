@@ -21,7 +21,7 @@ import {
 } from './economy.js';
 import { makeRng } from './rng.js';
 import {
-  CAREERS, CAREER_BY_ID, DEFAULT_CAREER_ID, getCareer,
+  CAREERS, CAREER_BY_ID, DEFAULT_CAREER_ID, getCareer, CAREER_PIECE_START,
   careerEffectMult, careerEffectValue, careerHasHook,
 } from './careers.js';
 import {
@@ -43,7 +43,6 @@ export function createState(options = {}) {
     cash = CONFIG.cashLevels.standard,
     market = 'normal',
     difficulty = 'normal',
-    theme = 'finance',
     aiCount = 3,
     // legacy = true 表示「载入旧存档」：AI 缺失性格字段时降级为中性基准，
     // 不凭空补一个人格（避免旧档被追溯性改写）。
@@ -63,7 +62,6 @@ export function createState(options = {}) {
   const state = {
     seed,
     rng,
-    theme,
     difficulty,
     diceCount,
     market,               // 'bull' | 'bear' | 'normal'
@@ -99,10 +97,11 @@ export function createState(options = {}) {
       index: i,
       name: p.name,
       isAI: !!p.isAI,
-      // 棋子形象：AI 使用其**职业专属立绘**（索引 7~13），
-      // 真人使用经典棋子（索引 0~3）—— 一眼就能从棋子认出职业。
-      // 显式传入 avatar 且与职业立绘不冲突时才优先用传入值（保留扩展性）。
-      avatar: p.avatar ?? (p.isAI ? (getCareer(resolvedCareerId)?.pieceIndex ?? i) : i),
+      // 棋子立绘：**由职业唯一决定**（索引 7~13）——
+      // 职业与形象一一对应，玩家不再能自由选择外观，
+      // 因此真人 / AI 都使用自己职业的专属立绘，一眼就能从棋子认出职业。
+      // 传入的 avatar 字段（旧存档遗留）一律忽略。
+      avatar: getCareer(resolvedCareerId)?.pieceIndex ?? (CAREER_PIECE_START + i),
       colorIndex: p.colorIndex ?? i,
       // ===== 职业（金融行业专属角色）=====
       // careerId 决定出场被动；career 是同值的兼容别名（旧代码用 player.career）

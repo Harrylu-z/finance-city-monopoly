@@ -6,11 +6,10 @@ import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
 import { GROUP_COLORS } from '../core/palette.js';
 import { makeCanvas, rect, hline, vline, strokeRect, outline } from '../art/pixeldraw.js';
 import { getAvatarSprites } from '../art/avatars.js';
-import { getCareerPieceSprites } from '../art/career-pieces.js';
 import { CAREERS } from '../core/careers.js';
 import { drawMiniChar } from '../art/ui-icons.js';
 
-/** 职业 id → 棋子索引（分享图里让 AI 用自己的职业立绘） */
+/** 职业 id → 立绘索引（分享图里每位玩家都用自己的职业立绘） */
 const CAREER_PIECE_BY_CAREER = Object.fromEntries(CAREERS.map((c) => [c.id, c.pieceIndex]));
 
 const W = 480;
@@ -67,12 +66,11 @@ export function renderShareCard(canvas, data) {
     ctx.fillStyle = i === 0 ? PALETTE.gold : PALETTE.glass;
     ctx.fillText(`#${i + 1}`, barX + 8, y + 16);
 
-    // 棋子（保持宽高比：经典棋子 16×24，职业立绘 32×40）
-    // AI 优先使用其**职业立绘**（与棋盘上一致），真人用经典棋子
-    const useCareer = p.isAI && p.careerId && CAREER_PIECE_BY_CAREER[p.careerId] != null;
-    const sprites = useCareer
-      ? getCareerPieceSprites(CAREER_PIECE_BY_CAREER[p.careerId], p.colorIndex)
-      : getAvatarSprites(p.avatar || 0, p.colorIndex);
+    // 棋子 —— **统一使用职业立绘**（真人 / AI 一致，与棋盘上看到的完全相同）
+    const pieceIndex = (p.careerId && CAREER_PIECE_BY_CAREER[p.careerId] != null)
+      ? CAREER_PIECE_BY_CAREER[p.careerId]
+      : p.avatar;
+    const sprites = getAvatarSprites(pieceIndex ?? 0, p.colorIndex);
     const isVector = sprites.idle.width >= 32;
     ctx.imageSmoothingEnabled = isVector;
     const ts = 24 / sprites.idle.height;   // 统一高度 24

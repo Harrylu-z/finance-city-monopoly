@@ -247,7 +247,7 @@ def main():
                         historyLen: persist.loadHistory().length,
                         url: share.buildShareUrl({
                             seed: st.seed, nickname: st.players[0].name,
-                            avatar: st.players[0].avatar, careerId: st.players[0].careerId,
+                            careerId: st.players[0].careerId,
                             difficulty: 'normal', aiCount: 3, diceCount: 2,
                             cash: 'standard', market: 'normal',
                         }),
@@ -259,6 +259,78 @@ def main():
                 failures.append(f"设置项存档职业应为 king，实际 {rt.get('settingsCareer')}")
             if rt.get("historyLen", 0) < 1:
                 failures.append("战绩未写入本地存储")
+
+            # ---- 5b) 分享链接不再携带 av（棋子形象）参数 ----
+            if "av=" in (rt.get("url") or ""):
+                failures.append(f"分享链接仍带 av（棋子形象）参数：{rt.get('url')}")
+            if "theme=" in (rt.get("url") or ""):
+                failures.append(f"分享链接仍带 theme（题材皮肤）参数：{rt.get('url')}")
+            if "career=" not in (rt.get("url") or ""):
+                failures.append("分享链接缺少 career 参数")
+
+            # ---- 5c) 旧存档兼容：含 avatar / theme 字段也能安全读取 ----
+            legacy_settings = page.evaluate(
+                """async () => {
+                    const persist = await import('/src/app/persist.js');
+                    // 模拟旧版本写入的设置项（含已删除的 avatar / theme 字段）
+                    localStorage.setItem('fc-monopoly.settings', JSON.stringify({
+                        nickname: '旧玩家', avatar: 3, theme: 'classic',
+                        careerId: 'king', difficulty: 'expert', aiCount: 2,
+                        diceCount: 3, cash: 'loose', market: 'bull',
+                        sound: false, anim: false, tutorial: false,
+                    }));
+                    const s = persist.loadSettings();
+                    // 旧字段不应被读出
+                    const hasLegacy = ('avatar' in s) || ('theme' in s);
+                    // 旧字段也不应被写回
+                    persist.saveSettings(s);
+                    const raw = JSON.parse(localStorage.getItem('fc-monopoly.settings'));
+                    return {
+                        nickname: s.nickname, careerId: s.careerId,
+                        difficulty: s.difficulty, aiCount: s.aiCount,
+                        cash: s.cash, market: s.market,
+                        hasLegacy, rawHasLegacy: ('avatar' in raw) || ('theme' in raw),
+                        rawCareer: raw.careerId,
+                    };
+                }"""
+            )
+            print("[5c] 旧存档设置项兼容：", legacy_settings)
+            if legacy_settings.get("hasLegacy"):
+                failures.append("loadSettings 仍返回 avatar / theme 字段")
+            if legacy_settings.get("rawHasLegacy"):
+                failures.append("saveSettings 把 avatar / theme 旧字段写回了存档")
+            if legacy_settings.get("careerId") != "king":
+                failures.append(
+                    f"旧存档职业未正确读取：{legacy_settings.get('careerId')}")
+            if legacy_settings.get("nickname") != "旧玩家":
+                failures.append(
+                    f"旧存档昵称未正确读取：{legacy_settings.get('nickname')}")
+
+            # ---- 5d) 旧存档玩家带 avatar 字段 → 建局时按职业绑定 ----
+            legacy_players = page.evaluate(
+                """async () => {
+                    const rules = await import('/src/core/rules.js');
+                    const careers = await import('/src/core/careers.js');
+                    const st = rules.createState({
+                        seed: 'legacy-avatar', legacy: true,
+                        players: [
+                            { id: 0, name: '旧人类', isAI: false, careerId: 'ib', avatar: 2 },
+                            { id: 1, name: '旧AI', isAI: true, careerId: 'risk', avatar: 0 },
+                        ],
+                        cash: 1500,
+                    });
+                    return st.players.map(p => ({
+                        name: p.name, avatar: p.avatar,
+                        expected: careers.CAREER_BY_ID[p.careerId].pieceIndex,
+                    }));
+                }"""
+            )
+            print("[5d] 旧存档玩家立绘兼容：", legacy_players)
+            for lp in legacy_players or []:
+                if lp["avatar"] != lp["expected"]:
+                    failures.append(
+                        f"旧存档 {lp['name']} 的 avatar 字段未被忽略："
+                        f"{lp['avatar']}（应为 {lp['expected']}）")
 
             # ---- 4) 分享链接打开 → 界面与开局后职业均为 king ----
             page.goto(rt["url"], wait_until="load")
@@ -279,6 +351,47 @@ def main():
             print("[7] 分享链接开局后职业：", started)
             if started != "king":
                 failures.append(f"分享链接开局后职业应为 king，实际 {started}")
+
+            # ---- 7b) 旧分享链接（带 av 棋子形象参数）→ 忽略该参数，正常开局 ----
+            legacy_url = (rt.get("url") or "") + "&av=2"
+            page.goto(legacy_url, wait_until="load")
+            page.wait_for_timeout(900)
+            legacy_ui = page.evaluate(
+                """() => ({
+                    avatarPicker: !!document.getElementById('avatar-picker'),
+                    themePicker: !!document.getElementById('theme-picker'),
+                    sel: document.querySelector('#career-picker .career-opt.is-sel')
+                        ?.dataset.career ?? null,
+                    setupHasAvatar: !!(window.__game?.setup && 'avatar' in window.__game.setup),
+                })"""
+            )
+            print("[7b] 旧链接（带 av）载入：", legacy_ui)
+            if legacy_ui.get("avatarPicker") or legacy_ui.get("themePicker"):
+                failures.append("旧链接载入后仍出现形象/题材选择器")
+            if legacy_ui.get("setupHasAvatar"):
+                failures.append("旧链接载入后 setup 仍残留 avatar 字段")
+            if legacy_ui.get("sel") != "king":
+                failures.append(
+                    f"旧链接载入后职业应为 king，实际 {legacy_ui.get('sel')}")
+
+            page.evaluate("() => { const c = document.getElementById('chk-tutorial'); if (c) c.checked = false; }")
+            page.locator("#btn-start").click()
+            page.wait_for_timeout(1200)
+            legacy_started = page.evaluate(
+                """async () => {
+                    const careers = await import('/src/core/careers.js');
+                    const p = window.__game.state.players[0];
+                    return {
+                        careerId: p.careerId, avatar: p.avatar,
+                        expected: careers.CAREER_BY_ID[p.careerId].pieceIndex,
+                    };
+                }"""
+            )
+            print("[7c] 旧链接开局后立绘绑定：", legacy_started)
+            if legacy_started.get("avatar") != legacy_started.get("expected"):
+                failures.append(
+                    f"旧链接开局后立绘未按职业绑定：{legacy_started.get('avatar')}"
+                    f"（应为 {legacy_started.get('expected')}）")
 
             # ---- 8) 分享链接还原后 AI 性格与首次开局完全一致（可复现） ----
             restored = page.evaluate(

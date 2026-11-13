@@ -20,7 +20,7 @@ export function buildShareUrl(config) {
   if (config.market) p.set('mkt', config.market);
   // URLSearchParams.set 会自动做 URL 编码，此处不可再手动 encodeURIComponent（否则会二次编码）
   if (config.nickname) p.set('nick', config.nickname);
-  if (config.avatar != null) p.set('av', String(config.avatar));
+  // 不再写 `av`（棋子形象）—— 立绘由职业唯一决定，无需序列化。
   if (config.careerId) p.set('career', String(config.careerId));
   return `${base}?${p.toString()}`;
 }
@@ -46,7 +46,7 @@ export function parseShareUrl() {
     cash: p.get('cash') || 'standard',
     market: p.get('mkt') || 'normal',
     nickname,
-    avatar: p.get('av') ? parseInt(p.get('av'), 10) : 0,
+    // 旧链接里的 `av`（棋子形象）参数**直接忽略** —— 形象已由职业固定绑定。
     careerId: p.get('career') || 'ib',
   };
 }
