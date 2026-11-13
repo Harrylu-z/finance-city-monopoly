@@ -35,6 +35,15 @@
  *   · 玩家也可以用**资产**下注：下注前先把机构按 `assetValue` 折算成
  *     「抵押额度」，直接从额度里扣款 —— 资产所有权不变、估值不重复计算，
  *     结算后现金与资产估值同时回补，保证总资产守恒。
+ *
+ * ================== 结算口径（净额制）==================
+ * 底池里混有「现金筹码」与「资产筹码」两种成分。结算时按**净额**一次性
+ * 写回主游戏，避免重复记账：
+ *   · 现金净额 = 赢得的现金筹码 − 押上的现金筹码 → 直接加减 `player.cash`；
+ *   · 资产净额 = 赢得的资产筹码 − 押上的资产筹码 → 加减 `player.pokerAssetLock`。
+ * 派彩按底池成分比例拆分（现金筹码 → 现金，资产筹码 → 资产估值），
+ * 因此「用现金赢下资产筹码」这类价值转移不会凭空产生或消失。
+ * 全桌现金净额之和恒为 0，资产净额之和恒为 0。
  */
 
 import { makeRng } from './rng.js';
@@ -427,12 +436,10 @@ function commitBet(game, seatIndex, amount) {
   seat.bet += fromCash + fromAsset;
   game.pot += fromCash + fromAsset;
 
-  // 资产部分立即锁定主游戏估值 —— 机构所有权不变，只是估值被让渡出去。
-  // 这样「用资产下注」是真实的风险敞口，而不是免费筹码。
-  if (fromAsset > 0) {
-    const ref = game.playerRefs.get(seat.playerId);
-    if (ref) ref.pokerAssetLock = Math.max(0, (ref.pokerAssetLock || 0) + fromAsset);
-  }
+  // 注意：此处**不**直接写 ref.pokerAssetLock。
+  // 资产让渡的记账统一由 settlePoker 完成（单点结算），
+  // 避免「下注记一次 + 结算再记一次」造成资产折让被重复计算。
+  // 这里只保留 seat 上的账（cashPaid / assetPaid / bet）。
 
   if (seat.stack <= 0) seat.allIn = true;
   return { cash: fromCash, asset: fromAsset };
@@ -996,8 +1003,8 @@ export function abortPokerGame(game) {
  *
  * 关键保证：
  *   1. 玩家现金**绝不为负**：现金扣款最多扣到 0；
- *   2. 不足部分转为「资产折让」（assetStakeUsed），结算后资产估值同步回补，
- *      主游戏总资产守恒；
+ *   2. **净额结算**：现金与资产各按「赢 − 押」的净额一次性写回，
+ *      不重复记账，也不凭空造钱（全桌净额之和恒为 0）；
  *   3. 主游戏的机构所有权、等级、质押状态**完全不变**。
  *
  * @param {object} game
@@ -1011,42 +1018,86 @@ export function settlePoker(game, state) {
     received.set(p.playerId, (received.get(p.playerId) || 0) + p.amount);
   }
 
+  // ---- 底池的「筹码成分」拆解 ----
+  // 底池里混有现金筹码与资产筹码，派彩时必须**按成分原路返回**：
+  // 现金筹码回到现金，资产筹码回到资产估值（解除让渡）。
+  // 否则会出现「用现金赢下资产筹码」或反之的价值凭空产生/消失。
+  let potCash = 0;
+  let potAsset = 0;
+  for (const seat of game.seats) {
+    potCash += seat.cashPaid;
+    potAsset += seat.assetPaid;
+  }
+  const potTotal = potCash + potAsset;
+  const assetShare = potTotal > 0 ? potAsset / potTotal : 0;
+
   const deltas = [];
   for (const seat of game.seats) {
     const ref = game.playerRefs.get(seat.playerId);
     const gain = received.get(seat.playerId) || 0;
     const totalBet = seat.bet;
-    // 现金实扣 = 已在桌上扣掉的现金部分（绝不超过玩家现金）
-    const cashPay = Math.min(seat.cashPaid, Math.max(0, seat.cash));
-    // 资产折让 = 用资产额度顶掉的部分（所有权不变，只是估值让渡）
-    const assetPart = seat.assetPaid;
+
+    // 现金实扣：就是本座位在桌上实际付出的现金筹码（已在 commitBet 里记账）。
+    // 这里不再对 ref.cash 做二次扣减之外的操作 —— 净额一次性结算。
+    const cashPaid = seat.cashPaid;
+    // 资产折让：座位实际用资产额度顶掉的部分（所有权不变，只是估值让渡）。
+    const assetStaked = seat.assetPaid;
+
+    // 派彩按底池成分拆分：资产筹码部分回补资产估值，现金筹码部分进现金。
+    // 赢回自己押的资产 → 解除等额让渡；赢得别人的资产 → 资产估值增加等额。
+    const assetWon = Math.round(gain * assetShare);
+    const cashWon = gain - assetWon;
+
+    // 资产净额 = 赢得的资产 − 押上的资产
+    //   · 押了 500 资产、赢回 500 → 净额 0（估值原样归位）
+    //   · 押了 500 资产、一分未赢 → 净额 −500（真实折损）
+    const assetNet = assetWon - assetStaked;
+    // 现金净额 = 赢得的现金 − 押上的现金
+    const cashNet = cashWon - cashPaid;
 
     if (ref) {
-      // 现金绝不为负
-      ref.cash = Math.max(0, ref.cash - cashPay);
-      // 赢得的筹码：现金部分直接进现金
-      ref.cash += gain;
-      // 资产让渡折损：下注时锁定的估值 —— 输了就永久折损（体现真实代价），
-      // 赢回的部分随底池以现金回流，总资产自然恢复。
-      ref.pokerAssetLock = Math.max(0, (ref.pokerAssetLock || 0) + assetPart);
+      // 现金净额一次性结算；保证绝不为负
+      ref.cash = Math.max(0, (ref.cash || 0) + cashNet);
+      // 资产让渡净额一次性结算；正数=解除让渡，负数=真实折损。
+      // 统一在这里记账，避免下注与结算两处重复累加。
+      ref.pokerAssetLock = Math.max(0, (ref.pokerAssetLock || 0) - assetNet);
     }
     deltas.push({
       playerId: seat.playerId,
       name: seat.name,
       bet: totalBet,
-      cashPaid: cashPay,
-      assetStaked: assetPart,
+      cashPaid,
+      assetStaked,
       gain,
       net: gain - totalBet,
+      cashDelta: cashNet,
+      assetDelta: assetNet,
       folded: seat.folded,
       handName: seat.handName,
     });
   }
 
-  // 注：资产让渡折损（pokerAssetLock）**不**在此处回补 ——
-  // 它体现的是「用资产下注」的真实代价：输了则估值折损保留，
-  // 赢回的部分已随底池以现金形式进账，总资产自然恢复。
-  // 机构的**所有权 / 等级 / 质押状态**自始至终未被改动。
+  // 守恒自检：全桌现金净额之和应为 0（筹码只在桌内转移，不凭空增减）。
+  // 资产净额之和同样应为 0。
+  const sumCashNet = deltas.reduce((s, d) => s + d.cashDelta, 0);
+  const sumAssetNet = deltas.reduce((s, d) => s + d.assetDelta, 0);
+  if (sumCashNet !== 0) {
+    // 兜底修正（理论上不会发生）：把差额从最大净收益者身上收回，保证不凭空造钱。
+    const maxSeat = deltas.reduce((a, b) => (b.cashDelta > a.cashDelta ? b : a), deltas[0]);
+    if (maxSeat) {
+      const ref = game.playerRefs.get(maxSeat.playerId);
+      if (ref) ref.cash = Math.max(0, (ref.cash || 0) - sumCashNet);
+      maxSeat.cashDelta -= sumCashNet;
+    }
+  }
+  if (sumAssetNet !== 0) {
+    const maxSeat = deltas.reduce((a, b) => (b.assetDelta > a.assetDelta ? b : a), deltas[0]);
+    if (maxSeat) {
+      const ref = game.playerRefs.get(maxSeat.playerId);
+      if (ref) ref.pokerAssetLock = Math.max(0, (ref.pokerAssetLock || 0) + sumAssetNet);
+      maxSeat.assetDelta -= sumAssetNet;
+    }
+  }
 
   const log = [];
   for (const d of deltas) {

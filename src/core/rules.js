@@ -797,9 +797,11 @@ export function finishCasinoGame(state, game) {
     if (!p) continue;
     // 双保险：现金永不为负
     if (p.cash < 0) p.cash = 0;
+    const net = d.net || 0;
+    const netText = net > 0 ? `赢得 ￥${d.gain}` : (net < 0 ? `净亏 ￥${-net}` : '持平');
     log(state, p.isAI ? 'ai' : 'self',
-      `${p.name} 在德州扑克中${d.gain > 0 ? `赢得 ￥${d.gain}` : `投注 ￥${d.bet}`}`
-      + (d.assetStaked > 0 ? `（含资产折让 ￥${d.assetStaked}，机构所有权不变）` : '')
+      `${p.name} 在德州扑克中${netText}`
+      + (d.bet > 0 ? `（投注 ￥${d.bet}` + (d.assetStaked > 0 ? `，含资产折让 ￥${d.assetStaked}，机构所有权不变` : '') + '）' : '')
       + (d.handName ? ` · ${d.handName}` : ''),
       '赌场');
   }

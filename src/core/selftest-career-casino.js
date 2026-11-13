@@ -581,8 +581,100 @@ export function runCasinoChecks() {
     return `${rejected.length} 种非法金额全部被拒绝 · 筹码保持 ￥${cashAfter}`;
   });
 
-  check(results, '连续 30 局赌场结算不产生负数且状态自洽', () => {
-    let minCash = Infinity;
+  check(results, '结算守恒：全桌现金净额之和为 0（不凭空造钱）', () => {
+    // 回归用例：曾经出现过「赢家底池被重复计入」导致总现金凭空增加。
+    for (let i = 0; i < 12; i++) {
+      const state = makeCasinoState();
+      const before = state.players.reduce((s, p) => s + p.cash, 0);
+      const game = startCasinoGame(state);
+      assert(game, '赌场应能开局');
+      let guard = 0;
+      while (!game.over && guard++ < 300) {
+        const idx = currentActor(game);
+        if (idx < 0) break;
+        const acts = legalActions(game);
+        if (!acts.length) break;
+        const r = applyAction(game, idx, acts[(i + guard) % acts.length]);
+        if (!r.ok) applyAction(game, idx, { type: 'fold' });
+      }
+      const out = finishCasinoGame(state, game);
+      const after = state.players.reduce((s, p) => s + p.cash, 0);
+      assert(
+        after === before,
+        `第 ${i + 1} 局现金不守恒：结算前 ￥${before} → 结算后 ￥${after}（差 ${after - before}）`,
+      );
+      // 结算条目里的现金净额之和也必须是 0
+      const sumCashNet = out.deltas.reduce((s, d) => s + (d.cashDelta || 0), 0);
+      assert(sumCashNet === 0, `第 ${i + 1} 局现金净额之和 ${sumCashNet}（应为 0）`);
+    }
+    return '12 局随机对局 · 全桌现金净额之和恒为 0';
+  });
+
+  check(results, '结算守恒：资产折让净额之和为 0（不重复记账）', () => {
+    // 回归用例：曾经出现过「下注记一次 + 结算再记一次」导致资产折让翻倍。
+    for (let i = 0; i < 12; i++) {
+      const state = makeCasinoState();
+      // 给每人加资产，制造资产额度下注场景
+      for (const p of state.players) {
+        p.institutions.push({ cellIndex: 4, level: 3, mortgaged: false, mortgageAmount: 0 });
+      }
+      const lockBefore = state.players.reduce((s, p) => s + (p.pokerAssetLock || 0), 0);
+      const game = startCasinoGame(state);
+      assert(game, '赌场应能开局');
+      let guard = 0;
+      while (!game.over && guard++ < 300) {
+        const idx = currentActor(game);
+        if (idx < 0) break;
+        const acts = legalActions(game);
+        if (!acts.length) break;
+        const r = applyAction(game, idx, acts[(i + guard) % acts.length]);
+        if (!r.ok) applyAction(game, idx, { type: 'fold' });
+      }
+      const out = finishCasinoGame(state, game);
+      const sumAssetNet = out.deltas.reduce((s, d) => s + (d.assetDelta || 0), 0);
+      assert(sumAssetNet === 0, `第 ${i + 1} 局资产净额之和 ${sumAssetNet}（应为 0）`);
+      // 每人的资产折让不得为负
+      for (const p of state.players) {
+        assert((p.pokerAssetLock || 0) >= 0, `${p.name} 资产折让为负 ${p.pokerAssetLock}`);
+      }
+    }
+    return '12 局含资产下注 · 资产折让净额之和恒为 0 · 无重复记账';
+  });
+
+  check(results, '赢家赢回的资产折让被正确解除', () => {
+    // 回归用例：曾经出现过「赢家赢了却仍被锁定资产折让」的永久性估值损失。
+    const state = makeCasinoState();
+    for (const p of state.players) {
+      p.institutions.push({ cellIndex: 4, level: 4, mortgaged: false, mortgageAmount: 0 });
+    }
+    const game = startCasinoGame(state);
+    // 全员全下 → 直接摊牌
+    let guard = 0;
+    while (!game.over && guard++ < 300) {
+      const idx = currentActor(game);
+      if (idx < 0) break;
+      applyAction(game, idx, { type: 'allin' });
+    }
+    const winners = (game.result && game.result.winners) || [];
+    assert(winners.length > 0, '未产生赢家');
+    finishCasinoGame(state, game);
+    for (const seat of game.seats) {
+      const p = state.players.find((x) => x.id === seat.playerId);
+      if (!p) continue;
+      const isWinner = winners.includes(seat.seat);
+      if (isWinner) {
+        // 赢家至少赢回自己押上的资产 → 折让不得高于其押注额
+        assert(
+          (p.pokerAssetLock || 0) <= seat.assetPaid,
+          `赢家 ${p.name} 仍被锁定 assetLock=${p.pokerAssetLock} > 押注资产 ${seat.assetPaid}`,
+        );
+      }
+    }
+    const locks = state.players.map((p) => p.pokerAssetLock || 0);
+    return `赢家资产折让已归位 · 各玩家折让 [${locks.join(', ')}]`;
+  });
+
+  check(results, '连续 30 局赌场结算不产生负数且状态自洽', () => {    let minCash = Infinity;
     let minAssets = Infinity;
     for (let i = 0; i < 30; i++) {
       const state = makeCasinoState();
