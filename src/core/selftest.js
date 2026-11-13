@@ -7,7 +7,7 @@ import {
   UPGRADABLE_CELLS, REGULATORS, TRAP_CARDS, SPECIAL, validateBoard, LEVELS,
   CLEARING_TARGETS, TRACK_POINTS, trackSpacing, trackGap,
   INNER_INDICES, GATE_INDICES, TRACK_CELLS, ZONES, cellSideInfo,
-  cellZone, isInner, isGate,
+  cellZone, isInner, isGate, WHEELS, WHEEL_BY_ID,
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
@@ -329,6 +329,39 @@ export function runAll() {
     return `11 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}（内环核心段）`;
   });
 
+  check(results, '四大转盘：候选效果齐备且都能结算', () => {
+    assert(WHEELS.length === 4, `转盘应为 4 个，实际 ${WHEELS.length}`);
+    const wheelCells = BOARD_CELLS.filter((c) => c.type === 'special' && c.special?.kind === 'wheel');
+    assert(wheelCells.length === 4, `转盘格应为 4 个，实际 ${wheelCells.length}`);
+    // 每个转盘的候选效果都必须有 SPECIAL 定义（否则结算会落到 default 分支）
+    for (const w of WHEELS) {
+      assert(w.outcomes.length >= 2, `${w.label} 候选效果不足 2 个`);
+      for (const o of w.outcomes) {
+        assert(SPECIAL[o.id], `${w.label} 的候选效果 ${o.id} 在 SPECIAL 中没有定义`);
+        assert(o.name && o.icon && o.big && o.lbl,
+          `${w.label} 的候选效果 ${o.id} 缺少元数据（name/icon/big/lbl）`);
+        assert(typeof o.trap === 'boolean' || o.trap === undefined,
+          `${w.label} 的候选效果 ${o.id} trap 标记异常`);
+      }
+    }
+    // 13 个原功能特殊格全部被某个转盘收录
+    const covered = new Set(WHEELS.flatMap((w) => w.outcomes.map((o) => o.id)));
+    for (const id of ['clearing', 'crossborder', 'metro', 'tax', 'audit', 'risk',
+      'charity', 'roadshow', 'rating', 'commodity', 'refinance', 'event', 'market']) {
+      assert(covered.has(id), `功能效果 ${id} 没有被任何转盘收录`);
+    }
+    // 棋盘上的转盘格必须与 WHEELS 一一对应
+    for (const c of wheelCells) {
+      const w = WHEEL_BY_ID[c.special.wheelId];
+      assert(w, `转盘格 ${c.name} 的 wheelId 无效`);
+      assert(c.special.outcomes.length === w.outcomes.length,
+        `${c.name} 的候选数与转盘定义不符`);
+      assert(c.special.outcomeData.length === w.outcomes.length,
+        `${c.name} 的候选元数据数与转盘定义不符`);
+    }
+    return '枢纽 3 · 风险 3 · 机会 5 · 命运 2 —— 13 个功能效果全覆盖';
+  });
+
   check(results, '四大监管机构齐备且不可升级', () => {
     const ids = new Set();
     for (const i of REGULATOR_CELLS) {
@@ -354,7 +387,11 @@ export function runAll() {
     for (const t of traps) {
       assert(!!t.special || !!t.desc, `${t.id} 缺少说明`);
     }
-    // 陷阱效果仍保留在 SPECIAL 中（供 PR2 的转盘抽取时结算）
+    // 两个陷阱都必须出现在风险转盘的候选里
+    const riskWheel = WHEEL_BY_ID.risk;
+    const ids = riskWheel.outcomes.map((o) => o.id);
+    assert(ids.includes('audit') && ids.includes('risk'),
+      `风险转盘应包含 audit 与 risk，实际 ${ids.join('/')}`);
     return `2 个陷阱效果（收进风险转盘） · ${TRAP_CARDS.length} 张监管事件卡`;
   });
 
@@ -773,6 +810,41 @@ export function runAll() {
   });
 
   /* ---------- 特殊格限时状态 ---------- */
+  check(results, '特殊格机制差异化：公益捐赠换取限时状态（机会转盘）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    // 公益捐赠已被收进「机会转盘」—— 通过转盘格触发
+    const idx = BOARD_CELLS.findIndex((c) => c.special?.kind === 'wheel' && c.special.wheelId === 'chance');
+    assert(idx >= 0, '应存在机会转盘格');
+    // 指定抽中「公益捐赠」
+    state.pending = { kind: 'wheel', wheelPick: 'charity', playerId: p.id };
+    const before = p.cash;
+    settleOnCell(state, p, idx);
+    assert(p.cash === before - SPECIAL.charity.amount,
+      `应扣捐赠 ${SPECIAL.charity.amount}，实际 ${before - p.cash}`);
+    const buff = p.buffs.find((b) => b.id === 'public-good');
+    assert(!!buff, '应获得「公益声誉」状态');
+    assert(buff.effect.rentMult > 1, '公益声誉应提升管理费');
+    return `捐赠 ￥${SPECIAL.charity.amount} → 3 回合管理费 ×${buff.effect.rentMult}`;
+  });
+
+  check(results, '特殊格机制差异化：合规成本按机构规模计征（风险转盘）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    // 印花税已被收进「风险转盘」
+    const idx = BOARD_CELLS.findIndex((c) => c.special?.kind === 'wheel' && c.special.wheelId === 'risk');
+    assert(idx >= 0, '应存在风险转盘格');
+    state.pending = { kind: 'wheel', wheelPick: 'tax', playerId: p.id };
+    // 5 份机构 → 5 × 40 = ￥200
+    for (const ci of UPGRADABLE_CELLS.slice(0, 5)) {
+      p.institutions.push({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    const before = p.cash;
+    settleOnCell(state, p, idx);
+    assert(before - p.cash === 200, `持有 5 份机构应缴 ￥200，实际 ${before - p.cash}`);
+    return `持有 5 份机构 → 缴税 ￥200`;
+  });
+
   check(results, '限时状态按自己的回合递减并到期移除', () => {
     const state = makeTestState();
     const p = state.players[0];
@@ -1086,6 +1158,38 @@ export function runAll() {
   });
 
   /* ---------- 特殊格 ---------- */
+  check(results, '特殊格结算（合规成本 · 风险转盘抽出）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const taxIdx = BOARD_CELLS.findIndex(
+      (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special.wheelId === 'risk');
+    assert(taxIdx > 0, '应存在风险转盘格');
+    // 指定转盘抽出「印花税」
+    state.pending = { kind: 'wheel', wheelPick: 'tax', playerId: p.id };
+
+    // 合规成本按机构持有规模计征：每份 ￥40，最低 ￥120、封顶 ￥360
+    const cases = [
+      { holdings: 0, expect: 120 },
+      { holdings: 3, expect: 120 },
+      { holdings: 5, expect: 200 },
+      { holdings: 9, expect: 360 },
+      { holdings: 20, expect: 360 },
+    ];
+    for (const c of cases) {
+      p.institutions = UPGRADABLE_CELLS.slice(0, c.holdings)
+        .map((ci) => ({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 }));
+      p.cash = 1000;
+      state.pending = { kind: 'wheel', wheelPick: 'tax', playerId: p.id };
+      const results = settleOnCell(state, p, taxIdx);
+      const charged = results.find((r) => r.kind === 'charge');
+      assert(!!charged, '合规成本格应产生扣款');
+      assert(charged.amount === c.expect,
+        `持有 ${c.holdings} 份机构应缴 ￥${c.expect}，实际 ￥${charged.amount}`);
+      assert(p.cash === 1000 - c.expect, '合规成本未正确扣除');
+    }
+    return '按机构规模计征：0~3 份 ￥120 / 5 份 ￥200 / ≥9 份 ￥360';
+  });
+
   check(results, '起点补贴', () => {
     const state = makeTestState();
     const p = state.players[0];
@@ -1093,6 +1197,25 @@ export function runAll() {
     settleOnCell(state, p, 0);
     assert(p.cash === before + CONFIG.startBonus, '起点补贴未发放');
     return `+￥${CONFIG.startBonus}`;
+  });
+
+  check(results, '清算所跳转与跨境互联（枢纽转盘抽出）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    // 清算所 / 跨境互联 都被收进「枢纽转盘」
+    const hubIdx = BOARD_CELLS.findIndex(
+      (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special.wheelId === 'hub');
+    assert(hubIdx >= 0, '应存在枢纽转盘格');
+
+    state.pending = { kind: 'wheel', wheelPick: 'clearing', playerId: p.id };
+    settleOnCell(state, p, hubIdx);
+    assert(state.pending && state.pending.kind === 'teleport', '清算所应产生跳转');
+    assert(state.pending.target !== hubIdx, '跳转目标不应是自身');
+
+    state.pending = { kind: 'wheel', wheelPick: 'crossborder', playerId: p.id };
+    settleOnCell(state, p, hubIdx);
+    assert(state.pending && state.pending.kind === 'teleport', '跨境互联应产生跳转');
+    return '两类跳转效果均正常';
   });
 
   check(results, '瞬移步数恒为正（向后跳不会算出负步数）', () => {
@@ -1111,8 +1234,25 @@ export function runAll() {
     // 目标与起点相同 → 走满一圈
     assert(computeTeleportSteps(5, 5, BOARD_SIZE) === BOARD_SIZE, '同位置应走满一圈');
 
-    // 清算所目标的有效性校验随「枢纽转盘」一起在 PR2 落地
-    return '正反方向瞬移均正确 · 步数恒在 (0, 一圈) 区间内';
+    // 真实数据驱动：清算所的每一个跳转目标都必须能算出正步数
+    // （清算所收在枢纽转盘里，传送源就是枢纽转盘格）
+    const clearIdx = BOARD_CELLS.findIndex(
+      (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special?.wheelId === 'hub');
+    assert(clearIdx >= 0, '应存在枢纽转盘格');
+    for (const target of CLEARING_TARGETS) {
+      const cell = BOARD_CELLS[target];
+      assert(cell && cell.type === 'institution' && !cell.regulator,
+        `清算所目标 ${target}（${cell && cell.name}）应为普通机构格`);
+      assert(target !== clearIdx, '清算所目标不能是清算所自身');
+      const steps = computeTeleportSteps(clearIdx, target, BOARD_SIZE);
+      assert(steps > 0 && steps < BOARD_SIZE, `清算所瞬移步数异常：${clearIdx} → ${target} = ${steps}`);
+      const landed = (clearIdx + steps) % BOARD_SIZE;
+      assert(landed === target, `清算所瞬移落点错误：${clearIdx} + ${steps} ≠ ${target}`);
+    }
+    // 清算所目标必须分散在地图不同方位（至少覆盖 3 个不同区段）
+    const quarters = new Set(CLEARING_TARGETS.map((t) => Math.floor(t / (BOARD_SIZE / 4))));
+    assert(quarters.size >= 3, `清算所目标分布过于集中（仅 ${quarters.size} 个区段）`);
+    return '正反方向瞬移均正确 · 清算所 4 个目标全部有效';
   });
 
   /* ---------- AI 决策 ---------- */

@@ -2,7 +2,7 @@
  * 主控制器 —— 串联规则引擎、渲染、AI、UI。
  */
 
-import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META } from '../core/board.js';
+import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META, WHEEL_BY_ID } from '../core/board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects,
@@ -38,6 +38,7 @@ import { openShareDialog, parseShareUrl } from './share.js';
 import { saveRecord, saveSettings, loadSettings } from './persist.js';
 import { getAvatarIcon } from '../art/avatars.js';
 import { showPokerTable, showPokerResult, closePokerTable } from './poker-ui.js';
+import { showWheelDialog } from '../ui/wheel.js';
 import { abortPokerGame } from '../core/poker.js';
 import { getCareerPieceIcon, ensurePortraitsReady } from '../art/career-pieces.js';
 import { CAREERS, CAREER_BY_ID, getCareer, assignAiCareers } from '../core/careers.js';
@@ -889,8 +890,66 @@ class Game {
       return;
     }
 
+    // ===== 转盘格：先转盘，抽出效果后再结算 =====
+    // 落点若为转盘格（kind = 'wheel'），必须先让玩家「转」一次，
+    // 拿到抽中的效果 id，再交给规则层走该效果原有的结算逻辑。
+    const landed = state.board[player.position];
+    if (landed && landed.type === 'special' && landed.special?.kind === 'wheel') {
+      this.spinWheelThenSettle(player, landed);
+      return;
+    }
+
     const results = settleOnCell(state, player, player.position);
     this.handleSettlement(player, results);
+  }
+
+  /**
+   * 转盘格结算 —— 弹大转盘 → 玩家转 → 抽出效果 → 按该效果结算。
+   *
+   * AI 玩家自动开转；真人玩家手动点「转 盘」。
+   * 抽中的效果 id 通过 `state.pending.wheelPick` 传给规则层，
+   * 规则层据此走该效果**原有**的 case 分支（不复制粘贴逻辑）。
+   */
+  spinWheelThenSettle(player, cell) {
+    const state = this.state;
+    const wheel = WHEEL_BY_ID[cell.special.wheelId];
+    if (!wheel) {
+      // 转盘定义缺失（数据异常）—— 降级为普通结算，不阻断回合
+      const results = settleOnCell(state, player, player.position);
+      this.handleSettlement(player, results);
+      return;
+    }
+
+    this.busy = false;
+    showWheelDialog(wheel, {
+      autoSpin: !!player.isAI,
+      onSpin: (r) => {
+        // 记录抽中的效果 → 规则层据此结算
+        state.pending = { kind: 'wheel', wheelPick: r.outcomeId, playerId: player.id };
+        log(state, player.isAI ? 'ai' : 'self',
+          `${player.name} 转动${wheel.label}，抽中「${r.outcome.name}」`, '转盘');
+        this.busy = true;
+        const results = settleOnCell(state, player, player.position);
+        state.pending = null;
+        this.handleSettlement(player, results);
+      },
+      onClose: () => {
+        // 玩家直接关闭（未转）—— 兜底随机一个效果，保证回合能继续
+        if (state.pending && state.pending.kind === 'wheel') return;
+        const outs = cell.special.outcomes || [];
+        if (!outs.length) {
+          this.busy = true;
+          this.continueAfterSettlement(player);
+          return;
+        }
+        const picked = outs[state.rng.int(0, outs.length - 1)];
+        state.pending = { kind: 'wheel', wheelPick: picked, playerId: player.id };
+        const results = settleOnCell(state, player, player.position);
+        state.pending = null;
+        this.busy = true;
+        this.handleSettlement(player, results);
+      },
+    });
   }
 
   handleSettlement(player, results) {
@@ -1026,6 +1085,16 @@ class Game {
             `行情切换：进入${label}，全场租金系数 ${r.market === 'bull' ? '+20%' : '-20%'}`, '周期');
           this.sfx[r.market === 'bull' ? 'marketBull' : 'marketBear']();
           this.toast(`行情切换：${label}`, r.market === 'bull' ? 't-bad' : 't-good');
+          break;
+        }
+        case 'wheel-result': {
+          // 转盘抽中的效果 —— 播报 + 特效（具体效果由后续结果条目结算）
+          log(state, player.isAI ? 'ai' : 'good',
+            `${player.name} 的${r.wheelName}抽出「${r.outcomeName}」${r.big ? `（${r.big}）` : ''}`,
+            '转盘');
+          const c = this.cellCenter(player.position);
+          this.effects.confetti(c.x, c.y);
+          this.floatText(r.outcomeName, c, r.trap ? PALETTE.redLt : PALETTE.gold);
           break;
         }
         case 'casino-open': {
