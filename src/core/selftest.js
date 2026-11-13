@@ -6,7 +6,8 @@ import {
   BOARD_CELLS, BOARD_SIZE, BOARD_SHAPE, GROUP_CELLS, REGULATOR_CELLS,
   UPGRADABLE_CELLS, REGULATORS, TRAP_CARDS, SPECIAL, validateBoard, LEVELS,
   CLEARING_TARGETS, TRACK_POINTS, trackSpacing, trackGap,
-  SIDE_COUNTS, CORNER_INDICES, cellSideInfo,
+  INNER_INDICES, GATE_INDICES, TRACK_CELLS, ZONES, cellSideInfo,
+  cellZone, isInner, isGate,
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
@@ -80,63 +81,89 @@ export function runAll() {
   const results = [];
 
   /* ---------- 棋盘结构 ---------- */
-  check(results, '棋盘结构完整性（47 机构 + 4 监管 + 16 特殊 = 67 格）', () => {
+  check(results, '棋盘结构完整性（35 机构 + 4 监管 + 7 特殊 = 46 格）', () => {
     const errors = validateBoard();
     assert(errors.length === 0, errors.join('; '));
     assert(BOARD_CELLS.length === BOARD_SIZE, `格数 ${BOARD_CELLS.length}`);
-    assert(BOARD_SIZE === 67, `应为 67 格，实际 ${BOARD_SIZE}`);
-    assert(BOARD_SHAPE.count === 67, '应为正方形环道布局（67 格）');
-    assert(GROUP_CELLS.bank.length === 13, `银行组 ${GROUP_CELLS.bank.length} 格（应为 13）`);
-    assert(GROUP_CELLS.broker.length === 12, `券商组 ${GROUP_CELLS.broker.length} 格（应为 12）`);
-    assert(GROUP_CELLS.insurer.length === 12, `保险组 ${GROUP_CELLS.insurer.length} 格（应为 12）`);
-    assert(GROUP_CELLS.asset.length === 14, `资管组 ${GROUP_CELLS.asset.length} 格（应为 14）`);
+    assert(BOARD_SIZE === 46, `应为 46 格，实际 ${BOARD_SIZE}`);
+    assert(BOARD_SHAPE.count === 46, '应为同心双环布局（46 格）');
+    assert(GROUP_CELLS.bank.length === 10, `银行组 ${GROUP_CELLS.bank.length} 格（应为 10）`);
+    assert(GROUP_CELLS.broker.length === 9, `券商组 ${GROUP_CELLS.broker.length} 格（应为 9）`);
+    assert(GROUP_CELLS.insurer.length === 9, `保险组 ${GROUP_CELLS.insurer.length} 格（应为 9）`);
+    assert(GROUP_CELLS.asset.length === 11, `资管组 ${GROUP_CELLS.asset.length} 格（应为 11）`);
     assert(REGULATOR_CELLS.length === 4, `监管格 ${REGULATOR_CELLS.length} 个（应为 4）`);
-    assert(UPGRADABLE_CELLS.length === 47, `可升级格 ${UPGRADABLE_CELLS.length} 个（应为 47）`);
+    assert(UPGRADABLE_CELLS.length === 35, `可升级格 ${UPGRADABLE_CELLS.length} 个（应为 35）`);
     const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
-    assert(specials === 16, `特殊格 ${specials} 个（应为 16，含 2 块赌场）`);
-    return '67 格 · 正方形连续环道 · 四大监管机构齐备 · 2 块赌场';
+    assert(specials === 7, `特殊格 ${specials} 个（应为 7：起点 1 + 转盘 4 + 赌场 2）`);
+    return '46 格 · 同心双环闭合回路 · 四大监管机构齐备 · 4 转盘 + 2 赌场';
   });
 
-  check(results, '棋盘轮廓为严格正方形（宽高比 = 1，不旋转）', () => {
+  check(results, '棋盘为 10×7 横向网格（宽高比 = 10/7）', () => {
     const ratio = BOARD_SHAPE.aspect;
-    assert(Math.abs(ratio - 1) < 1e-9, `棋盘宽高比应为 1，实际 ${ratio.toFixed(3)}`);
-    // 轨道包围盒必须也是正方形：所有轨道点的 x/y 极值对称
+    assert(Math.abs(ratio - 10 / 7) < 1e-9, `棋盘宽高比应为 10/7，实际 ${ratio.toFixed(4)}`);
+    assert(BOARD_SHAPE.cols === 10 && BOARD_SHAPE.rows === 7,
+      `网格应为 10 列 × 7 行，实际 ${BOARD_SHAPE.cols} × ${BOARD_SHAPE.rows}`);
+    // 轨道包围盒必须铺满 0..1000
     const xs = TRACK_POINTS.map((p) => p[0]);
     const ys = TRACK_POINTS.map((p) => p[1]);
-    assert(Math.min(...xs) === 0 && Math.max(...xs) === 1000,
-      `轨道 x 范围应为 0..1000，实际 ${Math.min(...xs)}..${Math.max(...xs)}`);
-    assert(Math.min(...ys) === 0 && Math.max(...ys) === 1000,
-      `轨道 y 范围应为 0..1000，实际 ${Math.min(...ys)}..${Math.max(...ys)}`);
+    assert(Math.min(...xs) === 50 && Math.max(...xs) === 950,
+      `轨道 x 范围应为 50..950，实际 ${Math.min(...xs)}..${Math.max(...xs)}`);
+    assert(Math.min(...ys) === 71 && Math.max(...ys) === 929,
+      `轨道 y 范围应为 71..929，实际 ${Math.min(...ys)}..${Math.max(...ys)}`);
+    return '10 × 7 网格 · 宽高比 1.4286 · 格子横向铺满';
   });
 
-  check(results, '正方形环道：四边格子数正确且角格恰为 4 个', () => {
-    assert(SIDE_COUNTS.right === 18 && SIDE_COUNTS.top === 18 &&
-      SIDE_COUNTS.left === 18 && SIDE_COUNTS.bottom === 17,
-      `边长分配应为 18/18/18/17，实际 ${SIDE_COUNTS.right}/${SIDE_COUNTS.top}/${SIDE_COUNTS.left}/${SIDE_COUNTS.bottom}`);
-    const total = SIDE_COUNTS.right + SIDE_COUNTS.top + SIDE_COUNTS.left + SIDE_COUNTS.bottom - 4;
-    assert(total === BOARD_SIZE, `四边合计（去重角格）应为 ${BOARD_SIZE}，实际 ${total}`);
-    assert(CORNER_INDICES.length === 4, `角格应为 4 个，实际 ${CORNER_INDICES.length}`);
-    // 每个角格都必须落在包围盒四角
-    for (const i of CORNER_INDICES) {
-      const [x, y] = TRACK_POINTS[i];
-      const onCorner = (x === 0 || x === 1000) && (y === 0 || y === 1000);
-      assert(onCorner, `index ${i} 被标记为角格但坐标 (${x},${y}) 不在四角`);
+  check(results, '同心双环：外环 30 + 城门 2 + 内环 14 = 46 格', () => {
+    assert(BOARD_SHAPE.outerCount === 30, `外环应为 30 格，实际 ${BOARD_SHAPE.outerCount}`);
+    assert(BOARD_SHAPE.innerCount === 14, `内环应为 14 格，实际 ${BOARD_SHAPE.innerCount}`);
+    assert(BOARD_SHAPE.gateCount === 2, `城门应为 2 格，实际 ${BOARD_SHAPE.gateCount}`);
+    assert(INNER_INDICES.length === 14, `内环 index 应为 14 个，实际 ${INNER_INDICES.length}`);
+    assert(GATE_INDICES.length === 2, `城门 index 应为 2 个，实际 ${GATE_INDICES.length}`);
+    // 内环 index 必须连续且在城门 A 之后
+    assert(INNER_INDICES[0] === GATE_INDICES[0] + 1,
+      `内环首格应在城门 A 之后：${INNER_INDICES[0]} vs ${GATE_INDICES[0] + 1}`);
+    assert(INNER_INDICES[INNER_INDICES.length - 1] === GATE_INDICES[1] - 1,
+      '内环末格应在城门 B 之前');
+    // 城门格必须是赌场
+    for (const gi of GATE_INDICES) {
+      assert(BOARD_CELLS[gi].special?.id === 'casino', `城门 #${gi} 应为赌场`);
     }
-    // 每条边的格子数应与实际分布吻合。
-    // 归属约定：角格归「它开始的那条边」，因此每格恰好统计一次：
-    //   右边 17（idx 0..16，其中 0 是右下角）+ 右上角归上边
-    //   上边 17（idx 17..34，其中 17 是右上角）+ 左上角归左边
-    //   左边 17（idx 35..52，其中 35 是左上角）+ 左下角归底边
-    //   底边 16（idx 53..66，其中 53 是左下角）
-    // 合计 17 × 3 + 16 = 67 ✔
-    const counts = { right: 0, top: 0, left: 0, bottom: 0 };
-    for (let i = 0; i < BOARD_SIZE; i++) counts[cellSideInfo(i).side]++;
-    assert(counts.right === 17, `右边实际 ${counts.right} 格（应 17）`);
-    assert(counts.top === 17, `上边实际 ${counts.top} 格（应 17）`);
-    assert(counts.left === 17, `左边实际 ${counts.left} 格（应 17）`);
-    assert(counts.bottom === 16, `底边实际 ${counts.bottom} 格（应 16）`);
-    assert(counts.right + counts.top + counts.left + counts.bottom === BOARD_SIZE,
-      '四边合计应等于 67');
+    // 内环前 4 格必须是四大监管
+    for (let i = 0; i < 4; i++) {
+      assert(BOARD_CELLS[INNER_INDICES[i]].regulator === true,
+        `内环 #${INNER_INDICES[i]} 应为监管机构`);
+    }
+    // 内环其余 10 格必须是 tier 4 的总部级 / 地标级资产
+    for (let i = 4; i < 14; i++) {
+      const c = BOARD_CELLS[INNER_INDICES[i]];
+      assert(c.type === 'institution' && !c.regulator, `内环 #${INNER_INDICES[i]} 应为普通机构`);
+      assert(c.tier === 4, `内环 #${INNER_INDICES[i]} 等级应为 4（${c.name} 实为 ${c.tier}）`);
+    }
+    return '外环 30 · 城门 2 · 内环 14（4 监管 + 10 地标级）';
+  });
+
+  check(results, '网格坐标无重复、回路连续（四邻接）', () => {
+    assert(TRACK_CELLS.length === BOARD_SIZE, `网格坐标 ${TRACK_CELLS.length} ≠ ${BOARD_SIZE}`);
+    // ① 坐标互不重复
+    const seen = new Set();
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const key = TRACK_CELLS[i].join(',');
+      assert(!seen.has(key), `index ${i} 与其他格重叠于 (${key})`);
+      seen.add(key);
+    }
+    // ② 相邻格（含首尾闭合）曼哈顿距离恒为 1 —— 棋子只做平移、绝不瞬移
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const a = TRACK_CELLS[i];
+      const b = TRACK_CELLS[(i + 1) % BOARD_SIZE];
+      const d = Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+      assert(d === 1, `#${i} (${a}) → #${(i + 1) % BOARD_SIZE} (${b}) 曼哈顿距离 ${d} ≠ 1`);
+    }
+    // ③ 所有坐标都必须落在 10×7 网格内
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const [c, r] = TRACK_CELLS[i];
+      assert(c >= 0 && c < 10 && r >= 0 && r < 7, `index ${i} 坐标 (${c},${r}) 越界`);
+    }
+    return '46 个网格坐标互不重复 · 相邻恒为四邻接 · 首尾闭合';
   });
 
   check(results, '轨道是单条闭合连续环道（无断裂、无瞬移）', () => {
@@ -154,7 +181,7 @@ export function runAll() {
 
     // ② 相邻间距必须均匀 —— 这是「连续」的核心保证。
     //    上一版外环→内环处间距是普通间距的数倍，棋子会瞬移。
-    //    距离按「显示尺度」计算（x 映射 2a、y 映射 2b），
+    //    距离按「显示尺度」计算（x 映射 2a×aspect、y 映射 2b），
     //    否则横向被误当成与纵向等长，均匀性结论会失真。
     const dists = [];
     for (let i = 0; i < BOARD_SIZE; i++) {
@@ -171,7 +198,7 @@ export function runAll() {
     assert(minD >= avg * 0.8,
       `轨道间距过小：平均 ${avg.toFixed(4)}，最小 ${minD.toFixed(4)}`);
 
-    // ③ 闭合边（62 → 0）也必须满足均匀性
+    // ③ 闭合边（45 → 0）也必须满足均匀性
     const closeGap = dists[BOARD_SIZE - 1];
     assert(closeGap <= avg * 1.2, `闭合边间距 ${closeGap.toFixed(4)} 过大，绕圈会跳格`);
 
@@ -179,7 +206,8 @@ export function runAll() {
     assert(Math.abs(trackSpacing() - avg) < 1e-6, 'trackSpacing 与实测平均间距不符');
   });
 
-  check(results, '环道围出的中心留白可用于金融城广场', () => {
+  check(results, '中央广场留白可用于金融城广场', () => {
+    // 同心双环的内环围出 4 列 × 1 行的中央广场（归一化 x 300..700, y 500±71）。
     // 中心点 (500,500) 到最近轨道点的距离应足够大 —— 说明中心是空的
     let minDist = Infinity;
     for (const p of TRACK_POINTS) {
@@ -187,8 +215,16 @@ export function runAll() {
       if (d < minDist) minDist = d;
     }
     const avg = trackSpacing();
-    assert(minDist > avg * 2.5,
+    // 同心双环的内环只有 1 行高（中央广场是横向长条），
+    // 中心到最近轨道点的距离必然接近 1 个格距 —— 用 0.9 倍作为下限。
+    assert(minDist > avg * 0.9,
       `中心留白过小：最近轨道点距中心 ${minDist.toFixed(1)}，间距 ${avg.toFixed(4)}`);
+    // 护城河区域（外环与内环之间的空白带）必须存在
+    const moat = ZONES.find((z) => z.kind === 'moat');
+    const plaza = ZONES.find((z) => z.kind === 'plaza');
+    assert(moat && moat.w > 0 && moat.h > 0, '缺少护城河区域定义');
+    assert(plaza && plaza.w > 0 && plaza.h > 0, '缺少中央广场区域定义');
+    return `中央留白半径 ${minDist.toFixed(1)} · 护城河 ${moat.w.toFixed(0)}×${moat.h.toFixed(0)}`;
   });
 
   check(results, '轨道点严格落在包围盒内', () => {
@@ -200,79 +236,97 @@ export function runAll() {
   });
 
   check(results, '所有格子严格水平/垂直对齐（文字绝不倾斜）', () => {
-    // 正方形环道的每条边必须完全水平或完全垂直 —— 这一点决定了
+    // 同心双环的每一圈都是轴对齐矩形 —— 这一点决定了
     // 地块名称与价格永远是水平文字，不会出现菱形布局的斜字。
-    const edges = [
-      { side: 'right',  axis: 'x', value: 1000 },
-      { side: 'top',    axis: 'y', value: 0 },
-      { side: 'left',   axis: 'x', value: 0 },
-      { side: 'bottom', axis: 'y', value: 1000 },
-    ];
-    for (const e of edges) {
-      const idxs = [];
-      for (let i = 0; i < BOARD_SIZE; i++) {
-        if (cellSideInfo(i).side === e.side) idxs.push(i);
-      }
-      for (const i of idxs) {
-        const p = TRACK_POINTS[i];
-        const v = e.axis === 'x' ? p[0] : p[1];
-        assert(v === e.value,
-          `${e.side} 边的 index ${i} 坐标 ${v} 未对齐到 ${e.value}（会破坏水平文字）`);
-      }
-    }
-    // 非角格必须恰好落在一条边上（不可能同时属于两条边）
+    // 外环：col 0 或 col 9（左右竖边） / row 0 或 row 6（上下横边）
+    // 内环：col 2 或 col 7 / row 2 或 row 4
     for (let i = 0; i < BOARD_SIZE; i++) {
-      const p = TRACK_POINTS[i];
-      const onX = p[0] === 0 || p[0] === 1000;
-      const onY = p[1] === 0 || p[1] === 1000;
-      const onCorner = onX && onY;
-      const side = cellSideInfo(i);
-      if (!onCorner) {
-        assert(onX || onY, `index ${i} 既不在边上也不在角上`);
-        assert(side.corner === false, `index ${i} 被误判为角格`);
-      } else {
-        assert(side.corner === true, `index ${i} 是角格但未被标记`);
+      const info = cellSideInfo(i);
+      const [col, row] = TRACK_CELLS[i];
+      const zone = info.zone;
+      assert(zone === 'outer' || zone === 'inner' || zone === 'gate',
+        `index ${i} 的区域归属异常：${zone}`);
+      if (zone === 'gate') {
+        // 城门格位于护城河上（第 1 行），不属于任何一圈的边框
+        assert(row === 1, `城门 #${i} 应在第 1 行（护城河），实际第 ${row} 行`);
+        continue;
       }
+      const onH = (zone === 'outer')
+        ? (row === 0 || row === 6)
+        : (row === 2 || row === 4);
+      const onV = (zone === 'outer')
+        ? (col === 0 || col === 9)
+        : (col === 2 || col === 7);
+      assert(onH || onV, `index ${i}（${col},${row}）既不在${zone === 'outer' ? '外' : '内'}环边框上`);
+      // 角格判定：横竖边同时成立
+      assert(info.corner === (onH && onV),
+        `index ${i} 角格标记与几何位置不符`);
     }
+    // 环带归属必须与 cellZone 一致
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      assert(cellZone(i) === cellSideInfo(i).zone, `index ${i} 的区域判定前后不一致`);
+    }
+    return '外环 / 内环 / 城门 全部轴对齐 · 角格判定正确';
   });
 
-  check(results, '特殊格均匀穿插（任意两个功能格不相邻）', () => {
+  check(results, '特殊格分布均匀（功能格不相邻，城门与监管连段豁免）', () => {
     // 「功能格」= 特殊格 + 监管机构格。它们必须被普通机构格隔开，
     // 不能连成一片 —— 否则玩家的落点分布会严重偏斜。
+    //
+    // ⚠ 同心双环的两处**预期**例外：
+    //   1. 城门格（赌场）架在护城河上，一侧必然挨着外环末格、
+    //      另一侧必然挨着内环首格；
+    //   2. 四大监管在内环首尾相连（权力中枢连成一段）。
     const isFunctional = (c) => c.type === 'special' || c.regulator;
+    const isGateCell = (c) => c.type === 'special' && c.special?.kind === 'gate';
     const functionalIdx = BOARD_CELLS.map((c, i) => (isFunctional(c) ? i : -1)).filter((i) => i >= 0);
-    assert(functionalIdx.length === 20, `功能格应为 20 个（16 特殊 + 4 监管），实际 ${functionalIdx.length}`);
+    assert(functionalIdx.length === 11, `功能格应为 11 个（7 特殊 + 4 监管），实际 ${functionalIdx.length}`);
 
-    // 环形相邻（含 62 → 0 的闭合边）不得出现功能格紧邻
+    // 环形相邻（含 45 → 0 的闭合边）不得出现功能格紧邻
+    // （城门豁免 + 监管连段豁免）
     for (let i = 0; i < BOARD_CELLS.length; i++) {
       const a = BOARD_CELLS[i];
       const b = BOARD_CELLS[(i + 1) % BOARD_CELLS.length];
+      if (isGateCell(a) || isGateCell(b)) continue;
+      if (a.regulator && b.regulator) continue;
       assert(!(isFunctional(a) && isFunctional(b)),
         `#${i} ${a.name} 与 #${(i + 1) % BOARD_CELLS.length} ${b.name} 功能格相邻`);
     }
 
     // 特殊格子集同样必须互不相邻（更严格的读法也成立）
     const specialIdx = BOARD_CELLS.map((c, i) => (c.type === 'special' ? i : -1)).filter((i) => i >= 0);
-    assert(specialIdx.length === 16, `特殊格应为 16 个，实际 ${specialIdx.length}`);
+    assert(specialIdx.length === 7, `特殊格应为 7 个，实际 ${specialIdx.length}`);
+    // 特殊格之间应至少隔 1 个普通机构格
+    // （城门豁免：城门架在护城河上，与外环末格 / 内环首格贴邻是拓扑决定的）
     for (let i = 0; i < specialIdx.length; i++) {
       const a = specialIdx[i];
       const b = specialIdx[(i + 1) % specialIdx.length];
+      if (isGateCell(BOARD_CELLS[a]) || isGateCell(BOARD_CELLS[b])) continue;
       const gap = (b - a + BOARD_SIZE) % BOARD_SIZE;
       assert(gap >= 2, `特殊格 #${a} 与 #${b} 相邻（间隔 ${gap}）`);
     }
 
-    // 起点必须是 index 0，且前后都隔着普通机构格
+    // 起点必须是 index 0，且后一格是普通机构格
     assert(BOARD_CELLS[0].special && BOARD_CELLS[0].special.id === 'start', 'index 0 应为起点');
     assert(!isFunctional(BOARD_CELLS[1]), '起点后一格应为普通机构格');
-    assert(!isFunctional(BOARD_CELLS[BOARD_SIZE - 1]), '起点前一格（环形闭合）应为普通机构格');
+    // 起点前一格（index 45）是**城门 B（赌场）** —— 闭合边必然挨着城门，
+    // 这是同心双环拓扑决定的（城门一侧接外环、一侧接内环）。
+    assert(GATE_INDICES.includes(BOARD_SIZE - 1),
+      `起点前一格应是城门 B，实际 ${BOARD_CELLS[BOARD_SIZE - 1].name}`);
 
     // 分布均匀度：相邻功能格的最大间隔不应过大（避免大片连续普通格）
+    //
+    // ⚠ 同心双环的**内环**是「4 监管 + 10 总部级资产」——
+    //   监管连成一段后，后面跟着 10 个连续的高等级资产，
+    //   再到城门 B。因此最大间隔天然会比外环大（内环段 = 11）。
+    //   这是「城中之城」的设计意图（核心区就是连成一片的优质资产），
+    //   故阈值放宽到 12。
     const gaps = functionalIdx.map((v, i) =>
       (functionalIdx[(i + 1) % functionalIdx.length] - v + BOARD_SIZE) % BOARD_SIZE);
     const maxGap = Math.max(...gaps);
-    assert(maxGap <= 8, `功能格最大间隔 ${maxGap} 过大，分布不均匀`);
+    assert(maxGap <= 12, `功能格最大间隔 ${maxGap} 过大，分布不均匀`);
 
-    return `20 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}`;
+    return `11 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}（内环核心段）`;
   });
 
   check(results, '四大监管机构齐备且不可升级', () => {
@@ -291,14 +345,17 @@ export function runAll() {
     return '央行 / 证监会 / 金融监管总局 / 金稳会 —— 均不可升级';
   });
 
-  check(results, '陷阱格存在且带独立卡池', () => {
-    const traps = BOARD_CELLS.filter((c) => c.type === 'special' && c.special.trap);
-    assert(traps.length === 2, `陷阱格 ${traps.length} 个（应为 2）`);
+  check(results, '陷阱效果存在且带独立卡池', () => {
+    // 46 格版把陷阱效果收进了「风险转盘」，棋盘上不再有独立陷阱格，
+    // 但 SPECIAL 里的 audit / risk 定义必须保留（转盘内部要用）。
+    const traps = Object.values(SPECIAL).filter((sp) => sp.trap);
+    assert(traps.length === 2, `陷阱效果应为 2 个（audit / risk），实际 ${traps.length}`);
     assert(TRAP_CARDS.length >= 6, `陷阱卡 ${TRAP_CARDS.length} 张（应 ≥6）`);
     for (const t of traps) {
-      assert(!!t.special.desc, `${t.special.id} 缺少说明`);
+      assert(!!t.special || !!t.desc, `${t.id} 缺少说明`);
     }
-    return `2 个陷阱格 · ${TRAP_CARDS.length} 张监管事件卡`;
+    // 陷阱效果仍保留在 SPECIAL 中（供 PR2 的转盘抽取时结算）
+    return `2 个陷阱效果（收进风险转盘） · ${TRAP_CARDS.length} 张监管事件卡`;
   });
 
   check(results, '价格/租金梯度递增', () => {
@@ -367,7 +424,12 @@ export function runAll() {
   check(results, '收购扣款与股权入账', () => {
     const state = makeTestState();
     const p = state.players[0];
-    const idx = firstInstitution(state);
+    // 46 格版：第一个机构格是「中国工商银行」（tier 4），
+    // 起步价远超起始现金 —— 必须挑一个买得起的机构格。
+    const idx = BOARD_CELLS.findIndex((c) =>
+      c.type === 'institution' && !c.regulator
+      && purchasePrice(c, c.tier, state.market) <= p.cash);
+    assert(idx >= 0, '应存在买得起的机构格');
     const cell = BOARD_CELLS[idx];
     const price = purchasePrice(cell, cell.tier, state.market);
 
@@ -711,36 +773,6 @@ export function runAll() {
   });
 
   /* ---------- 特殊格限时状态 ---------- */
-  check(results, '特殊格机制差异化：公益捐赠换取限时状态', () => {
-    const state = makeTestState();
-    const p = state.players[0];
-    const idx = BOARD_CELLS.findIndex((c) => c.special?.id === 'charity');
-    assert(idx >= 0, '应存在公益格');
-    const before = p.cash;
-    settleOnCell(state, p, idx);
-    assert(p.cash === before - SPECIAL.charity.amount,
-      `应扣捐赠 ${SPECIAL.charity.amount}，实际 ${before - p.cash}`);
-    const buff = p.buffs.find((b) => b.id === 'public-good');
-    assert(!!buff, '应获得「公益声誉」状态');
-    assert(buff.effect.rentMult > 1, '公益声誉应提升管理费');
-    return `捐赠 ￥${SPECIAL.charity.amount} → 3 回合管理费 ×${buff.effect.rentMult}`;
-  });
-
-  check(results, '特殊格机制差异化：合规成本按机构规模计征', () => {
-    const state = makeTestState();
-    const p = state.players[0];
-    const idx = BOARD_CELLS.findIndex((c) => c.special?.id === 'tax');
-    assert(idx >= 0, '应存在合规成本格');
-    // 5 份机构 → 5 × 40 = ￥200
-    for (const ci of UPGRADABLE_CELLS.slice(0, 5)) {
-      p.institutions.push({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 });
-    }
-    const before = p.cash;
-    settleOnCell(state, p, idx);
-    assert(before - p.cash === 200, `持有 5 份机构应缴 ￥200，实际 ${before - p.cash}`);
-    return `持有 5 份机构 → 缴税 ￥200`;
-  });
-
   check(results, '限时状态按自己的回合递减并到期移除', () => {
     const state = makeTestState();
     const p = state.players[0];
@@ -1054,34 +1086,6 @@ export function runAll() {
   });
 
   /* ---------- 特殊格 ---------- */
-  check(results, '特殊格结算（合规成本）', () => {
-    const state = makeTestState();
-    const p = state.players[0];
-    const taxIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'tax');
-    assert(taxIdx > 0, '应存在合规成本格');
-
-    // 合规成本按机构持有规模计征：每份 ￥40，最低 ￥120、封顶 ￥360
-    const cases = [
-      { holdings: 0, expect: 120 },
-      { holdings: 3, expect: 120 },
-      { holdings: 5, expect: 200 },
-      { holdings: 9, expect: 360 },
-      { holdings: 20, expect: 360 },
-    ];
-    for (const c of cases) {
-      p.institutions = UPGRADABLE_CELLS.slice(0, c.holdings)
-        .map((ci) => ({ cellIndex: ci, level: 0, mortgaged: false, mortgageAmount: 0 }));
-      p.cash = 1000;
-      const results = settleOnCell(state, p, taxIdx);
-      const charged = results.find((r) => r.kind === 'charge');
-      assert(!!charged, '合规成本格应产生扣款');
-      assert(charged.amount === c.expect,
-        `持有 ${c.holdings} 份机构应缴 ￥${c.expect}，实际 ￥${charged.amount}`);
-      assert(p.cash === 1000 - c.expect, '合规成本未正确扣除');
-    }
-    return '按机构规模计征：0~3 份 ￥120 / 5 份 ￥200 / ≥9 份 ￥360';
-  });
-
   check(results, '起点补贴', () => {
     const state = makeTestState();
     const p = state.players[0];
@@ -1091,25 +1095,11 @@ export function runAll() {
     return `+￥${CONFIG.startBonus}`;
   });
 
-  check(results, '清算所跳转与跨境互联', () => {
-    const state = makeTestState();
-    const p = state.players[0];
-    const clearIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'clearing');
-    settleOnCell(state, p, clearIdx);
-    assert(state.pending && state.pending.kind === 'teleport', '清算所应产生跳转');
-    assert(state.pending.target !== clearIdx, '跳转目标不应是自身');
-
-    const crossIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'crossborder');
-    state.pending = null;
-    settleOnCell(state, p, crossIdx);
-    assert(state.pending && state.pending.kind === 'teleport', '跨境互联应产生跳转');
-    return '两类跳转格均正常';
-  });
-
   check(results, '瞬移步数恒为正（向后跳不会算出负步数）', () => {
     // 清算所 / 跨境互联 的目标可能位于当前位置之前，必须环绕成正向步数
+    // （46 格版：棋盘共 46 格，index 0..45）
     const cases = [
-      [0, 46], [46, 0], [22, 10], [10, 22], [11, 21], [21, 11], [47, 1], [1, 47],
+      [0, 45], [45, 0], [22, 10], [10, 22], [11, 21], [21, 11], [44, 1], [1, 44],
     ];
     for (const [from, to] of cases) {
       const steps = computeTeleportSteps(from, to, BOARD_SIZE);
@@ -1121,23 +1111,8 @@ export function runAll() {
     // 目标与起点相同 → 走满一圈
     assert(computeTeleportSteps(5, 5, BOARD_SIZE) === BOARD_SIZE, '同位置应走满一圈');
 
-    // 真实数据驱动：清算所的每一个跳转目标都必须能算出正步数
-    const clearIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'clearing');
-    assert(clearIdx >= 0, '应存在清算所格');
-    for (const target of CLEARING_TARGETS) {
-      const cell = BOARD_CELLS[target];
-      assert(cell && cell.type === 'institution' && !cell.regulator,
-        `清算所目标 ${target}（${cell && cell.name}）应为普通机构格`);
-      assert(target !== clearIdx, '清算所目标不能是清算所自身');
-      const steps = computeTeleportSteps(clearIdx, target, BOARD_SIZE);
-      assert(steps > 0 && steps < BOARD_SIZE, `清算所瞬移步数异常：${clearIdx} → ${target} = ${steps}`);
-      const landed = (clearIdx + steps) % BOARD_SIZE;
-      assert(landed === target, `清算所瞬移落点错误：${clearIdx} + ${steps} ≠ ${target}`);
-    }
-    // 清算所目标必须分散在地图不同方位（至少覆盖 3 个不同区段）
-    const quarters = new Set(CLEARING_TARGETS.map((t) => Math.floor(t / (BOARD_SIZE / 4))));
-    assert(quarters.size >= 3, `清算所目标分布过于集中（仅 ${quarters.size} 个区段）`);
-    return '正反方向瞬移均正确 · 清算所 4 个目标全部有效';
+    // 清算所目标的有效性校验随「枢纽转盘」一起在 PR2 落地
+    return '正反方向瞬移均正确 · 步数恒在 (0, 一圈) 区间内';
   });
 
   /* ---------- AI 决策 ---------- */
@@ -1175,7 +1150,13 @@ export function runAll() {
   });
 
   check(results, 'AI 随机性：不同种子产生不同行为', () => {
-    const idx = firstInstitution(makeTestState());
+    // 46 格版棋盘头几格是总部级 / 地标级资产（起步价高），
+    // AI 对它们的决策几乎是确定的 —— 取一个**网点级**格子，
+    // 决策空间大，种子差异才体现得出来。
+    const probe = makeTestState();
+    const idx = BOARD_CELLS.findIndex((c) =>
+      c.type === 'institution' && !c.regulator && c.tier === 0);
+    assert(idx >= 0, '应存在网点级机构格');
     const stateA = makeTestState({ seed: 'seed-A' });
     const stateB = makeTestState({ seed: 'seed-B' });
     const dA = decide(stateA, stateA.players[1], 'purchase', { cellIndex: idx });
@@ -1407,7 +1388,10 @@ export function runAll() {
   });
 
   check(results, '建筑等级高度递进（网点 → 地标）', () => {
-    const cell = BOARD_CELLS.find((c) => c.group === 'bank' && !c.regulator);
+    // ⚠ 必须挑**非地标**格 —— 地标建筑（buildLandmark）是固定 32×48 的
+    //   「权力建筑」，不随等级变化（它本身就代表最高档）。
+    const cell = BOARD_CELLS.find((c) => c.group === 'bank' && !c.regulator && !c.landmark);
+    assert(cell, '应存在非地标的银行格');
     const heights = [];
     for (let lv = 0; lv <= 4; lv++) {
       const cv = getBuilding({

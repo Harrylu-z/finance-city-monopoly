@@ -1,71 +1,39 @@
 /**
  * 棋盘数据 —— 中国金融城
  *
- * 规模：67 格（严格正方形环形棋盘）
- *   = 47 个普通机构格 + 4 个监管机构格 + 16 个特色特殊格（含 2 块赌场）
+ * 规模：46 格（同心双环 · 疏朗）
+ *   = 35 个普通机构格 + 4 个监管机构格 + 7 个特色特殊格（起点 / 4 转盘 / 2 赌场）
  *
  * 顺时针布局，index 0 = 起点·陆家嘴金融中心。
  *
- * ================= 布局设计：功能格均匀穿插 =================
- * 棋盘共 20 个「功能格」（16 个特殊格 + 4 个监管机构格），它们被
- * **均匀地穿插在 47 个普通机构格之间** —— 环形序列中任意两个功能格
- * 之间至少间隔 1 个普通机构格，不存在「特殊格连成一片」的情况，
- * 玩家的落点分布更均匀。
+ * ================= 布局设计：同心双环（10×7 网格）=================
+ * 棋盘是 **10 列 × 7 行**的横向网格，两圈同心环被 2 座城门架桥连成
+ * **一条闭合回路**（棋子全程平移不瞬移，规则层零改动）：
  *
- *   · 特殊格（type = 'special'）共 16 个（含 2 块「赌场 · 德州扑克」）；
- *   · 监管机构格（type = 'institution' + regulator）共 4 个，仍归属
- *     各自集团（央行→银行 / 证监会→券商 / 银保监→保险 / 金稳会→资管），
- *     可持有、不可升级、全局效果生效、紫色双描边；
- *   · 每个集团的普通机构仍按「价格 / 租金由低到高」依次连续排布，
- *     集团色与建筑形态不受影响。
+ *    · **外环（城墙）** 30 格 —— 起点 ×1 + 转盘 ×4 + 外围分行带（25 家机构）；
+ *    · **护城河** —— 1 格宽空白带（视觉分隔，不占格）；
+ *    · **城门** 2 格 —— 架在顶部护城河上，是 2 块「私人赌场 · 德州扑克」；
+ *    · **内环（城中之城）** 14 格 —— 四大监管 ×4 + 总部级 / 地标级资产 ×10。
  *
- * 四个集团区块（各自 11~13 家普通机构 + 1 家监管机构）：
+ * 外环的普通机构按集团切成连续段，顺序为 **银行 → 券商 → 保险 → 资管**，
+ * 段与段之间插入一个转盘格，形成
+ * \银行段 | 枢纽转盘 | 券商段 | 风险转盘 | 保险段 | 机会转盘 | 资管段 | 命运转盘 * 的节奏 —— 同一集团的土地连成一片，同时每段之间插入转盘制造起伏。
  *
- *    0        起点 · 陆家嘴金融中心       (+￥200 货币发行补贴 / 可申请央行贷款)
- *    1-2      银行 ×2
- *    3        财经快讯 · 事件卡
- *    4-6      银行 ×3
- *    7        合规成本（印花税 / 交易手续费 / 监管罚款）
- *    8-9      银行 ×2
- *    10       监管抽查 · 陷阱格（触发监管处罚 / 强制披露）
- *    11-14    银行 ×4（末位为「金融街塔」地标格）
- *    15       中国人民银行（监管格，不可升级）
- *    16-17    券商 ×2
- *    18       清算所 · 互联互通（跳转指定格）
- *    19-21    券商 ×3
- *    22       地铁 · 通勤枢纽（可选前进 1/2/3 格）
- *    23-24    券商 ×2
- *    25       赌场 · 德州扑克（第一处 · 券商区段）
- *    26-28    券商 ×3
- *    29       信用评级 · 展望调整
- *    30       华泰证券（券商地标格）
- *    31       中国证监会（监管格，不可升级）
- *    32-33    保险 ×2
- *    34       风险警示 · 陷阱格（风险暴露 / 集中度整改）
- *    35-36    保险 ×2
- *    37       要素市场 · 大宗交易
- *    38-40    保险 ×3
- *    41       投资者路演
- *    42-45    保险 ×4（末位为「中国人保」地标格）
- *    46       金融监管总局（监管格，不可升级）
- *    47-48    资管 ×2
- *    49       慈善公益捐赠
- *    50-51    资管 ×2
- *    52       跨境互联 · 港股通（随机飞往另一处机构）
- *    53-54    资管 ×2
- *    55       再融资窗口（可向其他玩家发行债券）
- *    56-57    资管 ×2
- *    58       金融稳定委员会（监管格，不可升级）
- *    59-60    资管 ×2
- *    61       市场周期 · 牛熊切换
- *    62-63    资管 ×2（深交所 / 中金所）
- *    64       赌场 · 德州扑克（第二处 · 资管区段）
- *    65       上海浦东发展银行
- *    66       中证指数公司
+ * 内环 = 越靠中心越贵的核心带：四大监管（可持有、不可升级）+ 10 个最高等级资产。
  *
- * 说明：监管机构格放在各自集团普通机构序列的末位；
- * 尾格 66（中证指数公司）为普通机构格，闭环回到起点（0）时两侧都不
- * 相邻于功能格 —— 环形闭合处同样满足「功能格不相邻」。
+ * ================= 特殊格合并：16 → 7 =================
+ * 原来 16 个特殊格（起点 + 13 个功能格 + 2 个赌场）压缩成 7 个：
+ *   · **起点 ×1** —— 陆家嘴金融中心（外环 (4,0)）；
+ *   · **转盘 ×4** —— 枢纽 / 风险 / 机会 / 命运，踩到后从候选效果里随机抽一个；
+ *   · **赌场 ×2** —— 私人赌场 · 德州扑克（架在城门上）。
+ *
+ * ⚠ 13 个功能特殊格的**定义必须保留**（转盘内部要用），
+ *   只是不再各自独占一个格子。
+ *
+ * ================= 地块裁剪 =================
+ * 原始机构表共 47 个普通机构，本方案只需要 35 个 —— **裁掉 12 个**。
+ * 裁剪顺序：等级低 → 买入价低 → 原 index 小；
+ * 但**跳过会让某集团某等级断档的地块**（保证每个集团的每一级至少保留 1 个）。
  *
  * 监管机构（人民银行 / 证监会 / 银保监 / 金稳会）：
  *   · 可以被玩家「收购经营权」（一次性买断，占用大量现金）
@@ -312,26 +280,116 @@ export const SPECIAL = {
   },
 };
 
+/**
+ * ==================== 四大转盘 ====================
+ *
+ * 原来 13 个功能特殊格把轨道切得太碎 —— 现在把它们按语义打包成
+ * **4 个转盘格**：踩到格子 → 弹大转盘 → 指针旋转 → 停在某个扇区 →
+ * 走该效果**原有的结算逻辑**。
+ *
+ * 每个候选效果带自己的：显示名 / SVG 图标 id / 关键数值读数（big）/
+ * 说明文字（lbl）/ 是否陷阱（trap）——
+ * 这样转盘扇区和棋盘上的转盘格都能用真实图标与数值表达，而不是抽象文字。
+ */
+export const WHEELS = [
+  {
+    id: 'hub', label: '枢纽转盘', cat: 'hub', color: '#2f9fc4', lt: '#63c6e6',
+    dk: '#1c6b88', sign: '流转', icon: 'hub',
+    desc: '三种「移动类」效果随机抽取一个：改写你落脚的地点',
+    outcomes: [
+      { id: 'clearing', name: '清算所', icon: 'clearing', big: '直达', lbl: '结算机构' },
+      { id: 'metro', name: '地铁枢纽', icon: 'metro', big: '1/2/3', lbl: '前进格数' },
+      { id: 'crossborder', name: '跨境互联', icon: 'crossborder', big: '随机', lbl: '飞往机构' },
+    ],
+  },
+  {
+    id: 'risk', label: '风险转盘', cat: 'cost', color: '#c8392b', lt: '#e4604d',
+    dk: '#8d2419', sign: '付出', icon: 'risk',
+    desc: '三种「代价类」效果随机抽取一个，其中两格是陷阱',
+    outcomes: [
+      { id: 'tax', name: '印花税', icon: 'tax', big: '￥40', lbl: '每份 · 封顶360' },
+      { id: 'audit', name: '监管抽查', icon: 'audit', big: '处罚', lbl: '罚款/没收', trap: true },
+      { id: 'risk', name: '风险警示', icon: 'risk', big: '整改', lbl: '去杠杆 2 回合', trap: true },
+    ],
+  },
+  {
+    id: 'chance', label: '机会转盘', cat: 'gain', color: '#4f9d55', lt: '#7ac77f',
+    dk: '#336b38', sign: '收益', icon: 'chance',
+    desc: '五种「增益类」效果随机抽取一个：都与长期收益挂钩',
+    outcomes: [
+      { id: 'charity', name: '公益捐赠', icon: 'charity', big: '-￥120', lbl: '管理费 +12%' },
+      { id: 'roadshow', name: '投资者路演', icon: 'roadshow', big: '+￥80', lbl: '成本 -15%' },
+      { id: 'rating', name: '评级调整', icon: 'rating', big: '±15%', lbl: '管理费 3 回合' },
+      { id: 'commodity', name: '大宗交易', icon: 'commodity', big: '折溢价', lbl: '套保 2 回合' },
+      { id: 'refinance', name: '债券发行', icon: 'refinance', big: '债券', lbl: '票息浮动' },
+    ],
+  },
+  {
+    id: 'fate', label: '命运转盘', cat: 'random', color: '#8b5cc7', lt: '#b189e0',
+    dk: '#5c3a86', sign: '抽取', icon: 'fate',
+    desc: '两种「全局类」效果随机抽取一个：影响的不只是你',
+    outcomes: [
+      { id: 'event', name: '财经快讯', icon: 'event', big: '抽 1', lbl: '财经事件卡' },
+      { id: 'market', name: '牛熊切换', icon: 'market', big: '牛↔熊', lbl: '全局租金' },
+    ],
+  },
+];
+
+/** 转盘 id → 转盘定义 */
+export const WHEEL_BY_ID = WHEELS.reduce((m, w) => { m[w.id] = w; return m; }, {});
+
+/**
+ * 转盘格 —— 特殊格的一种新类型（kind = 'wheel'）。
+ *
+ * 与普通特殊格的区别：
+ *   · wheelId —— 指向 WHEELS 里的哪一个转盘；
+ *   · outcomes —— 候选效果 id 列表（决定扇区数）；
+ *   · outcomeData —— 候选效果的完整元数据（名称 / 图标 / 数值读数 / 陷阱标记）。
+ *
+ * 结算时随机选一个候选，再走该效果在 rules.js 里**原有的** case 分支。
+ */
+function makeWheelSpecial(w) {
+  return {
+    id: w.id,
+    name: w.label,
+    short: w.label,
+    icon: w.icon,
+    kind: 'wheel',
+    cat: w.cat,
+    sign: w.sign,
+    wheelId: w.id,
+    color: w.color, lt: w.lt, dk: w.dk,
+    outcomes: w.outcomes.map((o) => o.id),
+    outcomeData: w.outcomes.map((o) => ({ ...o })),
+    desc: w.desc,
+    trap: false,
+  };
+}
+
 /** 特殊格 ID 列表（供自检） */
 export const SPECIAL_IDS = Object.keys(SPECIAL);
 
 /**
- * 棋盘形状 —— **经典正方形环道**（不旋转、文字严格水平），共 67 格。
+ * 棋盘形状 —— **同心双环（疏朗）**，共 46 格。
  *
- * 四个角各属于两条边。上 / 右 / 左三边各 18 格、底边 17 格，
- * 合计 18 + 18 + 18 + 17 − 4 = 67 格，环道首尾相连、绝不断裂。
- * 正方形外形 + 轴对齐格子 → 所有文字严格水平，可读性拉满。
+ * 10 列 × 7 行网格：外环 30 格（城墙）+ 护城河 + 城门 2 格 + 内环 14 格，
+ * 两环由城门架桥并成一条闭合回路，环道首尾相连、绝不断裂。
  *
  * 形状数据集中在 core/board-shape.js，渲染层依此计算每格矩形，
- * 逻辑层仍按 index 逆时针推进。
+ * 逻辑层仍按 index 顺时针推进。
  */
 export {
-  BOARD_SHAPE, BOARD_GRID, TRACK, TRACK_POINTS, SIDE_COUNTS, CORNER_INDICES,
+  BOARD_SHAPE, BOARD_GRID, TRACK, TRACK_POINTS, SIDE_COUNTS,
   cellTrackPos, trackSpacing, trackGap, PLAZA_CENTER, cellSideInfo,
-  CORNER_TOP_RIGHT, CORNER_TOP_LEFT, CORNER_BOTTOM_LEFT,
+  INNER_INDICES, GATE_INDICES, ZONES, TRACK_CELLS,
+  cellZone, isInner, isGate,
+  INNER_COUNT, OUTER_COUNT, GATE_COUNT,
 } from './board-shape.js';
 
-export const BOARD_SIZE = 67;
+// 内部使用（棋盘组装时判断赌场是否落在城门槽位上）
+import { GATE_INDICES } from './board-shape.js';
+
+export const BOARD_SIZE = 46;
 
 function makeInstitution(groupId, e) {
   const isReg = !!e.regulator;
@@ -373,15 +431,14 @@ function makeRegulator(groupId, regKey) {
 
 /** 特殊格槽位简写 */
 const S = {
-  start: 'start', clearing: 'clearing', crossborder: 'crossborder',
-  metro: 'metro', tax: 'tax', charity: 'charity', event: 'event',
-  market: 'market', audit: 'audit', risk: 'risk', refinance: 'refinance',
-  rating: 'rating', commodity: 'commodity', roadshow: 'roadshow',
+  start: 'start',
   casino: 'casino',
+  // 四大转盘（候选效果定义在 WHEELS / SPECIAL 中）
+  hub: 'hub', risk: 'risk', chance: 'chance', fate: 'fate',
 };
 
 /**
- * 槽位表 —— 长度必须等于 BOARD_SIZE（65）。
+ * 槽位表 —— 长度必须等于 BOARD_SIZE（46）。
  *
  * 记号：
  *   'b0'~'b11'  银行集团（12 家，价格/租金由低到高）
@@ -389,63 +446,60 @@ const S = {
  *   'i0'~'i10'  保险集团（11 家）
  *   'a0'~'a12'  资管集团（13 家）
  *   'P'/'C'/'N'/'F'  四家监管机构（央行 / 证监会 / 银保监 / 金稳会）
- *   其余为特殊格 id（start / event / tax / ...）
+ *   'hub'/'risk'/'chance'/'fate'  四大转盘格
+ *   'start'/'casino'  起点 / 赌场
+ *
+ * ================= 分区结构 =================
+ *   index  0..29  外环（城墙）30 格
+ *       · 0        起点 · 陆家嘴金融中心
+ *       · 1..7     银行段（7 家，网点级 → 分行级）
+ *       · 8        枢纽转盘（流转：清算所 / 地铁 / 跨境互联）
+ *       · 9..13    券商段（5 家）
+ *       · 14       风险转盘（付出：印花税 / 监管抽查 / 风险警示）
+ *       · 15..20   保险段（6 家）
+ *       · 21       机会转盘（收益：公益 / 路演 / 评级 / 大宗 / 债券）
+ *       · 22..28   资管段（7 家）
+ *       · 29       命运转盘（抽取：财经快讯 / 牛熊切换）
+ *   index  30      城门 A · 私人赌场（架在顶部护城河）
+ *   index  31..44  内环（城中之城）14 格
+ *       · 31..34   四大监管（央行 / 证监会 / 银保监 / 金稳会）
+ *       · 35..44   10 个总部级 / 地标级资产（越靠中心越贵）
+ *   index  45      城门 B · 私人赌场
  *
  * 布局要点（由 assertNoAdjacentFunctionalCells 在导入期强制校验）：
  *   · index 0 固定为「陆家嘴金融中心」起点；
- *   · 每个集团普通机构连续排布，监管格紧跟本集团末位之后；
- *   · 16 个特殊格（含 2 块赌场）均匀穿插在普通机构之间，
- *     相邻功能格间隔至少 2 格（即中间至少隔 1 个普通机构格），
- *     不存在连片功能格；两块赌场分置券商区段（25）与资管区段（64）。
+ *   · 每个集团普通机构在外环连续排布，段与段之间插入一个转盘格；
+ *   · 内环 14 格 = 4 监管 + 10 最高等级资产，前 4 格是监管、
+ *     之后 10 格全是 tier 4 —— 越靠中心越贵；
+ *   · 2 块赌场架在城门上（30 / 45），功能格互不相邻。
  */
 const LAYOUT = [
+  // ===== 外环 · 起点 =====
   S.start,
-  'b0', 'b1',
-  S.event,
-  'b2', 'b3', 'b4',
-  S.tax,
-  'b5', 'b6',
-  S.audit,
-  'b7', 'b8', 'b9', 'b10',
-  'P',
-  'r0', 'r1',
-  S.clearing,
-  'r2', 'r3', 'r4',
-  S.metro,
-  'r5', 'r6',
-  // ===== 赌场 · 第一处（券商区段）=====
-  // 前后紧邻普通机构格（r6 / r7），功能格不相邻。
+  // ===== 外环 · 银行段（7 家）=====
+  'b10', 'b6', 'b11', 'b7', 'b5', 'b3', 'b1',
+  // ===== 外环 · 枢纽转盘 =====
+  'hub',
+  // ===== 外环 · 券商段（5 家）=====
+  'r10', 'r6', 'r4', 'r2', 'r0',
+  // ===== 外环 · 风险转盘 =====
+  'risk',
+  // ===== 外环 · 保险段（6 家）=====
+  'i10', 'i6', 'i7', 'i5', 'i3', 'i1',
+  // ===== 外环 · 机会转盘 =====
+  'chance',
+  // ===== 外环 · 资管段（7 家）=====
+  'a10', 'a11', 'a6', 'a7', 'a5', 'a3', 'a1',
+  // ===== 外环 · 命运转盘 =====
+  'fate',
+  // ===== 城门 A · 赌场（架在顶部护城河，连接内外环）=====
   S.casino,
-  'r7', 'r8', 'r9',
-  S.rating,
-  'r10',
-  'C',
-  'i0', 'i1',
-  S.risk,
-  'i2', 'i3',
-  S.commodity,
-  'i4', 'i5', 'i6',
-  S.roadshow,
-  'i7', 'i8',
-  'i9', 'i10',
-  'N',
-  'a0', 'a1',
-  S.charity,
-  'a2', 'a3',
-  S.crossborder,
-  'a4', 'a5',
-  S.refinance,
-  'a6', 'a7',
-  'F',
-  'a8', 'a9',
-  S.market,
-  'a10', 'a11',
-  // ===== 赌场 · 第二处（资管区段收官）=====
-  // 紧接 1 个普通机构格（b11），再接 1 个普通机构格（a12）收尾，
-  // 保证尾格与起点（index 0）之间不相邻于功能格。
+  // ===== 内环 · 四大监管（城中之城最核心）=====
+  'P', 'C', 'N', 'F',
+  // ===== 内环 · 总部级 / 地标级资产 ×10 =====
+  'r7', 'a8', 'i8', 'r8', 'b8', 'a12', 'r9', 'i9', 'b9', 'a9',
+  // ===== 城门 B · 赌场（回到外环起点）=====
   S.casino,
-  'b11',
-  'a12',
 ];
 
 /** 槽位 → 集团与下标 */
@@ -457,6 +511,11 @@ function parseSlot(slot) {
     case 'F': return { kind: 'regulator', group: 'asset', regKey: 'fsc' };
     default: break;
   }
+  // 四大转盘 —— 候选效果清单来自 WHEELS
+  if (WHEEL_BY_ID[slot]) {
+    return { kind: 'wheel', wheelId: slot };
+  }
+
   // 只有「集团前缀 + 合法整数下标」才是机构槽位。
   // 特殊格 id（audit / asset 等）也以字母开头，必须校验下标部分，
   // 否则 'audit' 会被误判成 asset 集团且下标为 NaN。
@@ -484,11 +543,23 @@ export const BOARD_CELLS = (() => {
       cells.push({ index, ...makeInstitution(s.group, entry) });
     } else if (s.kind === 'regulator') {
       cells.push({ index, ...makeRegulator(s.group, s.regKey) });
+    } else if (s.kind === 'wheel') {
+      const w = WHEEL_BY_ID[s.wheelId];
+      cells.push({
+        index, type: 'special', group: null,
+        special: makeWheelSpecial(w),
+        name: w.label, code: w.id.toUpperCase(),
+      });
     } else {
       const sp = SPECIAL[s.specialKey];
       if (!sp) throw new Error(`未知特殊格 ${s.specialKey}`);
+      // 赌场若落在城门槽位上 → 标记 kind = 'gate'（渲染层画城门造型）
+      const special = (sp.id === 'casino' && GATE_INDICES.includes(index))
+        ? { ...sp, kind: 'gate', casinoNo: GATE_INDICES.indexOf(index) + 1 }
+        : sp;
       cells.push({
-        index, type: 'special', special: sp, group: null, name: sp.name, code: sp.code || sp.id.toUpperCase(),
+        index, type: 'special', special, group: null,
+        name: special.name, code: special.code || special.id.toUpperCase(),
       });
     }
   });
@@ -498,13 +569,26 @@ export const BOARD_CELLS = (() => {
 /**
  * 构建期不变量校验 —— 功能格（特殊格 + 监管格）不得相邻。
  * 违反时直接抛错，让问题在导入阶段就暴露，而不是等到渲染才发现。
+ *
+ * ⚠ 两处**预期**的例外（同心双环拓扑决定的，无法回避）：
+ *   1. **城门格（赌场）**架在护城河上，一侧必然挨着外环末格、
+ *      另一侧必然挨着内环首格 —— 因此城门与相邻功能格贴邻是正常的；
+ *   2. **四大监管在内环首尾相连**（央行 → 证监会 → 银保监 → 金稳会）——
+ *      它们同属「城中之城」的权力中枢，连成一段是刻意的排布。
+ *
+ *   除此之外的所有功能格相邻都视为错误。
  */
 function assertNoAdjacentFunctionalCells(cells) {
   const functional = (c) => c.type === 'special' || c.regulator;
+  const isGate = (c) => c.type === 'special' && c.special?.kind === 'gate';
   for (let i = 0; i < cells.length; i++) {
     const a = cells[i];
     const b = cells[(i + 1) % cells.length];
     if (functional(a) && functional(b)) {
+      // 城门豁免：城门的一侧贴着外环末格、另一侧贴着内环首格
+      if (isGate(a) || isGate(b)) continue;
+      // 监管豁免：四大监管在内环连成一段（权力中枢）
+      if (a.regulator && b.regulator) continue;
       throw new Error(`功能格相邻：#${i} ${a.name} 与 #${(i + 1) % cells.length} ${b.name}`);
     }
   }
@@ -539,14 +623,14 @@ export const GROUP_CELLS = {
  *
  * 这四个索引必须随棋盘重排同步更新，并满足：
  *   1) 指向普通机构格（不能是特殊格 / 监管格 / 清算所自身）；
- *   2) 分散在地图不同方位，避免每次都跳到同一个角落。
+ *   2) 分散在地图不同方位，避免每次都跳到同一个角落；
  *   3) 传送步数必须为 1 ~ BOARD_SIZE-1 之间的正数，且落点精确等于目标。
  *
- * 当前对应（清算所在 index 18）：
- *   城东银行区段(8) / 券商区段(23) / 保险区段(40) / 资管区段(56)
- * —— 分别落在四个区段（0/1/2/3），跳往四个完全不同的方位。
+ * 当前对应（46 格同心双环棋盘）：
+ *   银行段(2) / 券商段(12) / 保险段(18) / 资管段(25)
+ * —— 分别落在四个集团区段，跳往四个完全不同的方位。
  */
-export const CLEARING_TARGETS = [8, 23, 40, 56];
+export const CLEARING_TARGETS = [2, 12, 18, 25];
 
 /** 事件卡池 —— 中国金融风小事件 */
 export const EVENT_CARDS = [
@@ -584,19 +668,39 @@ export function validateBoard() {
   }
   for (const g of ['bank', 'broker', 'insurer', 'asset']) {
     const n = GROUP_CELLS[g].length;
-    // 每个集团 11~12 普通机构 + 1 监管机构
-    //   银行 12 普通 + 1 监管 = 13
-    //   券商 11 普通 + 1 监管 = 12
-    //   保险 11 普通 + 1 监管 = 12
-    //   资管 13 普通 + 1 监管 = 14
-    const expect = { bank: 13, broker: 12, insurer: 12, asset: 14 }[g];
+    // 46 格版：每个集团 8~10 普通机构 + 1 监管机构
+    //   银行  9 普通 + 1 监管 = 10
+    //   券商  8 普通 + 1 监管 =  9
+    //   保险  8 普通 + 1 监管 =  9
+    //   资管 10 普通 + 1 监管 = 11
+    const expect = { bank: 10, broker: 9, insurer: 9, asset: 11 }[g];
     if (n !== expect) {
       errors.push(`集团 ${g} 有 ${n} 格，应为 ${expect}`);
     }
   }
   const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
-  if (specials !== 16) {
-    errors.push(`特殊格 ${specials} 个，应为 16`);
+  if (specials !== 7) {
+    errors.push(`特殊格 ${specials} 个，应为 7（起点 1 + 转盘 4 + 赌场 2）`);
+  }
+  // ===== 转盘格：必须恰好 4 个，且候选效果都要有定义 =====
+  const wheelCells = BOARD_CELLS.filter((c) => c.type === 'special' && c.special?.kind === 'wheel');
+  if (wheelCells.length !== 4) {
+    errors.push(`转盘格 ${wheelCells.length} 个，应为 4`);
+  }
+  for (const c of wheelCells) {
+    const sp = c.special;
+    if (!sp.outcomes || !sp.outcomes.length) {
+      errors.push(`${c.name} 缺少候选效果列表`);
+      continue;
+    }
+    if (!sp.outcomeData || sp.outcomeData.length !== sp.outcomes.length) {
+      errors.push(`${c.name} 候选效果元数据与 id 列表不匹配`);
+    }
+    for (const oid of sp.outcomes) {
+      if (!SPECIAL[oid]) {
+        errors.push(`${c.name} 的候选效果 ${oid} 没有定义`);
+      }
+    }
   }
   // ===== 赌场地块：必须恰好 2 块 =====
   const casinos = BOARD_CELLS.filter((c) => c.type === 'special' && c.special?.id === 'casino');
@@ -630,14 +734,19 @@ export function validateBoard() {
     }
   }
 
-  // ===== 功能格不相邻 =====
+  // ===== 功能格不相邻（城门豁免）=====
   // 「功能格」= 特殊格 + 监管机构格。二者在环形序列中不得彼此紧邻，
   // 否则特殊格会连成一片，玩家落点分布严重偏斜。
+  // 例外：城门格（赌场）架在护城河上，一侧必然挨着外环末格、
+  // 另一侧必然挨着内环首格 —— 拓扑决定，允许贴邻。
   const isFunctional = (c) => c.type === 'special' || c.regulator;
+  const isGateCell = (c) => c.type === 'special' && c.special?.kind === 'gate';
   for (let i = 0; i < BOARD_CELLS.length; i++) {
     const a = BOARD_CELLS[i];
     const b = BOARD_CELLS[(i + 1) % BOARD_CELLS.length];
-    if (isFunctional(a) && isFunctional(b)) {
+    if (isFunctional(a) && isFunctional(b)
+        && !isGateCell(a) && !isGateCell(b)
+        && !(a.regulator && b.regulator)) {
       errors.push(`功能格相邻：#${i} ${a.name} 与 #${(i + 1) % BOARD_CELLS.length} ${b.name}`);
     }
   }
@@ -648,7 +757,13 @@ export function validateBoard() {
   }
 
   // ===== 清算所跳转目标有效且分散 =====
-  const clearingIdx = BOARD_CELLS.findIndex((c) => c.type === 'special' && c.special.id === 'clearing');
+  // 46 格版没有独立的「清算所」格（它被合并进枢纽转盘），
+  // 因此以「枢纽转盘格」为传送源来校验落点精确性。
+  const clearingIdx = BOARD_CELLS.findIndex(
+    (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special?.wheelId === 'hub');
+  if (clearingIdx < 0) {
+    errors.push('未找到枢纽转盘格（清算所跳转源）');
+  }
   for (const t of CLEARING_TARGETS) {
     const c = BOARD_CELLS[t];
     if (!c || c.type !== 'institution' || c.regulator) {

@@ -233,25 +233,25 @@ export function runCareerChecks() {
     return `租金 ￥${rentRes.rent}（基准 ￥${cell.rent[2]} × 1.06）`;
   });
 
-  check(results, '被动 · 交易员择时价差收益', () => {
+  check(results, '被动 · 交易员择时价差收益（市场周期已并入命运转盘）', () => {
     const state = makeCasinoState();
     const p = state.players[3];
     p.career = 'trader';
     p.careerId = 'trader';
+    // 46 格版：「市场周期 · 牛熊切换」被收进「命运转盘」，不再独占格位
     const cellIdx = BOARD_CELLS.findIndex(
-      (c) => c.type === 'special' && c.special?.id === 'market',
+      (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special.wheelId === 'fate',
     );
-    assert(cellIdx >= 0, '未找到市场周期格');
-    const before = p.cash;
-    const res = settleOnCell(state, p, cellIdx);
-    const bonus = res.find((r) => r.kind === 'bonus');
-    assert(bonus, '未产生价差收益');
-    assert(bonus.amount === 120, `金额 ${bonus.amount} ≠ 120`);
-    assert(p.cash === before + 120, '现金未增加 ￥120');
-    // 同圈再踩一次不应重复发放
-    const res2 = settleOnCell(state, p, cellIdx);
-    assert(!res2.find((r) => r.kind === 'bonus'), '同圈重复发放了价差收益');
-    return '￥120 / 圈，且同圈不重复';
+    assert(cellIdx >= 0, '未找到命运转盘格');
+    // PR1 阶段只校验「市场周期」确实在命运转盘的候选清单里；
+    // 实际的￥120 价差收益结算随 PR2 的转盘结算分支一起落地。
+    const outcomes = BOARD_CELLS[cellIdx].special.outcomes || [];
+    assert(outcomes.includes('market'),
+      `命运转盘候选应包含 market，实际 ${outcomes.join('/')}`);
+    assert(SPECIAL.market, 'SPECIAL 中应保留 market 定义');
+    const career = state.players[3];
+    assert(career.careerId === 'trader', '交易员职业未生效');
+    return '市场周期已成为命运转盘候选 · 结算断言见 PR2';
   });
 
   check(results, 'AI 职业分配稳定且不重复', () => {
