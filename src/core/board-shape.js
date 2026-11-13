@@ -32,13 +32,25 @@
  */
 
 /** 棋盘尺寸（格数） */
-export const BOARD_SIZE = 63;
+export const BOARD_SIZE = 67;
 
 /**
  * 每条边（含两端角格）的格子数。
- *   右 / 上 / 左 = 17，下 = 16 → 合计 63 格。
+ *   右 / 上 / 左 = 18，下 = 17 → 合计 67 格。
+ *
+ * 说明：底边比其余三边少 1 格，使棋盘容纳新增的 2 块「赌场」地块；
+ * 轨道包围盒仍是严格正方形（0..1000），底边格子略宽于其余三边
+ * （与原 63 格版本的「下边少一格」设计保持一致）。
  */
-export const SIDE_COUNTS = { right: 17, top: 17, left: 17, bottom: 16 };
+export const SIDE_COUNTS = { right: 18, top: 18, left: 18, bottom: 17 };
+
+/**
+ * 四个角格的 index —— 由各边格数推导，随 SIDE_COUNTS 自动同步。
+ *   右下角(0) → 右上角 → 左上角 → 左下角
+ */
+export const CORNER_TOP_RIGHT = SIDE_COUNTS.right - 1;
+export const CORNER_TOP_LEFT = CORNER_TOP_RIGHT + SIDE_COUNTS.top - 1;
+export const CORNER_BOTTOM_LEFT = CORNER_TOP_LEFT + SIDE_COUNTS.left - 1;
 
 /**
  * 轨道参数 —— 归一化到 0..1000 的正方形包围盒。
@@ -192,14 +204,14 @@ export function cellSideInfo(index) {
   const isCorner = (onRight || onLeft) && (onTop || onBottom);
 
   // 角格：按「起点归属」确定唯一一边
-  //   右下角(0) → right，上边右上角(16) → top，左上角(32) → left，左下角(48) → bottom
+  //   右下角(0) → right，上边右上角 → top，左上角 → left，左下角 → bottom
   if (idx === 0) return { side: 'right', corner: true, edgeIndex: 0 };
-  if (idx === 16) return { side: 'top', corner: true, edgeIndex: 0 };
-  if (idx === 32) return { side: 'left', corner: true, edgeIndex: 0 };
-  if (idx === 48) return { side: 'bottom', corner: true, edgeIndex: 0 };
+  if (idx === CORNER_TOP_RIGHT) return { side: 'top', corner: true, edgeIndex: 0 };
+  if (idx === CORNER_TOP_LEFT) return { side: 'left', corner: true, edgeIndex: 0 };
+  if (idx === CORNER_BOTTOM_LEFT) return { side: 'bottom', corner: true, edgeIndex: 0 };
 
   if (onRight) return { side: 'right', corner: false, edgeIndex: idx };
-  if (onTop) return { side: 'top', corner: false, edgeIndex: idx - 16 };
-  if (onLeft) return { side: 'left', corner: false, edgeIndex: idx - 32 };
-  return { side: 'bottom', corner: false, edgeIndex: idx - 48 };
+  if (onTop) return { side: 'top', corner: false, edgeIndex: idx - CORNER_TOP_RIGHT };
+  if (onLeft) return { side: 'left', corner: false, edgeIndex: idx - CORNER_TOP_LEFT };
+  return { side: 'bottom', corner: false, edgeIndex: idx - CORNER_BOTTOM_LEFT };
 }

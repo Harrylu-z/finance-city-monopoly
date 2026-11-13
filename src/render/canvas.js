@@ -864,8 +864,10 @@ export class BoardRenderer {
     for (const [cellIndex, players] of byCell) {
       const r = this.cellRect(cellIndex);
       const n = players.length;
-      const slots = this.tokenSlots(r, n);
-      const ts = this.tokenScale(r);
+      // 先取第一个玩家的立绘做基准（同一格内通常同职业/同尺寸）
+      const refSprite = getAvatarSprites(players[0].avatar, players[0].colorIndex).idle;
+      const slots = this.tokenSlots(r, n, refSprite);
+      const ts = this.tokenScale(r, refSprite);
       players.forEach((p, i) => {
         const sprites = getAvatarSprites(p.avatar, p.colorIndex);
         const anim = view.moveAnim && view.moveAnim.playerId === p.id ? view.moveAnim : null;
@@ -886,24 +888,29 @@ export class BoardRenderer {
         const s = ts;
         const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
 
-        // 底座对齐到棋子脚下（16×24 原生，脚底 = y + 24*s）
-        const baseCx = tx + 8 * s;
-        const baseCy = ty + 23 * s;
-        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main);
+        // 立绘尺寸（经典棋子 16×24，职业立绘 32×40）
+        const sw = sprite.width;
+        const sh = sprite.height;
+        const halfW = sw / 2;
+
+        // 底座对齐到棋子脚下
+        const baseCx = tx + halfW * s;
+        const baseCy = ty + (sh - 1) * s;
+        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main, halfW);
 
         if (anim && anim.squash) {
           const sq = anim.squash;
           const outlined = this.outlinedSprite(sprite, pc.main);
           const pad = 2;
           ctx.save();
-          ctx.translate(Math.round(tx + 8 * s), Math.round(ty + 24 * s));
+          ctx.translate(Math.round(tx + halfW * s), Math.round(ty + sh * s));
           ctx.scale(sq.sx, sq.sy);
           ctx.drawImage(
             outlined,
-            -(8 + pad) * s,
-            -(24 + pad) * s,
-            (16 + pad * 2) * s,
-            (24 + pad * 2) * s
+            -(halfW + pad) * s,
+            -(sh + pad) * s,
+            (sw + pad * 2) * s,
+            (sh + pad * 2) * s
           );
           ctx.restore();
         } else {
@@ -913,16 +920,17 @@ export class BoardRenderer {
         // 名牌 —— 站在格子上的**所有玩家**都挂名牌；当前回合玩家额外有箭头 + 金色高亮
         if (!anim) {
           const isCur = state.currentPlayerIndex === p.index;
-          if (isCur) this.drawTurnArrow(ctx, tx + 8 * s, ty - 7);
-          this.drawTokenNameTag(ctx, tx + 8 * s, ty - 10, p.name, pc.main, isCur);
+          if (isCur) this.drawTurnArrow(ctx, tx + halfW * s, ty - 7);
+          this.drawTokenNameTag(ctx, tx + halfW * s, ty - 10, p.name, pc.main, isCur);
         }
       });
     }
   }
 
   /** 棋子底座（深色站台 + 玩家色高光边） */
-  drawTokenBase(ctx, cx, cy, s, glow) {
-    const rx = Math.round(7 * s);
+  drawTokenBase(ctx, cx, cy, s, glow, halfW = 8) {
+    // 底座宽度跟随立绘宽度（经典棋子 8，职业立绘 16），但封顶避免过宽
+    const rx = Math.max(3, Math.min(Math.round(halfW * s), Math.round(9 * s)));
     const ry = Math.max(2, Math.round(3 * s));
     for (let y = -ry; y <= ry; y++) {
       const t = (y + ry) / (ry * 2);
@@ -1035,14 +1043,20 @@ export class BoardRenderer {
   }
 
   /**
-   * 棋子缩放倍数 —— 按格子实际尺寸自适应，始终**整数倍**（nearest-neighbor）。
+   * 棋子缩放倍数 —— 按**立绘实际尺寸**自适应，始终**整数倍**（nearest-neighbor）。
    *
-   * 棋子原生 16×24。格子 60px 时 1 倍只有 24px 高（占 40%），
-   * 太小看不清；2 倍则 48px 高会盖住名称。这里取「能塞进站立带的最大整数倍」。
+   * 经典棋子是 16×24 像素小人，职业立绘是 32×40 矢量形象，原生尺寸不同，
+   * 但都要保证：
+   *   · 完整落在格子的站立带内（不越界、不盖住机构名称）；
+   *   · 缩放为整数倍（像素棋子不糊；矢量立绘本就抗锯齿，整数倍更锐利）。
    */
-  tokenScale(r) {
+  tokenScale(r, sprite) {
     const bandH = Math.max(16, Math.round(r.h * 0.34));   // 底部站立带高度
-    return Math.max(1, Math.min(3, Math.floor(bandH / 24)));
+    const natH = (sprite && sprite.height) || 24;
+    const natW = (sprite && sprite.width) || 16;
+    const byH = Math.floor(bandH / natH);
+    const maxByW = Math.max(1, Math.floor((r.w * 0.92) / natW));
+    return Math.max(1, Math.min(3, byH, maxByW));
   }
 
   /**
@@ -1053,10 +1067,12 @@ export class BoardRenderer {
    *   · 多人同格时按列排开，超出宽度则错位成多排并抬高后排；
    *   · 不遮挡上方的机构名称与价格（可读性优先）。
    */
-  tokenSlots(r, n) {
-    const s = this.tokenScale(r);
-    const w = 16 * s;
-    const h = 24 * s;
+  tokenSlots(r, n, sprite) {
+    const s = this.tokenScale(r, sprite);
+    const natW = (sprite && sprite.width) || 16;
+    const natH = (sprite && sprite.height) || 24;
+    const w = natW * s;
+    const h = natH * s;
     const barH = Math.max(4, Math.round(r.h * 0.12));
     const bodyTop = r.y + barH + 1;
     const bodyH = r.h - barH - 2;
@@ -1088,7 +1104,9 @@ export class BoardRenderer {
     const r = this.cellRect(cellIndex);
     const others = state.players.filter((p) => !p.bankrupt && p.position === cellIndex);
     const n = Math.max(1, others.length);
-    const slots = this.tokenSlots(r, n);
+    const ref = others[0];
+    const sprite = ref ? getAvatarSprites(ref.avatar, ref.colorIndex).idle : null;
+    const slots = this.tokenSlots(r, n, sprite);
     const slot = slots[0];
     return { dx: slot.dx, dy: slot.dy };
   }

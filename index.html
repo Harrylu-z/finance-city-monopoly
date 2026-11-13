@@ -37,6 +37,11 @@
           </div>
 
           <div class="field">
+            <span class="field-label">选择职业（自带出场被动）</span>
+            <div id="career-picker" class="career-picker" role="radiogroup" aria-label="职业"></div>
+          </div>
+
+          <div class="field">
             <span class="field-label">难度</span>
             <div id="difficulty-picker" class="seg-picker" role="radiogroup" aria-label="难度"></div>
           </div>
@@ -176,6 +181,12 @@
         <button id="btn-rank-close" class="pixel-btn">关闭</button>
       </div>
     </div>
+  </div>
+
+  <!-- ============ 私人赌场 · 德州扑克 ============ -->
+  <div id="poker-root" class="modal-root poker-root" hidden>
+    <div id="poker-backdrop" class="modal-backdrop"></div>
+    <div id="poker-box" class="poker-box pixel-panel" role="dialog" aria-modal="true" aria-label="私人赌场 · 德州扑克"></div>
   </div>
 
   <!-- ============ 通用弹窗 ============ -->

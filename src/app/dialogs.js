@@ -4,7 +4,7 @@
 
 import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
 import { getInstitutionSprite } from '../art/buildings.js';
-import { getAvatarSprites } from '../art/avatars.js';
+import { getAvatarSprites, makePlayerSpriteCanvas } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
   groupBuffTier, globalRegulatorEffects, CONFIG, allGroupBuffs,
@@ -12,6 +12,7 @@ import {
   outstandingLoan,
 } from '../core/economy.js';
 import { GROUP_META, REGULATORS } from '../core/board.js';
+import { getCareer } from '../core/careers.js';
 
 const GROUP_INDEX = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
@@ -514,26 +515,30 @@ export function showGameOverDialog(state, ranked, playerIsWinner, onShare, onRes
     row.className = 'inst-item';
     row.style.borderLeft = `4px solid ${pc.main}`;
 
-    const sprites = getAvatarSprites(p.avatar, p.colorIndex);
-    const cv = document.createElement('canvas');
-    cv.width = 32;
-    cv.height = 48;
-    cv.style.cssText = 'width:16px;height:24px;image-rendering:pixelated;';
-    const cctx = cv.getContext('2d');
-    cctx.imageSmoothingEnabled = false;
-    cctx.drawImage(sprites.idle, 0, 0, 32, 48);
+    const cv = makePlayerSpriteCanvas(p, 1.5);
     row.appendChild(cv);
-
     const info = document.createElement('div');
     info.className = 'inst-info';
     const nameRow = document.createElement('div');
     nameRow.className = 'inst-name';
     nameRow.textContent = `#${i + 1} ${p.name}`;
+    // 职业标签（所有玩家都有）
+    const career = getCareer(p.careerId);
+    if (career) {
+      const ctag = document.createElement('span');
+      ctag.className = 'inst-lv';
+      ctag.textContent = career.name;
+      ctag.style.background = PALETTE.goldDk;
+      ctag.title = `${career.title} —— ${career.passive.name}：${career.passive.desc}`;
+      nameRow.appendChild(ctag);
+    }
+    // 性格标签（仅 AI 有）
     if (p.personality) {
       const tag = document.createElement('span');
       tag.className = 'inst-lv';
       tag.textContent = p.personality.tag;
       tag.style.background = pc.main;
+      tag.title = `${p.personality.name} —— ${p.personality.desc}（短板：${p.personality.weakness || '—'}）`;
       nameRow.appendChild(tag);
     }
     info.appendChild(nameRow);
@@ -692,16 +697,7 @@ export function showBondDialog(issuer, state, onConfirm, onCancel) {
     const item = document.createElement('div');
     item.className = 'inst-item';
 
-    const sprites = getAvatarSprites(p.avatar, p.colorIndex);
-    const av = document.createElement('canvas');
-    const k = 2;
-    av.width = sprites.down[0].width * k;
-    av.height = sprites.down[0].height * k;
-    av.style.width = av.width + 'px';
-    av.style.height = av.height + 'px';
-    const actx = av.getContext('2d');
-    actx.imageSmoothingEnabled = false;
-    actx.drawImage(sprites.down[0], 0, 0, av.width, av.height);
+    const av = makePlayerSpriteCanvas(p, 2, 'down');
     item.appendChild(av);
 
     const info = document.createElement('div');
@@ -1004,14 +1000,7 @@ export function showPlayerDetailDialog(state, player, opts = {}) {
   head.className = 'fin-head';
   head.style.borderLeftColor = pc.main;
 
-  const sprites = getAvatarSprites(player.avatar, player.colorIndex);
-  const cv = document.createElement('canvas');
-  cv.width = 32;
-  cv.height = 48;
-  cv.style.cssText = 'width:32px;height:48px;image-rendering:pixelated;flex:none;';
-  const cctx = cv.getContext('2d');
-  cctx.imageSmoothingEnabled = false;
-  cctx.drawImage(sprites.idle, 0, 0, 32, 48);
+  const cv = makePlayerSpriteCanvas(player, 2);
   head.appendChild(cv);
 
   const headInfo = document.createElement('div');
@@ -1026,11 +1015,24 @@ export function showPlayerDetailDialog(state, player, opts = {}) {
     rk.style.background = PALETTE.gold;
     nameRow.appendChild(rk);
   }
+  // 职业标签（所有玩家都有）
+  const career = getCareer(player.careerId);
+  if (career) {
+    const ct = document.createElement('span');
+    ct.className = 'inst-lv';
+    ct.textContent = career.name;
+    ct.style.background = PALETTE.goldDk;
+    ct.title = `${career.title} —— ${career.passive.name}：${career.passive.desc}`;
+    nameRow.appendChild(ct);
+  }
+  // 性格标签（仅 AI 有）
   if (player.personality) {
     const pt = document.createElement('span');
     pt.className = 'inst-lv';
     pt.textContent = player.personality.tag;
     pt.style.background = pc.main;
+    pt.title = `${player.personality.name} —— ${player.personality.desc}`
+      + (player.personality.weakness ? `（短板：${player.personality.weakness}）` : '');
     nameRow.appendChild(pt);
   }
   if (m.bankrupt) {
@@ -1135,5 +1137,75 @@ export function showPlayerDetailDialog(state, player, opts = {}) {
     title: '财务指标 · 下钻',
     body,
     actions: [{ text: '关闭', primary: true }],
+  });
+}
+
+/**
+ * 追缴保证金（Margin Call）—— 现金为负时的强制补足窗口。
+ *
+ * 现金为负不能直接结束回合：必须质押机构补足缺口，
+ * 全部质押后仍为负则由调用方触发强制平仓。
+ */
+export function showMarginCallDialog(player, state, { onMortgage, onRaiseAll }) {
+  const deficit = Math.max(0, -Math.round(player.cash || 0));
+  const owned = (player.institutions || []).filter((inst) => !inst.mortgaged);
+
+  const body = document.createElement('div');
+
+  const text = document.createElement('div');
+  text.className = 'modal-text';
+  text.innerHTML =
+    `当前现金 <span class="hl-red">-￥${deficit}</span>，已触发<span class="hl">追缴保证金</span>。<br>`
+    + '必须在回合结束前通过质押融资补足缺口，否则将被强制平仓清算。';
+  body.appendChild(text);
+
+  if (owned.length) {
+    const hint = document.createElement('div');
+    hint.className = 'modal-note';
+    hint.textContent = '质押后该机构暂停收取管理费；日后赎回需归还本金并另付 12% 解押费。';
+    body.appendChild(hint);
+
+    const list = document.createElement('div');
+    list.className = 'mc-list';
+    owned
+      .map((inst) => ({ inst, amount: mortgageValue(state.board[inst.cellIndex], inst.level) }))
+      .sort((a, b) => b.amount - a.amount)
+      .forEach(({ inst, amount }) => {
+        const cell = state.board[inst.cellIndex];
+        const row = document.createElement('div');
+        row.className = 'mc-row';
+
+        const name = document.createElement('span');
+        name.className = 'mc-name';
+        name.textContent = `${cell.name} · ${levelLabel(inst.level)}`;
+
+        const val = document.createElement('span');
+        val.className = 'mc-val';
+        val.textContent = `质押可得 ￥${amount}`;
+
+        const btn = document.createElement('button');
+        btn.className = 'pixel-btn mc-btn';
+        btn.type = 'button';
+        btn.textContent = '质押';
+        btn.addEventListener('click', () => onMortgage(inst.cellIndex));
+
+        row.append(name, val, btn);
+        list.appendChild(row);
+      });
+    body.appendChild(list);
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'modal-note';
+    empty.textContent = '已无可质押机构，缺口无法补足，将进入强制平仓。';
+    body.appendChild(empty);
+  }
+
+  return openModal({
+    title: '追缴保证金 · Margin Call',
+    body,
+    dismissible: false,
+    actions: owned.length
+      ? [{ text: '一键质押补足', primary: true, onClick: () => { onRaiseAll(); return false; } }]
+      : [{ text: '确认', primary: true }],
   });
 }

@@ -20,6 +20,17 @@ import {
   buffEffectMult,
 } from './economy.js';
 import { makeRng } from './rng.js';
+import {
+  CAREERS, CAREER_BY_ID, DEFAULT_CAREER_ID, getCareer,
+  careerEffectMult, careerEffectValue, careerHasHook,
+} from './careers.js';
+import {
+  PERSONALITIES, PERSONALITY_BY_ID, getPersonality, DEFAULT_PERSONALITY_ID,
+  assignPersonalities,
+} from './personalities.js';
+import {
+  createPokerGame, settlePoker, POKER_CONFIG,
+} from './poker.js';
 
 let eventSeq = 0;
 
@@ -34,9 +45,20 @@ export function createState(options = {}) {
     difficulty = 'normal',
     theme = 'finance',
     aiCount = 3,
+    // legacy = true 表示「载入旧存档」：AI 缺失性格字段时降级为中性基准，
+    // 不凭空补一个人格（避免旧档被追溯性改写）。
+    // 新开局（legacy 缺省 false）时，AI 未指定性格会按 seed 稳定随机分配。
+    legacy = false,
   } = options;
 
   const rng = makeRng(seed);
+
+  // ===== 新开局：为未指定性格的 AI 稳定分配性格 ====================
+  // 按 seed 抽样 → 同种子可复现（分享链接还原出完全相同的对局）。
+  // 真人玩家永远不进入这个池子（绝不被无故强制分配性格）。
+  // 用**派生随机源**，避免消耗 state.rng 的随机序列（保持对局随机流不变）。
+  const autoPersonalities = legacy ? [] : assignPersonalities(rng.fork('personality'), players.length);
+  let autoPersonalityCursor = 0;
 
   const state = {
     seed,
@@ -60,14 +82,36 @@ export function createState(options = {}) {
   };
 
   players.forEach((p, i) => {
+    // ===== 职业 & 性格 的规范化解析 ====================
+    // 职业：未指定时 AI 按 seed 稳定分配，真人默认投行家（永不被无故改动）
+    const resolvedCareerId = resolveCareerId(p, rng, i);
+    // 性格：真人 → null（**不强制分配**）；
+    //       AI 且指定了合法性格 → 该性格；
+    //       AI 但旧存档缺字段 → 'neutral'（无性格倾向，行为等同中性基准）
+    const resolvedPersonalityId = resolvePersonalityId(p, autoPersonalities, autoPersonalityCursor);
+    if (p.isAI && !p.personalityId && !(typeof p.personality === 'string') && !p.personality) {
+      autoPersonalityCursor++;
+    }
+    const personalityDef = resolvedPersonalityId ? getPersonality(resolvedPersonalityId) : null;
+
     state.players.push({
       id: p.id ?? i,
       index: i,
       name: p.name,
       isAI: !!p.isAI,
-      avatar: p.avatar ?? 0,
+      // 棋子形象：AI 使用其**职业专属立绘**（索引 7~13），
+      // 真人使用经典棋子（索引 0~3）—— 一眼就能从棋子认出职业。
+      // 显式传入 avatar 且与职业立绘不冲突时才优先用传入值（保留扩展性）。
+      avatar: p.avatar ?? (p.isAI ? (getCareer(resolvedCareerId)?.pieceIndex ?? i) : i),
       colorIndex: p.colorIndex ?? i,
-      personality: p.personality || null,
+      // ===== 职业（金融行业专属角色）=====
+      // careerId 决定出场被动；career 是同值的兼容别名（旧代码用 player.career）
+      careerId: resolvedCareerId,
+      career: resolvedCareerId,
+      // ===== 性格（仅 AI 有）=====
+      // personalityId 是唯一事实来源；personality 保存性格**定义快照**（便于 UI 直接读）
+      personalityId: resolvedPersonalityId,
+      personality: personalityDef || null,
       cash: p.cash ?? cash,
       position: 0,
       inJail: false,
@@ -90,6 +134,82 @@ export function createState(options = {}) {
   });
 
   return state;
+}
+
+/**
+ * 为 AI 分配职业 —— 按 rng 稳定取样，避免同种子对局职业重复。
+ * @param {object} rng
+ * @param {number} index 该玩家序号（用于错开抽样）
+ */
+export function pickCareerId(rng, index = 0) {
+  if (!CAREERS.length) return DEFAULT_CAREER_ID;
+  // 基础位置由序号错开，抽样只在小范围内取 —— 保证一局里职业不重复
+  const start = index % CAREERS.length;
+  const offset = rng.int(0, CAREERS.length - 1);
+  return CAREERS[(start + offset) % CAREERS.length].id;
+}
+
+/**
+ * 解析玩家职业 id。
+ *
+ * ================== 兼容规则 ==================
+ *   1. 显式给了合法 careerId → 直接采用；
+ *   2. 给了非法 careerId（拼写错误 / 旧版本已删除的 id）→ 回落到默认值，**不抛错**；
+ *   3. 完全没给：
+ *      · AI   → 按 seed 稳定分配一个（本局内不重复）；
+ *      · 真人 → 默认「投行家」（人类玩家不应被无故改动）。
+ */
+function resolveCareerId(p, rng, index) {
+  const explicit = p.careerId || p.career;
+  if (explicit && CAREER_BY_ID[explicit]) return explicit;
+  if (explicit) {
+    // 非法 id —— 静默降级，不阻断开局
+    return p.isAI ? pickCareerId(rng, index) : DEFAULT_CAREER_ID;
+  }
+  return p.isAI ? pickCareerId(rng, index) : DEFAULT_CAREER_ID;
+}
+
+/**
+ * 解析玩家性格 id。
+ *
+ * ================== 兼容规则 ==================
+ *   1. 真人玩家 → **null**（绝不无故被分配性格）；
+ *   2. AI 显式给了合法性格（id 字符串或性格定义对象）→ 该性格 id；
+ *   3. AI 给了非法性格 → 降级为 'neutral'（无性格倾向），不抛错；
+ *   4. AI 完全没给（旧存档）→ 'neutral'，行为等同中性基准。
+ */
+function resolvePersonalityId(p, autoPool = [], cursor = 0) {
+  if (!p.isAI) return null;
+  const raw = p.personalityId
+    ?? (typeof p.personality === 'string' ? p.personality : p.personality?.id);
+  if (raw) {
+    if (raw === DEFAULT_PERSONALITY_ID) return DEFAULT_PERSONALITY_ID;
+    return PERSONALITY_BY_ID[raw] ? raw : DEFAULT_PERSONALITY_ID;
+  }
+  // 未指定性格：
+  //   · 新开局 → 从 seed 稳定的池子里取一个（性格 + 职业相互独立）
+  //   · 旧存档 → 'neutral'（不追溯改写旧局）
+  if (autoPool.length) {
+    const pick = autoPool[cursor % autoPool.length];
+    if (pick) return pick.id;
+  }
+  return DEFAULT_PERSONALITY_ID;
+}
+
+/**
+ * 玩家职业被动 × 限时状态被动 的合并乘数。
+ *
+ * 规则：职业被动与 buff 效果**同构**（都是乘数），
+ * 因此直接相乘即可叠加：
+ *   收购成本 = 基础价 × careerMult × buffMult
+ *
+ * @param {object} player
+ * @param {string} key 'buyCostMult' | 'upgradeCostMult' | 'rentMult' | ...
+ */
+export function playerCostMult(player, key) {
+  const career = careerEffectMult(player, key);
+  const buff = buffEffectMult(player, key);
+  return career * buff;
 }
 
 /** 事件发射 */
@@ -198,10 +318,10 @@ export function settleOnCell(state, player, cellIndex) {
   if (cell.type === 'institution') {
     const owner = ownerOf(state, cellIndex);
     if (!owner) {
-      // 无主 —— 触发收购决策（路演等限时状态可降低收购成本）
+      // 无主 —— 触发收购决策（路演等限时状态 + 投行家职业可降低收购成本）
       const level = cell.tier;
       const basePrice = purchasePrice(cell, level, state.market);
-      const price = Math.round(basePrice * buffEffectMult(player, 'buyCostMult'));
+      const price = Math.round(basePrice * playerCostMult(player, 'buyCostMult'));
       results.push({ kind: 'purchase-offer', cellIndex, price, level, cell });
       state.pending = { kind: 'purchase', cellIndex, price, level, playerId: player.id };
     } else if (owner.id === player.id) {
@@ -227,9 +347,11 @@ export function settleOnCell(state, player, cellIndex) {
           * buffEffectMult(owner, 'rentMult');
         // 归属人的自身租金系数（信用评级展望 / 自查类事件卡）
         const selfMult = owner.selfRentMult ?? 1;
+        // 精算师职业：自己收取的管理费 +6%（温和加成，不改写胜负）
+        const careerMult = careerEffectMult(owner, 'rentMult');
         const rent = Math.round(calculateRent(cell, inst.level, {
           market: state.market, eventMult: state.eventMult, buffMult,
-        }) * selfMult);
+        }) * selfMult * careerMult);
         player.cash -= rent;
         owner.cash += rent;
         player.stats.rentsPaid += rent;
@@ -242,15 +364,17 @@ export function settleOnCell(state, player, cellIndex) {
           baseRent: cell.rent[inst.level] ?? cell.rent[0] ?? rent,
           level: inst.level,
           ownerColorIndex: owner.colorIndex,
+          careerMult,
           marketNote: marketNoteFor(state.market)
-            + (selfMult !== 1 ? ` × 自身系数 ${selfMult.toFixed(2)}` : ''),
+            + (selfMult !== 1 ? ` × 自身系数 ${selfMult.toFixed(2)}` : '')
+            + (careerMult !== 1 ? ` × 职业系数 ${careerMult.toFixed(2)}` : ''),
         });
         emit(state, 'rent-paid', { from: player.id, to: owner.id, rent, cellIndex });
       }
     }
   } else {
     // 特殊格
-    results.push(...settleSpecial(state, player, cell));
+    results.push(...settleSpecial(state, player, cell, cellIndex));
   }
 
   return results;
@@ -332,7 +456,7 @@ export function tickBuffs(state, player) {
 }
 
 /** 特殊格结算 */
-function settleSpecial(state, player, cell) {
+function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
   const results = [];
   const sp = cell.special;
 
@@ -414,6 +538,29 @@ function settleSpecial(state, player, cell) {
       const next = state.market === 'bull' ? 'bear' : 'bull';
       state.market = next;
       results.push({ kind: 'market-switch', market: next, cell });
+      // 「交易员」职业：踩到牛熊切换格时额外获得一笔价差收益
+      // （每圈只发一次，防止反复刷同一格；金额温和，不决定走势）
+      const marketBonus = careerEffectValue(player, 'marketBonus');
+      if (marketBonus > 0 && !player._marketBonusRound) {
+        player._marketBonusRound = state.round;
+        player.cash += marketBonus;
+        results.push({
+          kind: 'bonus', amount: marketBonus, cell,
+          reason: '交易员择时价差收益',
+        });
+      }
+      break;
+    }
+    case 'casino': {
+      // 私人赌场 · 德州扑克 —— 所有玩家参与一局
+      const seats = state.players.filter((p) => !p.bankrupt);
+      results.push({
+        kind: 'casino-open',
+        cell,
+        seats: seats.map((p) => p.id),
+        reason: sp.name,
+      });
+      state.pending = { kind: 'casino', playerId: player.id, cellIndex: cellIndex };
       break;
     }
     case 'audit': {
@@ -545,12 +692,18 @@ export function applyEventCard(state, player, card) {
 
 /**
  * 应用陷阱卡效果（监管抽查 / 风险警示）。
- * 持有「金融稳定委员会」的玩家可减免 50% 罚金。
+ * 罚金减免来源（取最大，不叠加）：
+ *   1. 持有「金融稳定委员会」的玩家 —— 减免 50%
+ *   2. 「风控总监」职业 —— 减免 30%
  */
 export function applyTrapCard(state, player, card) {
   const e = card.effect;
   let cash = e.cash || 0;
-  const relief = globalRegulatorEffects(state).trapRelief || 0;
+  const regRelief = globalRegulatorEffects(state).trapRelief || 0;
+  // 风控总监职业被动：温和的 30% 罚金缓冲
+  const careerRelief = careerEffectValue(player, 'trapRelief');
+  const relief = Math.max(regRelief, careerRelief);
+  const fromCareer = careerRelief > regRelief;
   if (cash < 0 && relief > 0) {
     cash = Math.round(cash * (1 - relief));
   }
@@ -560,9 +713,102 @@ export function applyTrapCard(state, player, card) {
   }
   emit(state, 'trap-applied', { playerId: player.id, cardId: card.id, cash });
   log(state, 'bad',
-    `${player.name} 触发「${card.title}」：${card.text}${relief > 0 && cash < 0 ? '（金稳会已减免部分罚金）' : ''}`,
+    `${player.name} 触发「${card.title}」：${card.text}`
+    + (relief > 0 && cash < 0
+      ? (fromCareer ? '（风控总监职业已减免 30% 罚金）' : '（金稳会已减免部分罚金）')
+      : ''),
     '监管');
   return { cash, relief };
+}
+
+/* ===================================================================
+ * 私人赌场 · 德州扑克 —— 主游戏 <-> 小游戏桥接
+ * =================================================================== */
+
+/**
+ * 开一局德州扑克（由赌场格触发）。
+ *
+ * 规则要点：
+ *   1. 所有**未破产**玩家上桌（至少 2 人才能开局）；
+ *   2. 桌上面值 = 现金 + 资产折算额度（资产折算率 50%）；
+ *      —— 允许「用资产下注」，但**不转移资产所有权**；
+ *   3. 「赌王」职业起始底牌 3 张（其余 2 张），
+ *      全局牌库仍严格一副 52 张（见 core/poker.js 的 assertDeckIntegrity）；
+ *   4. 结算时现金**最多扣到 0**，不足部分记为资产折让 → 绝不产生负数。
+ *
+ * @param {object} state 主游戏状态
+ * @returns {object|null} 对局对象；人数不足时返回 null
+ */
+export function startCasinoGame(state) {
+  const seats = state.players.filter((p) => !p.bankrupt);
+  if (seats.length < 2) return null;
+
+  const participants = seats.map((p) => ({
+    id: p.id,
+    name: p.name,
+    isAI: !!p.isAI,
+    cash: Math.max(0, p.cash || 0),
+    // 资产折算额度 —— 由 poker.js 内部按 assetBetRatio 折算，
+    // 这里只传原始资产市值，避免重复折算。
+    assetValue: Math.max(0, totalAssets(p, state)),
+    // 赌王职业：多 1 张底牌
+    extraHole: careerEffectValue(p, 'pokerExtraHole'),
+    // 量化研究员：坏牌判定更保守（更容易跟牌）
+    foldBias: careerEffectValue(p, 'pokerFoldBias'),
+    personality: p.personality || null,
+    // 主游戏引用（结算时回写现金）
+    ref: p,
+  }));
+
+  const game = createPokerGame({
+    players: participants,
+    seed: `${state.seed}:casino:${state.turnNumber}:${state.round}`,
+  });
+  if (!game) return null;
+
+  // 「量化研究员」职业：坏牌判定更保守（更容易跟牌）
+  game.foldBiasById = new Map(participants.map((p) => [p.id, p.foldBias || 0]));
+
+  state.poker = game;
+  emit(state, 'casino-opened', { seats: participants.map((p) => p.id) });
+  log(state, 'sys',
+    `全体玩家进入「私人赌场 · 德州扑克」（${participants.length} 人同桌，牌库一副 52 张）`,
+    '赌场');
+  return game;
+}
+
+/**
+ * 结束德州扑克并把结果写回主游戏。
+ *
+ * 保证：
+ *   1. 玩家现金**绝不为负**；
+ *   2. 机构所有权 / 等级 / 质押状态**完全不变**；
+ *   3. 结算后 `state.poker` 清空，主游戏恢复正常流程。
+ *
+ * @param {object} state
+ * @param {object} game
+ * @returns {{deltas:Array, log:Array, pot:number}}
+ */
+export function finishCasinoGame(state, game) {
+  if (!game) return { deltas: [], log: [], pot: 0 };
+  const res = settlePoker(game, state);
+
+  for (const d of res.deltas) {
+    const p = state.players.find((x) => x.id === d.playerId);
+    if (!p) continue;
+    // 双保险：现金永不为负
+    if (p.cash < 0) p.cash = 0;
+    log(state, p.isAI ? 'ai' : 'self',
+      `${p.name} 在德州扑克中${d.gain > 0 ? `赢得 ￥${d.gain}` : `投注 ￥${d.bet}`}`
+      + (d.assetStaked > 0 ? `（含资产折让 ￥${d.assetStaked}，机构所有权不变）` : '')
+      + (d.handName ? ` · ${d.handName}` : ''),
+      '赌场');
+  }
+
+  state.poker = null;
+  state.pending = null;
+  emit(state, 'casino-closed', { pot: res.pot });
+  return res;
 }
 
 /* ===================================================================
@@ -817,8 +1063,8 @@ export function upgradeInstitution(state, player, cellIndex, opts = {}) {
 
   const regEff = globalRegulatorEffects(state);
   const baseCost = upgradeCost(cell, inst.level, { regulatorCostMult: regEff.upgradeCostMult });
-  // 路演等限时状态可降低扩表成本
-  const cost = Math.round(baseCost * buffEffectMult(player, 'upgradeCostMult'));
+  // 路演等限时状态 + 基金经理职业（-6%）可降低扩表成本
+  const cost = Math.round(baseCost * playerCostMult(player, 'upgradeCostMult'));
   if (player.cash < cost) return { ok: false, reason: '现金不足', cost };
 
   player.cash -= cost;
@@ -892,6 +1138,17 @@ export function redeemInstitution(state, player, cellIndex) {
 export function endTurn(state) {
   const player = currentPlayer(state);
 
+  // 追缴保证金：现金为负必须先质押补足，补不足才进入破产清算
+  if (!player.bankrupt && player.cash < 0) {
+    const raised = raiseFundsForDeficit(state, player);
+    if (raised.length) {
+      const total = raised.reduce((s, r) => s + r.amount, 0);
+      log(state, 'bad',
+        `${player.name} 现金缺口触发追缴保证金，追加质押 ${raised.length} 家机构，补足 ￥${total}`,
+        '追保');
+    }
+  }
+
   // 结算本回合可能产生的破产
   checkBankruptcy(state, player);
 
@@ -917,6 +1174,8 @@ export function endTurn(state) {
     player.lastAction.passedStart = false;
     // 「每圈最多贷一次」只对该玩家自己的圈生效
     player.loanCountThisRound = 0;
+    // 「交易员」职业的择时奖励同样每圈只发一次
+    player._marketBonusRound = 0;
     state.round += 1;
     onRoundComplete(state);
   }
@@ -999,13 +1258,50 @@ function serviceLoans(state, player) {
           `${player.name} 贷款「${l.name}」到期，归还本金 ￥${l.amount}`
           + (accrued ? ` + 欠息 ￥${accrued}` : '') + '（利息已按期支付）', '还款');
       } else {
-        log(state, 'bad',
-          `${player.name} 贷款「${l.name}」到期，现金不足 ￥${shortfall}，触发强制平仓`, '违约');
+        // 现金不足时先追保（质押补足），补不足才强制平仓
+        const raised = player.cash < 0 ? raiseFundsForDeficit(state, player) : [];
+        if (raised.length) {
+          const total = raised.reduce((s, r) => s + r.amount, 0);
+          log(state, 'bad',
+            `${player.name} 贷款「${l.name}」到期，现金缺口追保：追加质押 ${raised.length} 家机构补足 ￥${total}`,
+            '追保');
+        } else {
+          log(state, 'bad',
+            `${player.name} 贷款「${l.name}」到期，现金不足 ￥${shortfall}，触发强制平仓`, '违约');
+        }
       }
       checkBankruptcy(state, player);
       emit(state, 'loan-repaid', { playerId: player.id, amount: owed, loanId: l.id });
     }
   }
+}
+
+/**
+ * 追缴保证金：现金为负时，强制质押未质押机构以补足缺口。
+ *
+ * 按质押可得金额从高到低依次抵押，直到现金回到 0 以上。
+ * 若全部质押后仍为负，交由 checkBankruptcy 平仓清算。
+ *
+ * @returns {Array<{cellIndex:number, amount:number, name:string}>} 本次追加质押明细
+ */
+export function raiseFundsForDeficit(state, player) {
+  const raised = [];
+  if (!player || player.bankrupt || player.cash >= 0) return raised;
+
+  const candidates = (player.institutions || [])
+    .filter((inst) => !inst.mortgaged)
+    .map((inst) => {
+      const cell = BOARD_CELLS[inst.cellIndex];
+      return { cellIndex: inst.cellIndex, amount: mortgageValue(cell, inst.level) };
+    })
+    .sort((a, b) => b.amount - a.amount);
+
+  for (const c of candidates) {
+    if (player.cash >= 0) break;
+    const res = mortgageInstitution(state, player, c.cellIndex);
+    if (res.ok) raised.push({ cellIndex: c.cellIndex, amount: res.amount, name: BOARD_CELLS[c.cellIndex].name });
+  }
+  return raised;
 }
 
 /** 破产检测与清算 */

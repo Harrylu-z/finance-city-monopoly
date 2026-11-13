@@ -28,6 +28,12 @@ import {
 } from './ai.js';
 import { makeRng, hashSeed } from './rng.js';
 import { getBuilding, getInstitutionSprite } from '../art/buildings.js';
+import { getCareerPieceSprites, pieceSignature } from '../art/career-pieces.js';
+import { getAvatarSprites } from '../art/avatars.js';
+import { getCardFace, getCardBack } from '../art/cards.js';
+import { CAREERS } from './careers.js';
+import { runAll as runCareerCasinoChecks } from './selftest-career-casino.js';
+import { runAll as runPersonalityChecks } from './selftest-personality.js';
 
 /** 断言工具 */
 function check(results, name, fn) {
@@ -74,21 +80,21 @@ export function runAll() {
   const results = [];
 
   /* ---------- 棋盘结构 ---------- */
-  check(results, '棋盘结构完整性（45 机构 + 4 监管 + 14 特殊 = 63 格）', () => {
+  check(results, '棋盘结构完整性（47 机构 + 4 监管 + 16 特殊 = 67 格）', () => {
     const errors = validateBoard();
     assert(errors.length === 0, errors.join('; '));
     assert(BOARD_CELLS.length === BOARD_SIZE, `格数 ${BOARD_CELLS.length}`);
-    assert(BOARD_SIZE === 63, `应为 63 格，实际 ${BOARD_SIZE}`);
-    assert(BOARD_SHAPE.count === 63, '应为正方形环道布局（63 格）');
-    assert(GROUP_CELLS.bank.length === 12, `银行组 ${GROUP_CELLS.bank.length} 格（应为 12）`);
+    assert(BOARD_SIZE === 67, `应为 67 格，实际 ${BOARD_SIZE}`);
+    assert(BOARD_SHAPE.count === 67, '应为正方形环道布局（67 格）');
+    assert(GROUP_CELLS.bank.length === 13, `银行组 ${GROUP_CELLS.bank.length} 格（应为 13）`);
     assert(GROUP_CELLS.broker.length === 12, `券商组 ${GROUP_CELLS.broker.length} 格（应为 12）`);
     assert(GROUP_CELLS.insurer.length === 12, `保险组 ${GROUP_CELLS.insurer.length} 格（应为 12）`);
-    assert(GROUP_CELLS.asset.length === 13, `资管组 ${GROUP_CELLS.asset.length} 格（应为 13）`);
+    assert(GROUP_CELLS.asset.length === 14, `资管组 ${GROUP_CELLS.asset.length} 格（应为 14）`);
     assert(REGULATOR_CELLS.length === 4, `监管格 ${REGULATOR_CELLS.length} 个（应为 4）`);
-    assert(UPGRADABLE_CELLS.length === 45, `可升级格 ${UPGRADABLE_CELLS.length} 个（应为 45）`);
+    assert(UPGRADABLE_CELLS.length === 47, `可升级格 ${UPGRADABLE_CELLS.length} 个（应为 47）`);
     const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
-    assert(specials === 14, `特殊格 ${specials} 个（应为 14）`);
-    return '63 格 · 正方形连续环道 · 四大监管机构齐备';
+    assert(specials === 16, `特殊格 ${specials} 个（应为 16，含 2 块赌场）`);
+    return '67 格 · 正方形连续环道 · 四大监管机构齐备 · 2 块赌场';
   });
 
   check(results, '棋盘轮廓为严格正方形（宽高比 = 1，不旋转）', () => {
@@ -104,9 +110,9 @@ export function runAll() {
   });
 
   check(results, '正方形环道：四边格子数正确且角格恰为 4 个', () => {
-    assert(SIDE_COUNTS.right === 17 && SIDE_COUNTS.top === 17 &&
-      SIDE_COUNTS.left === 17 && SIDE_COUNTS.bottom === 16,
-      `边长分配应为 17/17/17/16，实际 ${SIDE_COUNTS.right}/${SIDE_COUNTS.top}/${SIDE_COUNTS.left}/${SIDE_COUNTS.bottom}`);
+    assert(SIDE_COUNTS.right === 18 && SIDE_COUNTS.top === 18 &&
+      SIDE_COUNTS.left === 18 && SIDE_COUNTS.bottom === 17,
+      `边长分配应为 18/18/18/17，实际 ${SIDE_COUNTS.right}/${SIDE_COUNTS.top}/${SIDE_COUNTS.left}/${SIDE_COUNTS.bottom}`);
     const total = SIDE_COUNTS.right + SIDE_COUNTS.top + SIDE_COUNTS.left + SIDE_COUNTS.bottom - 4;
     assert(total === BOARD_SIZE, `四边合计（去重角格）应为 ${BOARD_SIZE}，实际 ${total}`);
     assert(CORNER_INDICES.length === 4, `角格应为 4 个，实际 ${CORNER_INDICES.length}`);
@@ -118,19 +124,19 @@ export function runAll() {
     }
     // 每条边的格子数应与实际分布吻合。
     // 归属约定：角格归「它开始的那条边」，因此每格恰好统计一次：
-    //   右边 16（idx 0..15，其中 0 是右下角）+ 右上角归上边
-    //   上边 16（idx 16..31，其中 16 是右上角）+ 左上角归左边
-    //   左边 16（idx 32..47，其中 32 是左上角）+ 左下角归底边
-    //   底边 15（idx 48..62，其中 48 是左下角）
-    // 合计 16 × 3 + 15 = 63 ✔
+    //   右边 17（idx 0..16，其中 0 是右下角）+ 右上角归上边
+    //   上边 17（idx 17..34，其中 17 是右上角）+ 左上角归左边
+    //   左边 17（idx 35..52，其中 35 是左上角）+ 左下角归底边
+    //   底边 16（idx 53..66，其中 53 是左下角）
+    // 合计 17 × 3 + 16 = 67 ✔
     const counts = { right: 0, top: 0, left: 0, bottom: 0 };
     for (let i = 0; i < BOARD_SIZE; i++) counts[cellSideInfo(i).side]++;
-    assert(counts.right === 16, `右边实际 ${counts.right} 格（应 16）`);
-    assert(counts.top === 16, `上边实际 ${counts.top} 格（应 16）`);
-    assert(counts.left === 16, `左边实际 ${counts.left} 格（应 16）`);
-    assert(counts.bottom === 15, `底边实际 ${counts.bottom} 格（应 15）`);
+    assert(counts.right === 17, `右边实际 ${counts.right} 格（应 17）`);
+    assert(counts.top === 17, `上边实际 ${counts.top} 格（应 17）`);
+    assert(counts.left === 17, `左边实际 ${counts.left} 格（应 17）`);
+    assert(counts.bottom === 16, `底边实际 ${counts.bottom} 格（应 16）`);
     assert(counts.right + counts.top + counts.left + counts.bottom === BOARD_SIZE,
-      '四边合计应等于 63');
+      '四边合计应等于 67');
   });
 
   check(results, '轨道是单条闭合连续环道（无断裂、无瞬移）', () => {
@@ -235,7 +241,7 @@ export function runAll() {
     // 不能连成一片 —— 否则玩家的落点分布会严重偏斜。
     const isFunctional = (c) => c.type === 'special' || c.regulator;
     const functionalIdx = BOARD_CELLS.map((c, i) => (isFunctional(c) ? i : -1)).filter((i) => i >= 0);
-    assert(functionalIdx.length === 18, `功能格应为 18 个（14 特殊 + 4 监管），实际 ${functionalIdx.length}`);
+    assert(functionalIdx.length === 20, `功能格应为 20 个（16 特殊 + 4 监管），实际 ${functionalIdx.length}`);
 
     // 环形相邻（含 62 → 0 的闭合边）不得出现功能格紧邻
     for (let i = 0; i < BOARD_CELLS.length; i++) {
@@ -247,7 +253,7 @@ export function runAll() {
 
     // 特殊格子集同样必须互不相邻（更严格的读法也成立）
     const specialIdx = BOARD_CELLS.map((c, i) => (c.type === 'special' ? i : -1)).filter((i) => i >= 0);
-    assert(specialIdx.length === 14, `特殊格应为 14 个，实际 ${specialIdx.length}`);
+    assert(specialIdx.length === 16, `特殊格应为 16 个，实际 ${specialIdx.length}`);
     for (let i = 0; i < specialIdx.length; i++) {
       const a = specialIdx[i];
       const b = specialIdx[(i + 1) % specialIdx.length];
@@ -266,7 +272,7 @@ export function runAll() {
     const maxGap = Math.max(...gaps);
     assert(maxGap <= 8, `功能格最大间隔 ${maxGap} 过大，分布不均匀`);
 
-    return `18 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}`;
+    return `20 个功能格 · 最短间隔 ${Math.min(...gaps)} · 最长间隔 ${maxGap}`;
   });
 
   check(results, '四大监管机构齐备且不可升级', () => {
@@ -992,6 +998,37 @@ export function runAll() {
     return '轮转正确跳过破产玩家';
   });
 
+  check(results, '现金为负触发追缴保证金（自动质押补足）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const idx = firstInstitution(state);
+    p.institutions = [{ cellIndex: idx, level: 1, mortgaged: false, mortgageAmount: 0 }];
+    const amount = mortgageValue(BOARD_CELLS[idx], 1);
+    p.cash = -Math.max(1, Math.floor(amount / 2));
+    state.currentPlayerIndex = 0;
+
+    endTurn(state);
+
+    assert(p.institutions[0].mortgaged === true, '应自动质押机构补足缺口');
+    assert(p.cash >= 0, `追保后现金应非负，实际 ${p.cash}`);
+    assert(!p.bankrupt, '仍有可变现资产不应破产');
+    return `质押 ￥${amount}，现金回到 ￥${p.cash}`;
+  });
+
+  check(results, '无可质押资产且现金为负则强制平仓', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    p.institutions = [];
+    p.cash = -100;
+    state.currentPlayerIndex = 0;
+
+    endTurn(state);
+
+    assert(p.bankrupt === true, '无力补足缺口应被强制平仓');
+    assert(p.cash >= 0, '清算后现金不应为负');
+    return '缺口无法补足 → 强制平仓';
+  });
+
   /* ---------- 牛熊周期 ---------- */
   check(results, '牛熊周期影响租金', () => {
     const state = makeTestState();
@@ -1407,6 +1444,119 @@ export function runAll() {
     assert(new Set(shapes).size === 4, '四大集团的建筑立绘存在重复');
     return '银行/券商/保险/资管 四种轮廓均不同';
   });
+
+  /* ============ 职业棋子形象（矢量立绘） ============ */
+  check(results, '7 张职业立绘两两不同（一一对应）', () => {
+    const sigs = new Map();
+    for (const c of CAREERS) {
+      const sig = pieceSignature(c.pieceIndex, 0);
+      assert(!sigs.has(sig), `${c.name} 与 ${sigs.get(sig)} 的立绘完全相同`);
+      sigs.set(sig, c.name);
+    }
+    assert(sigs.size === 7, `应有 7 张独立立绘，实际 ${sigs.size}`);
+    return `${sigs.size}/7 张职业立绘均不相同`;
+  });
+
+  check(results, '职业立绘四方向 × 两帧齐备（矢量尺寸 32×40）', () => {
+    for (const c of CAREERS) {
+      const set = getCareerPieceSprites(c.pieceIndex, 0);
+      for (const dir of ['down', 'up', 'left', 'right']) {
+        assert(Array.isArray(set[dir]) && set[dir].length === 2,
+          `${c.name} 的 ${dir} 帧数异常`);
+        for (const cv of set[dir]) {
+          assert(cv.width === 32 && cv.height === 40,
+            `${c.name} 的 ${dir} 尺寸 ${cv.width}×${cv.height}（应 32×40）`);
+        }
+      }
+      assert(set.idle, `${c.name} 缺 idle 帧`);
+    }
+    return '7 职业 × 4 方向 × 2 帧 = 56 张矢量精灵，尺寸统一 32×40';
+  });
+
+  check(results, '职业立绘实际有内容（非空白画布）', () => {
+    for (const c of CAREERS) {
+      const cv = getCareerPieceSprites(c.pieceIndex, 0).idle;
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      let opaque = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) opaque++;
+      // 立绘至少要有 1/3 的画布被覆盖，否则说明 SVG 没画出来
+      assert(opaque > cv.width * cv.height * 0.30,
+        `${c.name} 的立绘几乎空白（仅 ${opaque} 个可见像素）`);
+    }
+    return '7 张立绘均正常绘制（非空白）';
+  });
+
+  check(results, '职业立绘四方向互不相同（正面/背面/左右可辨）', () => {
+    for (const c of CAREERS) {
+      const set = getCareerPieceSprites(c.pieceIndex, 0);
+      const sigOf = (canvas) => {
+        const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let key = '';
+        for (let k = 0; k < d.length; k += 4) key += `${d[k]},${d[k + 1]},${d[k + 2]},${d[k + 3]};`;
+        return key;
+      };
+      const down = sigOf(set.down[0]);
+      const up = sigOf(set.up[0]);
+      const left = sigOf(set.left[0]);
+      const right = sigOf(set.right[0]);
+      assert(down !== up, `${c.name} 的正面与背面相同`);
+      assert(left !== right, `${c.name} 的左右朝向相同`);
+    }
+    return '7 职业的正面≠背面、左侧≠右侧（朝向清晰可辨）';
+  });
+
+  check(results, '职业立绘与经典棋子互不重复', () => {
+    // 经典 4 张棋子的像素指纹（通过 getAvatarSprites 取正面帧）
+    const classicSigs = new Set();
+    for (let i = 0; i < 4; i++) {
+      const set = getAvatarSprites(i, 0);
+      const cv = set.idle;
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      let key = '';
+      for (let k = 0; k < d.length; k += 4) key += `${d[k]},${d[k + 1]},${d[k + 2]},${d[k + 3]};`;
+      classicSigs.add(key);
+    }
+    assert(classicSigs.size === 4, `4 张经典棋子指纹应互不相同，实际 ${classicSigs.size}`);
+    for (const c of CAREERS) {
+      const sig = pieceSignature(c.pieceIndex, 0);
+      assert(!classicSigs.has(sig), `${c.name} 与某张经典棋子完全相同`);
+    }
+    return '7 张职业立绘均与 4 张经典棋子不同';
+  });
+
+  /* ============ 扑克牌渲染 ============ */
+  check(results, '扑克牌渲染（正面 / 背面）', () => {
+    const deck = [
+      { rank: 'A', suit: 'S', id: 'AS', value: 14 },
+      { rank: 'K', suit: 'H', id: 'KH', value: 13 },
+      { rank: 'T', suit: 'D', id: 'TD', value: 10 },
+      { rank: '2', suit: 'C', id: '2C', value: 2 },
+    ];
+    for (const c of deck) {
+      const cv = getCardFace(c);
+      assert(cv && cv.width === 22 && cv.height === 30,
+        `${c.id} 尺寸 ${cv && cv.width}×${cv && cv.height}（应 22×30）`);
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      let opaque = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) opaque++;
+      assert(opaque > cv.width * cv.height * 0.5, `${c.id} 绘制过少`);
+    }
+    const back = getCardBack();
+    assert(back && back.width === 22 && back.height === 30, '牌背尺寸异常');
+    return '4 种花色点数正面 + 牌背均正确绘制（22×30）';
+  });
+
+  /* ============ 职业 & 赌场德州扑克（专项模块） ============ */
+  const careerCasino = runCareerCasinoChecks();
+  for (const r of careerCasino) {
+    results.push(r);
+  }
+
+  /* ============ AI 性格系统（专项模块） ============ */
+  const personalityChecks = runPersonalityChecks();
+  for (const r of personalityChecks) {
+    results.push(r);
+  }
 
   return results;
 }

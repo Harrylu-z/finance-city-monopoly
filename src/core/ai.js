@@ -1,11 +1,21 @@
 /**
- * AI 决策引擎 —— 性格系统 + 随机性。
+ * AI 决策引擎 —— **职业被动 × 性格偏好 × 随机性** 三层结构。
  *
- * 设计原则：
- *   1. AI 信息与玩家对等：决策时不能偷看骰子结果
- *   2. 每个决策 = 性格基线 × 随机系数(0.7~1.3) + 小概率"抽风"
- *   3. 每次决策都产出可读的中文理由（决策日志），用于回合播报
- *   4. 难度影响决策准确率与随机性强度
+ * ================== 三层职责 ==================
+ *   ① **职业被动**（src/core/careers.js）
+ *      作用于**规则层**：收购价 / 升级费 / 租金 / 罚金 / 择时收益 / 扑克牌库。
+ *      由 `rules.js` 读取，AI 决策**不直接干预**。
+ *   ② **性格偏好**（src/core/personalities.js）
+ *      作用于**决策层**：买不买、升不升、扛不扛风险、说哪句话。
+ *      只改变**阈值与权重**，绝不改变现金流与胜负。
+ *   ③ **随机性 + 难度**
+ *      在性格基线上叠加 ±noise 的扰动；难度控制准确率与噪声强度。
+ *
+ * ================== 平衡性保证 ==================
+ *   · 性格参数全部落在「中性基准 ±25%」的温和区间（见 personalities.js）；
+ *   · 每种性格都有对应的**短板**，没有必胜性格；
+ *   · AI 决策**不看骰子结果**，与玩家信息对等；
+ *   · 性格不改变市场周期 / 事件卡 / 对手收益 → 不直接决定走势。
  */
 
 import { BOARD_CELLS, GROUP_META } from './board.js';
@@ -14,119 +24,45 @@ import {
   globalRegulatorEffects, groupBuffTier, CONFIG,
 } from './economy.js';
 import { institutionCount } from './rules.js';
+import {
+  PERSONALITIES, PERSONALITY_BY_ID, NEUTRAL_PERSONALITY,
+  getPersonality, playerPersonality, personalityParams,
+} from './personalities.js';
 
-/**
- * 性格档案 —— 5 种，每局随机分配
- */
-export const PERSONALITIES = [
-  {
-    id: 'aggressive',
-    name: '激进型',
-    tag: '激进',
-    desc: '现金不留手，见机构就抢，杠杆拉满',
-    quote: '牌照就是印钞机，先拿下再说！',
-    cashReserve: 0.10,
-    greed: 1.35,
-    upgradeBias: 0.55,
-    riskTolerance: 0.85,
-    preferGroups: ['broker', 'asset'],
-    rentFocus: 0.6,
-  },
-  {
-    id: 'conservative',
-    name: '保守型',
-    tag: '保守',
-    desc: '现金充足才出手，只买核心城市的大行',
-    quote: '不急，等估值合适了再说。',
-    cashReserve: 0.42,
-    greed: 0.65,
-    upgradeBias: 0.30,
-    riskTolerance: 0.25,
-    preferGroups: ['bank'],
-    rentFocus: 0.85,
-  },
-  {
-    id: 'hoarder',
-    name: '囤房型',
-    tag: '囤积',
-    desc: '垄断同一集团，见机构就拿，不升级',
-    quote: '这一串我全包了，其他人靠边站。',
-    cashReserve: 0.28,
-    greed: 1.10,
-    upgradeBias: 0.18,
-    riskTolerance: 0.45,
-    preferGroups: [],
-    preferSameGroup: 0.72,
-    rentFocus: 0.55,
-  },
-  {
-    id: 'cashflow',
-    name: '现金流型',
-    tag: '现金流',
-    desc: '只看管理费收益，优先升级高租金机构',
-    quote: '现金流为王，纸面繁荣不算数。',
-    cashReserve: 0.34,
-    greed: 0.92,
-    upgradeBias: 0.95,
-    riskTolerance: 0.40,
-    preferGroups: ['insurer'],
-    rentFocus: 1.0,
-  },
-  {
-    id: 'leveraged',
-    name: '杠杆型',
-    tag: '杠杆',
-    desc: '满仓质押融资加杠杆，收益翻倍也容易爆仓',
-    quote: '杠杆是撬动世界的支点。',
-    cashReserve: 0.05,
-    greed: 1.20,
-    upgradeBias: 0.70,
-    riskTolerance: 0.92,
-    preferGroups: ['broker', 'asset', 'bank'],
-    rentFocus: 0.5,
-  },
-];
+export {
+  PERSONALITIES, PERSONALITY_BY_ID, getPersonality, playerPersonality,
+  assignPersonalities,
+} from './personalities.js';
 
 /** 默认性格 —— 当玩家没有性格档案时兜底（真人玩家 / 自检用例） */
-export const DEFAULT_PERSONALITY = {
-  id: 'balanced',
-  name: '稳健型',
-  tag: '稳健',
-  desc: '均衡配置，兼顾牌照与现金流',
-  quote: '稳扎稳打，先看看再说。',
-  cashReserve: 0.28,
-  greed: 1.00,
-  upgradeBias: 0.50,
-  riskTolerance: 0.45,
-  preferGroups: [],
-  rentFocus: 0.75,
-};
+export const DEFAULT_PERSONALITY = NEUTRAL_PERSONALITY;
 
-/** 取得玩家性格（缺失时回退到默认性格） */
-export function playerPersonality(player) {
-  return (player && player.personality) || DEFAULT_PERSONALITY;
-}
+/**
+ * 随机分配性格（尽量不重复）—— 实现在 `personalities.js`，此处转出保持 API 兼容。
+ *
+ * @param {object} rng
+ * @param {number} count AI 数量
+ * @returns {object[]} 性格定义数组
+ */
 
-/** 随机分配性格（尽量不重复） */
-export function assignPersonalities(rng, count) {
-  const pool = rng.shuffle([...PERSONALITIES]);
-  const out = [];
-  for (let i = 0; i < count; i++) out.push(pool[i % pool.length]);
-  return out;
-}
-
-/** AI 名字池 —— 按性格给出名字 */
+/**
+ * 按性格生成 AI 昵称。
+ *
+ * ================== 命名与职业的关系 ==================
+ * 昵称体现**性格**（人格），职业则由棋子立绘与标签体现 —— 两者分开呈现，
+ * 避免「名字暗示职业 → 看起来像被强制绑定」的错觉。
+ */
 const AI_NAMES = {
-  aggressive: ['铁腕操盘手', '闪电并购侠', '杠杆狂人', '激进基金经理'],
+  aggressive: ['铁腕操盘手', '闪电并购侠', '疾风合伙人', '进取组合经理'],
   conservative: ['老牌银行家', '风控大师', '稳健配置师', '压舱石掌柜'],
   hoarder: ['圈地大师', '牌照收藏家', '地块囤家', '并购整合人'],
   cashflow: ['现金流先生', '稳健收租王', '精算大师', '长期主义者'],
-  leveraged: ['赌王操盘手', '风险偏好狂人', '空头猎手', '结构性玩家'],
+  leveraged: ['杠杆操盘手', '风险偏好狂人', '结构玩家', '资本猎手'],
 };
 
 /** 生成 AI 昵称 */
 export function aiName(rng, personality) {
-  const pool = AI_NAMES[personality.id] || AI_NAMES.aggressive;
+  const pool = AI_NAMES[personality?.id] || AI_NAMES.aggressive;
   return rng.pick(pool);
 }
 
@@ -153,7 +89,7 @@ function isTilted(rng, chance) {
  * @param {object} ctx { cellIndex }
  */
 export function decide(state, player, decision, ctx = {}) {
-  const p = playerPersonality(player);
+  const p = personalityParams(player);
   const diff = difficultyConfig(state);
 
   if (decision === 'purchase') {
@@ -179,8 +115,8 @@ function decidePurchase(state, player, p, diff, cellIndex) {
   const group = GROUP_META[cell.group];
   const tiltChance = 0.10 * (1.4 - diff.accuracy);
 
-  // 抽风：梭哈
-  if (isTilted(rng, tiltChance * 0.5) && player.cash >= price) {
+  // 抽风：梭哈 —— 高风险性格更容易「上头」
+  if (isTilted(rng, tiltChance * 0.5 * p.riskTolerance) && player.cash >= price) {
     return {
       action: 'buy',
       reason: `梭哈一把！看中了${group.short}牌照，${group.name}值得赌一把`,
@@ -191,15 +127,19 @@ function decidePurchase(state, player, p, diff, cellIndex) {
   // 购买欲望 = 性格基线 × 难度贪婪 × 随机扰动
   let desire = p.greed * diff.greed * (1 + (rng.next() * 2 - 1) * diff.noise);
 
-  if (p.preferGroups.includes(cell.group)) desire *= 1.35;
-  if (p.preferGroups.length && !p.preferGroups.includes(cell.group)) desire *= 0.80;
-  if (p.preferSameGroup) {
+  if (p.preferGroups.includes(cell.group)) desire *= 1.20;
+  if (p.preferGroups.length && !p.preferGroups.includes(cell.group)) desire *= 0.86;
+  if (p.concentration) {
     const sameGroup = player.institutions.some((i) => BOARD_CELLS[i.cellIndex].group === cell.group);
-    if (sameGroup) desire *= 1 + p.preferSameGroup;
+    if (sameGroup) desire *= 1 + p.concentration * 0.6;
   }
   if (cell.landmark) desire *= 1.2;
 
-  // 现金约束
+  // 性格「追高」倾向：低门槛标的更容易被拿下，高门槛标的门槛更高
+  const tierHurdle = 1 + (cell.tier - 1) * (0.30 - p.chaseLowTier * 0.22);
+  desire /= Math.max(0.6, tierHurdle);
+
+  // 现金约束 —— 性格的现金留存比例直接决定出手门槛
   const reserve = Math.floor(player.cash * p.cashReserve);
   if (price > player.cash - reserve) desire *= 0.18;
 
@@ -246,7 +186,8 @@ function decideUpgrade(state, player, p, diff) {
     if (!isFinite(cost) || cost <= 0) continue;
     const curRent = calculateRent(c, inst.level, { market: state.market, eventMult: state.eventMult, buffMult });
     const nextRent = calculateRent(c, inst.level + 1, { market: state.market, eventMult: state.eventMult, buffMult });
-    const score = ((nextRent - curRent) / cost) * 100 * p.upgradeBias * p.rentFocus;
+    // 性价比指数 = 每投入 1 元换来的年租金增量（再按性格的收益导向加权）
+    const score = ((nextRent - curRent) / cost) * p.upgradeBias * p.rentFocus;
     if (score > bestScore) {
       bestScore = score;
       best = { inst, cost, c };
@@ -255,7 +196,7 @@ function decideUpgrade(state, player, p, diff) {
   if (!best) return { action: 'idle', reason: '暂无合适升级标的' };
 
   const tiltChance = 0.10 * (1.4 - diff.accuracy);
-  if (isTilted(rng, tiltChance * 0.4) && player.cash >= best.cost) {
+  if (isTilted(rng, tiltChance * 0.4 * p.riskTolerance) && player.cash >= best.cost) {
     return { action: 'upgrade', reason: `这轮不装了，直接把${best.c.name}拉满`, cost: best.cost, cellIndex: best.inst.cellIndex };
   }
 
@@ -264,7 +205,15 @@ function decideUpgrade(state, player, p, diff) {
     return { action: 'idle', reason: `留着现金，${best.c.name}的扩表先缓缓` };
   }
 
-  if (bestScore < 0.55 - 0.25 * diff.accuracy) {
+  // 升级门槛随性格的「收益导向程度」变化：现金流型更容易升级。
+  //
+  // ================== 刻度对齐（重要） ==================
+  // score 是「性价比指数」：越大越划算。
+  // 门槛必须与 score **同一量纲**，否则性格对升级决策就没有实际影响。
+  // 这里把 score 归一到「每投入 1 元产生的年化租金增量」这一直观刻度，
+  // 再用 upgradeBias 决定「多划算才值得出手」的门槛线。
+  const upgradeThreshold = 0.055 - 0.038 * p.upgradeBias + 0.012 * (diff.accuracy - 0.75);
+  if (bestScore < upgradeThreshold) {
     return { action: 'idle', reason: `${best.c.name}扩表性价比一般，观望` };
   }
 
@@ -279,7 +228,9 @@ function decideMortgage(state, player, p, diff) {
 
   const tiltChance = 0.10 * (1.4 - diff.accuracy);
   const urgent = player.cash < 250;
-  if (!urgent && !isTilted(rng, tiltChance * 0.3)) {
+  // 风险承受度低的 AI 只有在「真的告急」时才会质押；高的更早动手
+  const proactive = rng.next() < 0.10 * p.riskTolerance;
+  if (!urgent && !proactive && !isTilted(rng, tiltChance * 0.3)) {
     return { action: 'idle', reason: '现金流还健康，不必质押' };
   }
 
@@ -311,7 +262,9 @@ function decideRedeem(state, player, p, diff) {
   }
   const cost = Math.round(maxPrincipal * (1 + CONFIG.redeemFee));
   // 赎回后仍需留出运营现金，避免刚赎回又被迫质押
-  if (player.cash < cost + 400) {
+  // （保守型留更多余量，杠杆型几乎不留）
+  const buffer = Math.round(400 * (0.6 + p.cashReserve * 2));
+  if (player.cash < cost + buffer) {
     return { action: 'idle', reason: '现金尚不宽裕，暂不赎回' };
   }
   const c = BOARD_CELLS[pick.cellIndex];
@@ -380,7 +333,7 @@ function pickReason(rng, p, cell, type) {
  * AI 回合计划 —— 在掷骰前决定意图（不能看骰子结果）
  */
 export function planTurn(state, player) {
-  const p = playerPersonality(player);
+  const p = personalityParams(player);
   const diff = difficultyConfig(state);
   const rng = state.rng;
   const assets = totalAssets(player, state);
@@ -390,7 +343,9 @@ export function planTurn(state, player) {
     && player.institutions.length > 0
     && rng.next() < 0.35 + p.upgradeBias * 0.5 * diff.accuracy;
 
-  const wantMortgage = player.cash < 200 || (p.id === 'leveraged' && rng.next() < 0.22);
+  // 杠杆型更早动质押；保守型几乎不动
+  const wantMortgage = player.cash < 200
+    || (p.riskTolerance > 0.6 && rng.next() < 0.10 + p.riskTolerance * 0.14);
 
   // 质押机构赎回意图：现金足以覆盖「本金+解押费」且留有运营余量
   const mortgaged = player.institutions.filter((i) => i.mortgaged);
@@ -410,7 +365,7 @@ export function planTurn(state, player) {
  * 仅依据资产排名与性格判断，不看骰子结果。
  */
 export function wantsReroll(state, player) {
-  const p = playerPersonality(player);
+  const p = personalityParams(player);
   const rng = state.rng;
   const assets = totalAssets(player, state);
   const avg = state.players.reduce((s, o) => s + totalAssets(o, state), 0) / state.players.length;
@@ -436,7 +391,7 @@ export function wantsReroll(state, player) {
  * @returns {{subscribed:boolean, reason:string}}
  */
 export function decideBondSubscription(state, player, issuer, coupon = CONFIG.bondCoupon) {
-  const p = playerPersonality(player);
+  const p = personalityParams(player);
   const diff = difficultyConfig(state);
   const rng = state.rng;
   const face = CONFIG.bondFace;
@@ -466,8 +421,8 @@ export function decideBondSubscription(state, player, issuer, coupon = CONFIG.bo
   willingness += (rng.next() * 2 - 1) * diff.noise * 0.35;
 
   // 杠杆型 AI 更爱买债
-  if (p.id === 'leveraged') willingness += 0.15;
-  if (p.id === 'conservative') willingness -= 0.12;
+  if (p.id === 'leveraged') willingness += 0.12;
+  if (p.id === 'conservative') willingness -= 0.10;
 
   if (willingness > 0.5) {
     return { subscribed: true, reason: `票息 ${Math.round(coupon * 1000) / 10}% 有吸引力，认购` };
@@ -480,7 +435,7 @@ export function decideBondSubscription(state, player, issuer, coupon = CONFIG.bo
  * 依据：现金缺口与性格杠杆偏好。
  */
 export function decideLoan(state, player, tier) {
-  const p = playerPersonality(player);
+  const p = personalityParams(player);
   const diff = difficultyConfig(state);
   const rng = state.rng;
 
@@ -490,8 +445,8 @@ export function decideLoan(state, player, tier) {
   }
   // 杠杆型 AI 更容易借钱
   let willingness = 0.35 + p.riskTolerance * 0.4;
-  if (p.id === 'leveraged') willingness += 0.2;
-  if (p.id === 'conservative') willingness -= 0.18;
+  if (p.id === 'leveraged') willingness += 0.16;
+  if (p.id === 'conservative') willingness -= 0.16;
   willingness += (rng.next() * 2 - 1) * diff.noise * 0.3;
 
   if (willingness > 0.5) {

@@ -75,6 +75,7 @@ export function getSpecialIcon(kind) {
       case 'rating': drawRating(ctx); break;
       case 'commodity': drawCommodity(ctx); break;
       case 'roadshow': drawRoadshow(ctx); break;
+      case 'casino': drawCasino(ctx); break;
       default: rect(ctx, 2, 2, 12, 12, 'glass'); break;
     }
     return cv;
@@ -306,6 +307,28 @@ function drawRoadshow(ctx) {
   rect(ctx, 3, 12, 2, 2, 'gold');
   rect(ctx, 7, 12, 2, 2, 'gold');
   rect(ctx, 11, 12, 2, 2, 'gold');
+  outline(ctx, 0, 0, 16, 16, 'ink');
+}
+
+/* 私人赌场 · 德州扑克 —— 黑桃A + 筹码堆 + 赌桌边 */
+function drawCasino(ctx) {
+  // 扑克牌（黑桃 A）
+  rect(ctx, 1, 3, 6, 9, 'paper');
+  rect(ctx, 1, 3, 6, 1, 'ink');
+  // 黑桃
+  pixelCircle(ctx, 4, 7, 2, 'ink');
+  pixelCircle(ctx, 2, 9, 2, 'ink');
+  rect(ctx, 3, 9, 3, 2, 'ink');
+  rect(ctx, 3, 10, 2, 1, 'ink');
+  // 筹码堆
+  rect(ctx, 8, 11, 7, 2, 'red');
+  rect(ctx, 8, 11, 7, 1, 'redLt');
+  rect(ctx, 9, 9, 5, 2, 'red');
+  rect(ctx, 9, 9, 5, 1, 'redLt');
+  rect(ctx, 10, 7, 3, 2, 'red');
+  rect(ctx, 10, 7, 3, 1, 'redLt');
+  // 桌面高光
+  rect(ctx, 7, 13, 8, 1, 'goldDk');
   outline(ctx, 0, 0, 16, 16, 'ink');
 }
 

@@ -19,8 +19,9 @@ export function renderPlayerCards(el, state, onClick) {
     card.style.borderLeftColor = pc.main;
 
     const canvas = getAvatarIcon(p.avatar, p.colorIndex);
+    // 保持立绘原始宽高比（经典棋子 16×24，职业立绘 32×40）
     canvas.style.width = '20px';
-    canvas.style.height = '30px';
+    canvas.style.height = `${Math.round(20 * canvas.height / canvas.width)}px`;
     card.appendChild(canvas);
 
     const info = document.createElement('div');

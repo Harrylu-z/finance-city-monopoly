@@ -170,13 +170,23 @@ export function assetValue(cell, level, mortgaged) {
   return mortgaged ? Math.round(v * 0.5) : v;
 }
 
-/** 玩家总资产 = 现金 + 所有机构市值 */
+/**
+ * 玩家总资产 = 现金 + 所有机构市值 − 赌场抵押让渡
+ *
+ * `player.pokerAssetLock` 是德州扑克里的「资产抵押让渡」：
+ * 当玩家用资产额度下注时，这部分估值被暂时让渡出总资产（所有权不变）；
+ * 若输掉则该让渡**转为永久折损**（体现下注的真实代价），
+ * 若赢回则随底池以现金形式回流，总资产自然恢复。
+ */
 export function totalAssets(player, state) {
   let total = player.cash;
   for (const inst of (player.institutions || [])) {
     const cell = BOARD_CELLS[inst.cellIndex];
     total += assetValue(cell, inst.level, inst.mortgaged);
   }
+  // 赌场资产让渡折损（永不为负）
+  const lock = Math.max(0, player.pokerAssetLock || 0);
+  total = Math.max(0, total - lock);
   return total;
 }
 

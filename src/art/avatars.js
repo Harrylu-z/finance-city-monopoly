@@ -1,17 +1,25 @@
 /**
  * 玩家棋子 —— Q 版像素小人，职业装。
  *
- * 4 种形象：
+ * 4 种经典形象（索引 0~3）：
  *   0 投资经理   —— 职业装 + 领带 + 手持研报
  *   1 银行家     —— 背公文包 + 圆帽
  *   2 老江湖     —— 金丝眼镜 + 花白头发 + 拐杖
  *   3 暴发户     —— 扛金锭 + 敞开西装
+ *
+ * 7 种金融职业专属形象（索引 7~13，见 src/art/career-pieces.js）：
+ *   7 投行家 / 8 风控总监 / 9 精算师 / 10 量化研究员
+ *  11 基金经理 / 12 交易员 / 13 赌王
  *
  * 尺寸 16×24，4 方向朝向（down/up/left/right），每方向 2 帧行走。
  */
 
 import { PLAYER_COLORS } from '../core/palette.js';
 import { makeCanvas, rect, hline, vline, outline } from './pixeldraw.js';
+import { getCareerPieceSprites } from './career-pieces.js';
+
+/** 职业棋子起始索引（>= 该索引走 career-pieces.js） */
+export const CAREER_PIECE_START = 7;
 
 /** 形象定义 */
 export const AVATARS = [
@@ -29,6 +37,13 @@ const avatarCache = new Map();
 export function getAvatarSprites(avatarIndex, colorIndex) {
   const key = `av${avatarIndex}_${colorIndex}`;
   if (avatarCache.has(key)) return avatarCache.get(key);
+
+  // 职业专属形象（索引 >= 7）走独立的绘制器，接口完全一致
+  if (avatarIndex >= CAREER_PIECE_START) {
+    const set = getCareerPieceSprites(avatarIndex, colorIndex);
+    avatarCache.set(key, set);
+    return set;
+  }
 
   const pc = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
   const set = {
@@ -207,14 +222,65 @@ function drawAccessory(ctx, av, pc, cx, headTop, bodyTop, dir, frame) {
   }
 }
 
-/** 小图标版棋子 */
+/**
+ * 小图标版棋子 —— 保持立绘原始宽高比。
+ *
+ * 经典棋子是 16×24 像素小人，职业立绘是 32×40 矢量形象，
+ * 这里直接沿用 sprite 的原生尺寸，避免把 32×40 压成 16×24 造成变形。
+ */
 export function getAvatarIcon(avatarIndex, colorIndex) {
   const key = `avi${avatarIndex}_${colorIndex}`;
   if (avatarCache.has(key)) return avatarCache.get(key);
   const sprites = getAvatarSprites(avatarIndex, colorIndex);
-  const cv = makeCanvas(16, 24);
+  const src = sprites.idle;
+  const cv = makeCanvas(src.width, src.height);
   const ctx = cv.getContext('2d');
-  ctx.drawImage(sprites.idle, 0, 0);
+  // 矢量立绘用平滑缩放，像素棋子保持硬边
+  ctx.imageSmoothingEnabled = src.width >= 32;
+  ctx.drawImage(src, 0, 0);
   avatarCache.set(key, cv);
   return cv;
+}
+
+/**
+ * 按玩家实际立绘尺寸生成一个「展示用」canvas 元素。
+ *
+ * ================== 为什么需要 ==================
+ * 经典棋子是 16×24 像素画，职业立绘是 32×40 矢量形象 —— 尺寸与缩放方式都不同：
+ *   · 像素画放大要 `image-rendering: pixelated`（保持硬边）；
+ *   · 矢量立绘放大要平滑（否则边缘发虚）。
+ * 散落在各处的 drawImage 很容易漏掉这个区分，这里统一封装。
+ *
+ * @param {object} player 玩家（含 avatar / colorIndex）
+ * @param {number} [scale=2] 显示放大倍数
+ * @param {'idle'|'down'} [frame='idle'] 取哪一帧
+ * @returns {HTMLCanvasElement}
+ */
+export function makePlayerSpriteCanvas(player, scale = 2, frame = 'idle') {
+  const sprites = getAvatarSprites(player?.avatar ?? 0, player?.colorIndex ?? 0);
+  const src = frame === 'down' ? sprites.down[0] : sprites.idle;
+  const sw = src.width;
+  const sh = src.height;
+  // 矢量立绘（宽 ≥32）用平滑缩放；像素棋子（宽 16）保持硬边
+  const isVector = sw >= 32;
+
+  const cv = document.createElement('canvas');
+  cv.width = sw * scale;
+  cv.height = sh * scale;
+  cv.style.width = `${sw * scale}px`;
+  cv.style.height = `${sh * scale}px`;
+  cv.style.imageRendering = isVector ? 'auto' : 'pixelated';
+  cv.style.flex = 'none';
+
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = isVector;
+  ctx.drawImage(src, 0, 0, cv.width, cv.height);
+  return cv;
+}
+
+/**
+ * 判断一个精灵是否是矢量立绘（宽 ≥32）—— 供调用方决定缩放方式。
+ */
+export function isVectorSprite(sprite) {
+  return !!sprite && sprite.width >= 32;
 }

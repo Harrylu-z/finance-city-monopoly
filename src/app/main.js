@@ -12,8 +12,9 @@ import {
   createState, log, currentPlayer, computeMove, computeTeleportSteps,
   rollDice, movePlayer, settleOnCell, resolvePurchase, upgradeInstitution,
   mortgageInstitution, redeemInstitution, endTurn, checkBankruptcy, rankPlayers,
+  raiseFundsForDeficit,
   applyEventCard, applyTrapCard, takeCentralLoan, repayLoan, issueBond,
-  underwriteBond, grantStartPass,
+  underwriteBond, grantStartPass, startCasinoGame, finishCasinoGame,
 } from '../core/rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities, aiName,
@@ -29,12 +30,17 @@ import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog, showMenuDialog,
   showLoanDialog, showBondDialog, showBondResultDialog, showTrapDialog, showBuffPanel,
-  showPlayerDetailDialog, showRentDialog, openModal,
+  showPlayerDetailDialog, showRentDialog, openModal, closeModal,
+  showMarginCallDialog,
 } from './dialogs.js';
 import { showTutorial } from './tutorial.js';
 import { openShareDialog, parseShareUrl } from './share.js';
 import { saveRecord, saveSettings, loadSettings } from './persist.js';
 import { AVATARS, getAvatarIcon } from '../art/avatars.js';
+import { showPokerTable, showPokerResult, closePokerTable } from './poker-ui.js';
+import { abortPokerGame } from '../core/poker.js';
+import { getCareerPieceIcon, ensurePortraitsReady } from '../art/career-pieces.js';
+import { CAREERS, CAREER_BY_ID, getCareer, assignAiCareers } from '../core/careers.js';
 import { getInstitutionSprite } from '../art/buildings.js';
 import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
 import { delay, interval } from '../core/scheduler.js';
@@ -103,7 +109,7 @@ class Game {
   cacheElements() {
     const ids = [
       'setup-screen', 'game-screen', 'setup-bg', 'logo-canvas',
-      'input-nickname', 'avatar-picker', 'difficulty-picker', 'aicount-picker',
+      'input-nickname', 'avatar-picker', 'career-picker', 'difficulty-picker', 'aicount-picker',
       'theme-picker', 'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
       'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
@@ -158,6 +164,7 @@ class Game {
     this.setup = {
       nickname: settings.nickname || '你',
       avatar: settings.avatar ?? 0,
+      careerId: settings.careerId || CAREERS[0].id,
       difficulty: settings.difficulty || 'normal',
       aiCount: settings.aiCount ?? 3,
       theme: settings.theme || 'finance',
@@ -168,6 +175,36 @@ class Game {
       anim: settings.anim !== false,
       tutorial: settings.tutorial !== false,
     };
+
+    // 职业选择器 —— 7 种金融职业，与棋子形象一一对应
+    const cp = this.el['career-picker'];
+    cp.innerHTML = '';
+    for (const c of CAREERS) {
+      const btn = document.createElement('button');
+      btn.className = 'career-opt';
+      btn.type = 'button';
+      btn.dataset.career = c.id;
+      btn.title = `${c.name} · ${c.title} —— ${c.passive.name}：${c.passive.desc}`;
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-label', `${c.name} ${c.passive.name}`);
+
+      const cv = getCareerPieceIcon(c.pieceIndex, 0);
+      btn.appendChild(cv);
+
+      const body = document.createElement('div');
+      body.className = 'career-opt-body';
+      body.innerHTML = `<span class="career-opt-name">${c.name}</span>`
+        + `<span class="career-opt-passive">${c.passive.name}：${c.passive.desc}</span>`;
+      btn.appendChild(body);
+
+      btn.addEventListener('click', () => {
+        this.setup.careerId = c.id;
+        this.refreshCareers();
+        this.sfx.unlock();
+        this.sfx.click();
+      });
+      cp.appendChild(btn);
+    }
 
     this.el['input-nickname'].value = this.setup.nickname;
     this.el['input-nickname'].addEventListener('input', (e) => {
@@ -214,6 +251,7 @@ class Game {
     this.el['chk-tutorial'].checked = this.setup.tutorial;
 
     this.refreshAvatars();
+    this.refreshCareers();
     this.refreshSegments();
     this.refreshAiPreview();
 
@@ -269,20 +307,35 @@ class Game {
     });
   }
 
+  /** 刷新职业选择器的高亮状态 */
+  refreshCareers() {
+    const cp = this.el['career-picker'];
+    if (!cp) return;
+    [...cp.children].forEach((b) => {
+      const sel = b.dataset.career === this.setup.careerId;
+      b.classList.toggle('is-sel', sel);
+      b.setAttribute('aria-checked', sel ? 'true' : 'false');
+    });
+  }
+
   refreshAiPreview() {
     const el = this.el['ai-preview'];
     el.innerHTML = '';
     const rng = makeRng(hashSeed('preview-' + this.setup.difficulty + this.setup.aiCount));
     const personalities = assignPersonalities(rng, this.setup.aiCount);
+    const careerIds = assignAiCareers(rng, this.setup.aiCount);
     const colors = ['#3fc6c6', '#c8392b', '#a06cd5', '#4f8f8b'];
     personalities.forEach((p, i) => {
       const row = document.createElement('div');
       row.className = 'ai-row';
       row.style.borderLeftColor = colors[i % colors.length];
+      const career = getCareer(careerIds[i]);
+      // 职业 + 性格 双属性展示
       row.innerHTML = `
         <span class="ai-name">AI ${i + 1}</span>
+        <span class="ai-tag ai-tag-career">${career ? career.name : '待定'}</span>
         <span class="ai-tag">${p.tag}</span>
-        <span class="ai-desc">${p.desc}</span>
+        <span class="ai-desc">${career ? career.title + ' · ' : ''}${p.desc}</span>
       `;
       el.appendChild(row);
     });
@@ -307,7 +360,9 @@ class Game {
   /* ==================== 开局 ==================== */
   startGame() {
     this.sfx.unlock();
-    const seed = randomSeed();
+    // 分享链接会带入 seed —— 必须沿用它，否则 AI 的「职业 + 性格」无法复现
+    const seed = this.shareSeed || randomSeed();
+    this.shareSeed = null;   // 只复现一次，之后再开新局用新种子
     this.config = {
       seed,
       difficulty: this.setup.difficulty,
@@ -317,6 +372,7 @@ class Game {
       market: this.setup.market,
       nickname: this.setup.nickname,
       avatar: this.setup.avatar,
+      careerId: this.setup.careerId,
     };
     this.beginGame(this.config);
   }
@@ -326,10 +382,15 @@ class Game {
 
     const rng = makeRng(config.seed);
     const personalities = assignPersonalities(rng, config.aiCount);
+    // AI 的职业同样按 seed 稳定分配（与性格相互独立）
+    const careerIds = assignAiCareers(rng, config.aiCount);
 
     const players = [{
       id: 0, name: config.nickname || '你', isAI: false,
-      avatar: config.avatar, colorIndex: 0, personality: null,
+      avatar: config.avatar, colorIndex: 0,
+      // 真人玩家：**不分配性格**（personalityId 为 null）
+      personalityId: null, personality: null,
+      careerId: config.careerId || CAREERS[0].id,
     }];
 
     personalities.forEach((p, i) => {
@@ -337,9 +398,13 @@ class Game {
         id: i + 1,
         name: aiName(rng, p),
         isAI: true,
-        avatar: (i + 1) % AVATARS.length,
+        // 不指定 avatar —— createState 会按职业自动选用**职业专属立绘**
         colorIndex: i + 1,
+        // 性格：AI 独有
+        personalityId: p.id,
         personality: p,
+        // 职业：AI 独有（与性格正交，任一职业可配任一性格）
+        careerId: careerIds[i],
       });
     });
 
@@ -371,13 +436,19 @@ class Game {
     this.onResize();
     // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
     requestAnimationFrame(() => this.onResize());
+    // 职业立绘是矢量光栅化的 —— 先确保解码完成，避免首帧棋子空白
+    ensurePortraitsReady().catch(() => { /* 解码失败不影响游戏继续 */ });
 
     clearLog(this.el['log-list']);
     log(this.state, 'sys', `开局！种子 ${config.seed}，${players.length} 位玩家入场`, '开局');
     log(this.state, 'sys', `难度「${this.difficultyName(config.difficulty)}」，市场初始为${this.marketName(config.market)}`, '设定');
     for (const p of players) {
       if (p.personality) {
-        log(this.state, 'ai', `${p.name}（${p.personality.name}）：${p.personality.quote}`, p.personality.tag);
+        const career = getCareer(p.careerId);
+        // 播报 AI 的「职业 + 性格」双属性
+        log(this.state, 'ai',
+          `${p.name}（${career ? career.name : '未定职业'} · ${p.personality.name}）：${p.personality.quote}`,
+          p.personality.tag);
       }
     }
     this.syncLog();
@@ -699,6 +770,11 @@ class Game {
     if (!this.state || this.state.phase === 'gameover') return;
     const p = currentPlayer(this.state);
     if (p.bankrupt) { this.advanceTurn(); return; }
+    // 现金为负（如债券兑付）先追保，补足后才允许开始掷骰
+    if (!p.isAI && p.cash < 0) {
+      this.ensureSolvency(p, () => this.beginPlayerTurn());
+      return;
+    }
     this.state.phase = 'await-roll';
     this.updateHUD();
     if (!p.isAI) {
@@ -992,6 +1068,11 @@ class Game {
           this.toast(`行情切换：${label}`, r.market === 'bull' ? 't-bad' : 't-good');
           break;
         }
+        case 'casino-open': {
+          // 私人赌场 · 德州扑克 —— 全体玩家同桌
+          this.openCasino(player);
+          return;
+        }
         case 'upgrade-permit': {
           // 踩到自有机构 —— 获得升级许可
           const inst = player.institutions.find((i) => i.cellIndex === r.cellIndex);
@@ -1212,9 +1293,79 @@ class Game {
       `${player.name} 收购了 ${r.cell.name}（￥${r.price}）`, '收购');
   }
 
-  continueAfterSettlement(player) {
-    const state = this.state;
+  /* ==================== 私人赌场 · 德州扑克 ==================== */
 
+  /**
+   * 打开德州扑克桌面。
+   *
+   * 流程：
+   *   1. `startCasinoGame` 建局（规则引擎负责发牌 / 牌库断言）；
+   *   2. `showPokerTable` 渲染桌面并驱动 AI 行动；
+   *   3. 对局结束 → `finishCasinoGame` 结算回主游戏 → 展示摊牌结果；
+   *   4. 无论结束还是中途退出，都必须**恢复主游戏**（pending 清空、
+   *      state.poker 清空、棋盘重新可交互、继续原玩家的回合）。
+   */
+  openCasino(player) {
+    const state = this.state;
+    const game = startCasinoGame(state);
+    if (!game) {
+      // 人数不足（其它玩家已全部破产）—— 安全降级，直接继续主游戏
+      log(state, 'sys', '赌场人数不足，本局德州扑克取消', '赌场');
+      state.pending = null;
+      this.continueAfterSettlement(player);
+      return;
+    }
+
+    // 把头像 / 配色索引带进对局，供 UI 渲染座位小像
+    const avatarIdx = new Map();
+    const colorIdx = new Map();
+    for (const p of state.players) {
+      avatarIdx.set(p.id, p.avatar ?? 0);
+      colorIdx.set(p.id, p.colorIndex ?? 0);
+    }
+    game.seatAvatarIndex = avatarIdx;
+    game.seatColorIndex = colorIdx;
+
+    this.busy = true;
+    this.sfx.cardFlip();
+    const c = this.cellCenter(player.position);
+    this.effects.confetti(c.x, c.y);
+    this.toast('进入私人赌场 · 德州扑克', 't-good');
+
+    const viewerId = player.isAI ? (state.players.find((p) => !p.isAI) || player).id : player.id;
+
+    /** 收尾：结算 + 恢复主游戏 */
+    const finish = (g, exited = false) => {
+      const res = finishCasinoGame(state, g);
+      state.pending = null;
+      showPokerResult(g, () => {
+        closePokerTable();
+        this.syncLog();
+        this.updateHUD();
+        this.busy = false;
+        if (exited) {
+          log(state, 'sys', '本局德州扑克提前结束，已回到主游戏', '赌场');
+        }
+        // 恢复主游戏流程：继续原玩家的回合
+        this.continueAfterSettlement(player);
+      });
+      return res;
+    };
+
+    showPokerTable({
+      game,
+      viewerId,
+      onFinish: (g) => finish(g, false),
+      onExit: (g) => {
+        // 中途退出：由引擎把剩余玩家标记为弃牌并按规则分配底池，
+        // 然后正常结算回主游戏（现金绝不为负、机构所有权不变）。
+        abortPokerGame(g);
+        finish(g, true);
+      },
+    });
+  }
+
+  continueAfterSettlement(player) {
     if (!player.isAI) {
       this.state.phase = 'await-decision';
       this.updateHUD();
@@ -1223,11 +1374,12 @@ class Game {
     }
 
     this.runAIEconomy(player);
-    checkBankruptcy(state, player);
-    this.syncLog();
-    this.updateHUD();
-    this.busy = false;
-    delay(500, () => this.advanceTurn());
+    this.ensureSolvency(player, () => {
+      this.syncLog();
+      this.updateHUD();
+      this.busy = false;
+      delay(500, () => this.advanceTurn());
+    });
   }
 
   /* ==================== AI ==================== */
@@ -1319,8 +1471,83 @@ class Game {
       this.sfx.deny();
       return;
     }
+    // 现金为负不能无条件结束回合：必须先追缴保证金
+    if (p.cash < 0) {
+      this.ensureSolvency(p, () => {
+        if (!this.state || this.state.phase === 'gameover') return;
+        this.state.phase = 'settling';
+        this.advanceTurn();
+      });
+      return;
+    }
     this.state.phase = 'settling';
     this.advanceTurn();
+  }
+
+  /* ==================== 追缴保证金 ==================== */
+  /** 现金为负时的统一处理：AI 自动质押，玩家弹出强制补足窗口 */
+  ensureSolvency(player, onDone) {
+    if (!player || player.bankrupt || player.cash >= 0) { onDone(); return; }
+    if (player.isAI) {
+      const raised = raiseFundsForDeficit(this.state, player);
+      if (raised.length) {
+        const total = raised.reduce((s, r) => s + r.amount, 0);
+        log(this.state, 'ai',
+          `${player.name} 现金缺口触发追缴保证金，追加质押 ${raised.length} 家机构，补足 ￥${total}`,
+          '追保');
+      }
+      checkBankruptcy(this.state, player);
+      onDone();
+      return;
+    }
+    this.openMarginCallDialog(player, onDone);
+  }
+
+  /** 玩家追保窗口：逐家质押或一键补足，补不足则强制平仓 */
+  openMarginCallDialog(player, onDone) {
+    const state = this.state;
+    if (!player || player.bankrupt) { onDone(); return; }
+    if (player.cash >= 0) { closeModal(); onDone(); return; }
+
+    const unmortgaged = (player.institutions || []).filter((i) => !i.mortgaged);
+    if (!unmortgaged.length) {
+      // 已无可质押机构 → 强制平仓清算
+      checkBankruptcy(state, player);
+      this.syncLog();
+      this.updateHUD();
+      if (player.bankrupt) this.toast(`${player.name} 无力补足缺口，被强制平仓`, 't-bad');
+      closeModal();
+      onDone();
+      return;
+    }
+
+    const self = this;
+    showMarginCallDialog(player, state, {
+      onMortgage: (cellIndex) => {
+        const res = mortgageInstitution(state, player, cellIndex);
+        if (res.ok) {
+          self.sfx.buy();
+          self.toast(`质押融资 ￥${res.amount}`, 't-gold');
+        } else {
+          self.sfx.deny();
+          self.toast(res.reason, 't-bad');
+        }
+        self.syncLog();
+        self.updateHUD();
+        self.openMarginCallDialog(player, onDone);
+      },
+      onRaiseAll: () => {
+        const raised = raiseFundsForDeficit(state, player);
+        const total = raised.reduce((s, r) => s + r.amount, 0);
+        if (total > 0) {
+          self.sfx.buy();
+          self.toast(`追加质押 ${raised.length} 家机构，补足 ￥${total}`, 't-gold');
+        }
+        self.syncLog();
+        self.updateHUD();
+        self.openMarginCallDialog(player, onDone);
+      },
+    });
   }
 
   runAITurn(player) {
@@ -1446,7 +1673,15 @@ class Game {
       turns: state.turnNumber,
       bestChain,
       players: state.players.map((p) => ({
-        name: p.name, assets: Math.max(0, totalAssets(p, state)), count: p.institutions.length,
+        name: p.name,
+        assets: Math.max(0, totalAssets(p, state)),
+        count: p.institutions.length,
+        // 记录 AI 的「职业 + 性格」，便于战绩回看
+        isAI: p.isAI,
+        careerId: p.careerId,
+        careerName: getCareer(p.careerId)?.name || '',
+        personalityId: p.personalityId || null,
+        personalityName: p.personality?.name || '',
       })),
     });
 
@@ -1620,17 +1855,33 @@ class Game {
       this.el['active-player-name'].textContent = p.name;
       this.el['active-player-cash'].textContent = `￥${p.cash}`;
       const cnt = p.institutions.length;
+      // 副标题：AI 显示「职业 · 性格」，真人显示「职业」
+      const career = getCareer(p.careerId);
+      const roleText = career
+        ? (p.personality ? `${career.name} · ${p.personality.tag}` : career.name)
+        : '';
       this.el['active-player-sub'].textContent = p.bankrupt
         ? '已退市'
-        : `控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`;
+        : (roleText
+          ? `${roleText} · 控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`
+          : `控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`);
 
-      // 头像
+      // 头像（保持宽高比：职业立绘 32×40 与经典棋子 16×24 比例不同，居中适配）
       const avatarCanvas = this.el['active-avatar'];
       const icon = getAvatarIcon(p.avatar, p.colorIndex);
       const actx = avatarCanvas.getContext('2d');
       actx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
-      actx.imageSmoothingEnabled = false;
-      actx.drawImage(icon, 0, 0, icon.width, icon.height, 0, 0, avatarCanvas.width, avatarCanvas.height);
+      const isVector = icon.width >= 32;
+      actx.imageSmoothingEnabled = isVector;
+      const scale = Math.min(avatarCanvas.width / icon.width, avatarCanvas.height / icon.height);
+      const dw = icon.width * scale;
+      const dh = icon.height * scale;
+      actx.drawImage(
+        icon, 0, 0, icon.width, icon.height,
+        Math.round((avatarCanvas.width - dw) / 2),
+        Math.round((avatarCanvas.height - dh) / 2),
+        Math.round(dw), Math.round(dh),
+      );
 
       // 贷款 / 债券 / 限时状态提示（无内容时自动隐藏）
       renderActiveStatus(this.el['active-status'], p, state);
@@ -1745,8 +1996,13 @@ class Game {
   handleShareLink() {
     const params = parseShareUrl();
     if (!params) return;
+    // 记录分享 seed：开局时沿用，保证 AI 的「职业 + 性格」组合可复现
+    this.shareSeed = params.seed;
     this.setup.nickname = params.nickname || this.setup.nickname;
     this.setup.avatar = params.avatar ?? this.setup.avatar;
+    if (params.careerId && CAREER_BY_ID[params.careerId]) {
+      this.setup.careerId = params.careerId;
+    }
     this.setup.difficulty = params.difficulty;
     this.setup.aiCount = params.aiCount;
     this.setup.diceCount = params.diceCount;
@@ -1754,6 +2010,7 @@ class Game {
     this.setup.market = params.market;
     this.el['input-nickname'].value = this.setup.nickname;
     this.refreshAvatars();
+    this.refreshCareers();
     this.refreshSegments();
     this.refreshAiPreview();
     this.toast(`已载入分享局（种子 ${params.seed}），点击"开局"复现`, 't-gold');

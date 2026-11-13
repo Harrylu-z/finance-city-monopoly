@@ -4,6 +4,7 @@
 
 import { renderShareCard, downloadCanvas } from '../render/share-card.js';
 import { totalAssets } from '../core/economy.js';
+import { getCareer } from '../core/careers.js';
 
 /**
  * 生成深链接（编码 seed 与开局配置）
@@ -20,6 +21,7 @@ export function buildShareUrl(config) {
   // URLSearchParams.set 会自动做 URL 编码，此处不可再手动 encodeURIComponent（否则会二次编码）
   if (config.nickname) p.set('nick', config.nickname);
   if (config.avatar != null) p.set('av', String(config.avatar));
+  if (config.careerId) p.set('career', String(config.careerId));
   return `${base}?${p.toString()}`;
 }
 
@@ -45,6 +47,7 @@ export function parseShareUrl() {
     market: p.get('mkt') || 'normal',
     nickname,
     avatar: p.get('av') ? parseInt(p.get('av'), 10) : 0,
+    careerId: p.get('career') || 'ib',
   };
 }
 
@@ -108,6 +111,9 @@ export function openShareDialog(state, config, onToast) {
       colorIndex: p.colorIndex,
       avatar: p.avatar,
       isAI: p.isAI,
+      // AI 的「职业 + 性格」双属性
+      careerId: p.careerId,
+      careerName: getCareer(p.careerId)?.name || '',
       personality: p.personality,
     })),
   });

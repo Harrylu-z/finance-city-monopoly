@@ -868,6 +868,198 @@ canvas, .pixel-panel, .pixel-btn, img {
   margin-bottom: var(--sp-3);
 }
 
+/* ============================================================
+   职业选择器（开局界面）
+   ============================================================ */
+.career-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: var(--sp-2);
+}
+.career-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  background: var(--c-panel-lt);
+  border: 2px solid var(--c-dim);
+  color: var(--c-paper);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color .12s, background .12s;
+}
+.career-opt:hover { border-color: var(--c-gold-dk); }
+.career-opt.is-sel {
+  border-color: var(--c-gold);
+  background: var(--c-panel-lt);
+  box-shadow: inset 0 0 0 1px var(--c-gold-dk);
+}
+.career-opt canvas {
+  /* 职业立绘是矢量光栅化的 —— 必须用平滑缩放，不能 pixelated */
+  image-rendering: auto;
+  width: 40px; height: 50px;
+  flex: 0 0 auto;
+}
+.career-opt-body { min-width: 0; }
+.career-opt-name {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--c-gold-lt);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.career-opt-passive {
+  display: block;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--c-dim-lt);
+  margin-top: 2px;
+}
+.career-opt.is-sel .career-opt-passive { color: var(--c-paper); }
+
+/* ============================================================
+   私人赌场 · 德州扑克
+   ============================================================ */
+.poker-root { z-index: 60; }
+.poker-box {
+  position: relative;
+  width: min(760px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  background: var(--c-panel);
+  border: 3px solid var(--c-gold-dk);
+  box-shadow: 0 0 0 2px var(--c-ink), 8px 8px 0 rgba(0,0,0,.45);
+}
+.poker-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--sp-3); flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.poker-head .modal-title { margin-bottom: 0; }
+.poker-head-info {
+  display: flex; gap: var(--sp-3); align-items: baseline;
+  font-size: var(--fs-xs); color: var(--c-dim-lt);
+}
+.poker-head-info b { color: var(--c-gold-lt); font-size: var(--fs-sm); }
+.poker-pot b { color: var(--c-jade-lt); }
+
+/* 公共牌 */
+.poker-board {
+  display: flex; align-items: center; justify-content: center;
+  gap: 5px; flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-2);
+  margin-bottom: var(--sp-3);
+  background: #14392f;
+  border: 2px solid var(--c-gold-dk);
+  box-shadow: inset 0 0 0 2px #0d2a23;
+}
+.poker-board-label {
+  font-size: var(--fs-xs); color: var(--c-jade-lt);
+  letter-spacing: 2px; margin-right: var(--sp-2);
+}
+.poker-board-result { margin-top: var(--sp-3); }
+
+/* 扑克牌 */
+.poker-card {
+  image-rendering: pixelated;
+  width: 44px; height: 60px;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.5);
+}
+.poker-card-board { width: 40px; height: 54px; }
+
+/* 座位 */
+.poker-seats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.poker-seat {
+  padding: var(--sp-2);
+  background: var(--c-panel-lt);
+  border: 2px solid var(--c-dim);
+}
+.poker-seat.is-me { border-color: var(--c-gold); }
+.poker-seat.is-turn {
+  border-color: var(--c-jade-lt);
+  box-shadow: 0 0 0 2px rgba(119,196,124,.35);
+  animation: poker-turn-pulse 1.1s ease-in-out infinite;
+}
+.poker-seat.is-folded { opacity: .5; }
+.poker-seat.is-allin { border-color: var(--c-red-lt); }
+@keyframes poker-turn-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(119,196,124,.25); }
+  50%      { box-shadow: 0 0 0 4px rgba(119,196,124,.55); }
+}
+.poker-seat-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.poker-avatar { image-rendering: pixelated; width: 24px; height: 36px; flex: 0 0 auto; }
+.poker-seat-name { min-width: 0; line-height: 1.3; }
+.poker-seat-name .pn {
+  display: block; font-size: var(--fs-xs);
+  color: var(--c-paper); font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.poker-seat-name .pc { display: block; font-size: 10px; color: var(--c-gold-lt); }
+.poker-hole { display: flex; gap: 3px; margin-bottom: 4px; }
+.poker-hole .poker-card { width: 30px; height: 41px; }
+.poker-seat-status {
+  font-size: 10px; color: var(--c-dim-lt); line-height: 1.4;
+  min-height: 14px;
+}
+.poker-seat.is-turn .poker-seat-status { color: var(--c-jade-lt); }
+
+/* 操作区 */
+.poker-actions {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2);
+  align-items: center;
+  padding-top: var(--sp-2);
+  border-top: 2px solid var(--c-dim);
+}
+.poker-turn-note {
+  width: 100%;
+  font-size: var(--fs-xs); color: var(--c-paper);
+  margin-bottom: 4px;
+}
+.poker-turn-note b { color: var(--c-gold-lt); }
+.poker-note-bad { color: var(--c-red-lt); }
+.poker-btn { min-width: 104px; }
+.poker-btn-sm { min-width: 0; font-size: var(--fs-xs); padding: 5px 8px; }
+.poker-btn-allin { border-color: var(--c-red-lt); color: var(--c-red-lt); }
+.poker-btn-raise { border-color: var(--c-gold); color: var(--c-gold-lt); }
+.poker-raise-row {
+  display: flex; gap: 6px; width: 100%; flex-wrap: wrap;
+  padding-bottom: 4px;
+}
+.poker-btn-exit { margin-left: auto; font-size: var(--fs-xs); }
+.poker-hint {
+  margin-top: var(--sp-3);
+  font-size: 10px; line-height: 1.6; color: var(--c-dim-lt);
+  border-top: 1px dashed var(--c-dim);
+  padding-top: var(--sp-2);
+}
+
+/* 摊牌结果表 */
+.poker-result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+  margin-bottom: var(--sp-2);
+}
+.poker-result-table th {
+  text-align: left; padding: 5px 6px;
+  color: var(--c-gold-lt); font-weight: 700;
+  border-bottom: 2px solid var(--c-dim);
+  letter-spacing: 1px;
+}
+.poker-result-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--c-dim);
+  color: var(--c-paper);
+}
+.poker-result-table .pk-rank { color: var(--c-gold-lt); }
+.poker-result-table .pk-win { color: var(--c-dim-lt); }
+.poker-result-table .pk-win.is-win { color: var(--c-jade-lt); font-weight: 700; }
+
 /* ---------- 排行列表（仅在弹窗内） ---------- */
 .rank-list-modal { padding: var(--sp-3) var(--sp-4); }
 .rank-list { display: flex; flex-direction: column; gap: 4px; }
@@ -980,6 +1172,27 @@ canvas, .pixel-panel, .pixel-btn, img {
   margin-bottom: var(--sp-3);
   line-height: 1.6;
 }
+
+/* ---------- 追缴保证金（Margin Call） ---------- */
+.mc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: var(--sp-3);
+}
+.mc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--c-panel-dk);
+  border: var(--border-w) solid var(--c-dim);
+  padding: 6px var(--sp-2);
+}
+.mc-name { flex: 1; font-size: var(--fs-xs); color: var(--c-paper); }
+.mc-val { font-family: var(--font-num); font-size: var(--fs-xs); color: var(--c-gold-lt); }
+.mc-btn { padding: 4px 10px; font-size: var(--fs-xs); }
 
 /* ---------- 机构列表 ---------- */
 .inst-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-3); }

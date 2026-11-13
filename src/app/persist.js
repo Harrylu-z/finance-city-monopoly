@@ -64,6 +64,7 @@ export function loadSettings() {
   return read(KEY_SETTINGS, {
     nickname: '',
     avatar: 0,
+    careerId: 'ib',          // 出场职业（旧存档无此字段时降级为投行家）
     difficulty: 'normal',
     aiCount: 3,
     diceCount: 2,
