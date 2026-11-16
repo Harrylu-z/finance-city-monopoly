@@ -1,0 +1,532 @@
+/* ===========================================================
+ * 地块格子样式 —— D+「现代数据卡」
+ *
+ * 从 design-proposals/tiles-modern/modern-tiles.css 移植，
+ * 追加了「棋盘内嵌」所需的额外规则（.mt-cell 定位 / 小格降级）。
+ * =========================================================== */
+
+/* ---------- 地块层容器 ---------- */
+#board-tiles {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  color: var(--ink);
+}
+
+.mt-cell {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: filter .16s ease;
+}
+.mt-cell:focus-visible {
+  outline: 2px solid var(--c-gold);
+  outline-offset: 1px;
+}
+.mt-cell:hover { z-index: 3; }
+.mt-cell.is-active {
+  z-index: 4;
+  filter: drop-shadow(0 0 0 #000);
+}
+.mt-cell.is-active .mt-tile {
+  box-shadow: 0 0 0 2px var(--c-gold), 0 8px 20px rgba(232,169,60,.35) !important;
+  border-color: var(--c-gold);
+}
+
+/* ===========================================================
+ * 通用地块外壳
+ * =========================================================== */
+.mt-tile {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 3px rgba(15,23,42,.08);
+}
+
+.mt-svg { display: block; width: 100%; height: 100%; }
+
+/* ---------- 通用状态覆盖 ---------- */
+.mt-mort-stripe {
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(180, 83, 9, .16) 0 6px,
+    rgba(180, 83, 9, .04) 6px 12px
+  );
+  pointer-events: none;
+}
+.mt-mort-stamp {
+  position: absolute;
+  top: 46%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-14deg);
+  padding: 2px 10px;
+  font-size: 12px; font-weight: 800; letter-spacing: 2px;
+  color: #fff; background: #b45309;
+  border: 2px solid #fff; border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  white-space: nowrap;
+}
+
+/* ===========================================================
+ * D+ 现代数据卡
+ * =========================================================== */
+.mt-d2 { padding: 7px 8px 6px; gap: 4px; }
+.mt-d2::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: linear-gradient(90deg, var(--acc), var(--acc-lt));
+}
+/* 未收购：顶条半透明 + 下缘虚线（「色还在，地皮还没到手」） */
+.mt-d2.is-vacant::before {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--acc) 45%, transparent),
+    color-mix(in srgb, var(--acc-lt) 45%, transparent));
+  border-bottom: 1px dashed color-mix(in srgb, var(--acc) 60%, transparent);
+  height: 4px;
+}
+.mt-d2.is-vacant { background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%); }
+.mt-d2.is-held {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 1px var(--acc) inset, 0 6px 18px rgba(15,23,42,.10);
+}
+.mt-d2.is-mort { filter: grayscale(.72); }
+/* 当前可收购：绿色微光 */
+.mt-d2.is-afford {
+  border-color: #4f9d55;
+  box-shadow: 0 0 0 1px rgba(79,157,85,.55) inset, 0 0 14px rgba(79,157,85,.22);
+}
+
+.mt-d2-top {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 3px; gap: 4px; min-width: 0;
+}
+.mt-d2-tier {
+  font-size: 9.5px; font-weight: 700; color: var(--acc);
+  border: 1px solid color-mix(in srgb, var(--acc) 45%, transparent);
+  background: color-mix(in srgb, var(--acc) 10%, transparent);
+  padding: 1px 5px; border-radius: 999px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  flex: 0 1 auto; min-width: 0;
+}
+.mt-d2-owner {
+  font-size: 10px; font-weight: 700; color: var(--ink-2);
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  flex: 0 1 auto;
+}
+.mt-d2-owner i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+
+.mt-chip {
+  font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  padding: 1px 6px; border-radius: 4px; line-height: 1.5; white-space: nowrap;
+  flex: none;
+}
+
+.mt-d2-name {
+  font-size: 13px; font-weight: 700; line-height: 1.25;
+  color: var(--ink); letter-spacing: -.2px;
+  overflow: hidden; flex: none;
+}
+.mt-d2-name span { display: block; }
+.mt-d2-name span:first-child { white-space: nowrap; }
+
+.mt-d2-segs { display: flex; gap: 3px; flex: none; }
+.mt-d2-segs .mt-seg { height: 4px; border-radius: 2px; flex: 1 1 0; min-width: 3px; }
+
+.mt-d2-fig {
+  flex: 1; display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 6px; min-height: 0; overflow: hidden;
+}
+.mt-d2-figL { flex: none; min-width: 0; }
+.mt-d2-main {
+  font-family: var(--font-num); font-size: 19px; font-weight: 700;
+  color: var(--ink); line-height: 1; letter-spacing: -.5px; white-space: nowrap;
+}
+.mt-d2-mainlbl { font-size: 9px; color: var(--ink-3); margin-top: 2px; letter-spacing: 1px; }
+.mt-d2-sub {
+  font-size: 9.5px; color: var(--ink-3); margin-top: 4px;
+  font-family: var(--font-num); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.mt-d2-sublbl { font-family: var(--font-ui); margin-right: 3px; }
+.mt-d2-figR { flex: 1; height: 100%; min-width: 0; display: flex; align-items: flex-end; }
+.mt-d2-figR .mt-facade { height: 100%; width: 100%; }
+
+.mt-d2-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 4px; border-top: 1px dashed var(--line);
+  font-size: 10px; flex: none; gap: 4px;
+}
+.mt-d2-lv { font-weight: 800; color: var(--acc); white-space: nowrap; }
+.mt-d2-price {
+  color: var(--ink-3); font-family: var(--font-num); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  flex: 0 1 auto; min-width: 0; text-align: right;
+}
+
+.mt-d2-afford {
+  position: absolute; right: 5px; top: 26px;
+  font-size: 9px; font-weight: 800; color: #fff; background: #4f9d55;
+  padding: 1px 6px; border-radius: 999px; letter-spacing: .5px;
+  box-shadow: 0 2px 6px rgba(79,157,85,.4);
+}
+
+/* ===========================================================
+ * 监管格 —— 四大机构各有独立视觉身份
+ * =========================================================== */
+.mt-d2-reg {
+  background: linear-gradient(180deg, #fcfdff 0%, #f5f8fc 100%);
+}
+.mt-d2-reg::before { height: 4px; }
+
+.mt-reg-scene {
+  position: relative;
+  flex: 1 1 auto; min-height: 0;
+  /* 场景至少占格高的 30%（容器查询单位，.mt-cell 是 size 容器）。
+     没有这个下限的话，监管格的其他行会把场景压到 9~25px，
+     徽章与权力建筑只能被压成看不清的小方块。 */
+  min-height: 30cqh;
+  display: flex; align-items: flex-end; justify-content: center;
+  overflow: hidden;
+}
+/* 徽章：绝对定位在左上角。
+   ⚠ 尺寸必须相对**容器高度**而不是宽度 ——
+      监管格是横向卡（宽高比 1.4286），场景容器可能只有 9~25px 高，
+      若按宽度算（width:30%）徽章高度会达到 60px+，直接撑破容器。
+      这里用 height 百分比定边长（正方形 viewBox → 等比），
+      再用 max-width 兜住横向，max-height 保证绝不超出盒子。 */
+.mt-reg-badge {
+  position: absolute;
+  left: 2px; top: 1px;
+  height: 62%; width: auto;
+  max-height: 100%;
+  max-width: 34%;
+  filter: drop-shadow(0 1px 2px rgba(15,23,42,.22));
+}
+/* 权力建筑：高度撑满容器，宽度等比自适应。
+   viewBox 是 100×60（宽高比 1.667），height:100% + width:auto
+   配合 preserveAspectRatio="xMidYMax meet" → 等比缩放、底部对齐。 */
+.mt-reg-bld {
+  height: 100%; width: auto;
+  max-height: 100%; max-width: 100%;
+  flex: none;
+}
+
+/* 效果读数带 */
+.mt-reg-effect {
+  display: flex; align-items: baseline; gap: 4px;
+  padding: 3px 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sign) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sign) 34%, transparent);
+  flex: none; min-width: 0; overflow: hidden;
+}
+.mt-reg-sign {
+  font-size: 8.5px; font-weight: 800; color: #fff; background: var(--sign);
+  padding: 1px 4px; border-radius: 3px; letter-spacing: .5px; flex: none;
+}
+.mt-reg-big {
+  font-family: var(--font-num); font-size: 15px; font-weight: 700;
+  color: var(--sign); line-height: 1; letter-spacing: -.4px; white-space: nowrap;
+  flex: none;
+}
+.mt-reg-unit {
+  font-size: 9px; color: var(--ink-3); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto; min-width: 0;
+}
+
+.mt-reg-effectname {
+  font-size: 8.5px; color: var(--ink-3); text-align: center;
+  padding-top: 3px; border-top: 1px dashed var(--line); margin-top: 3px;
+  flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mt-d2-reg .mt-d2-name { text-align: center; }
+.mt-d2-reg .mt-d2-name span { display: block; }
+/* 监管格名称一律单行：格宽 = 格高 × 1.4286，最宽的「金融稳定委员会」(8 字)
+   在 13px 字号下也只占 ~104px，远小于 205px 的内容宽度。
+   拆成两行会白占 ~15px，把弹性场景压扁 —— 直接强制单行。 */
+.mt-d2-reg .mt-d2-name span { display: inline; }
+.mt-d2-reg .mt-d2-name { white-space: nowrap; }
+
+/* ---- 监管格版式：把高度让给「徽章 + 权力建筑」场景 ----
+   监管格是内容最多的一类（顶栏 / 名称 / 场景 / 效果带 / 底栏 / 效果名），
+   若各行都按默认行高排布，弹性场景会被压到 9~25px ——
+   徽章与建筑只能缩成看不清的小方块（甚至溢出容器）。
+   这里的取舍：
+     ① 「效果名 · 全体玩家生效」与效果带语义重复 —— 收进效果带标题属性，
+        腾出 ~15px；
+     ② 底栏「不可升级 / ￥买断价」压到 9px 单行 —— 腾出 ~5px；
+     ③ 名称与效果带行高收紧 —— 腾出 ~5px。
+   合计给场景多留 ~25px，场景高度从 25px 提升到 ~50px。 */
+.mt-d2-reg { gap: 3px; }
+.mt-d2-reg .mt-reg-effectname { display: none; }
+.mt-d2-reg .mt-d2-name { line-height: 1.15; }
+.mt-d2-reg .mt-reg-effect { padding: 2px 5px; }
+.mt-d2-reg .mt-d2-foot { padding-top: 2px; font-size: 9.5px; }
+
+/* ===========================================================
+ * 特殊格
+ * =========================================================== */
+.mt-d2-sp {
+  background: linear-gradient(180deg, #fcfdff 0%, #f6f8fc 100%);
+  align-items: stretch;
+}
+.mt-d2-sp::before { background: linear-gradient(90deg, var(--acc), var(--acc-lt)); }
+.mt-d2-sp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 3px; gap: 4px; flex: none;
+}
+.mt-d2-cat {
+  font-size: 10px; font-weight: 800; color: #fff; background: var(--acc);
+  padding: 1px 7px; border-radius: 4px; letter-spacing: 1px; flex: none;
+}
+.mt-d2-sp-sign {
+  font-size: 9.5px; font-weight: 700; color: var(--acc-dk);
+  opacity: .85; letter-spacing: .5px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.mt-d2-sp-icon {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  min-height: 0; overflow: hidden;
+}
+.mt-d2-sp-icon .mt-svg { width: 56%; height: 100%; }
+.mt-d2-sp-name {
+  font-size: 12.5px; font-weight: 800; text-align: center; line-height: 1.2;
+  color: var(--ink); flex: none; overflow: hidden;
+}
+.mt-d2-sp-name span { display: block; }
+.mt-d2-sp-eff {
+  display: flex; align-items: baseline; justify-content: center; gap: 5px;
+  margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--line);
+  flex: none; overflow: hidden;
+}
+.mt-d2-sp-big {
+  font-family: var(--font-num); font-size: 14px; font-weight: 700;
+  color: var(--acc); letter-spacing: -.3px; white-space: nowrap;
+}
+.mt-d2-sp-big.is-neg { color: #dc2626; }
+.mt-d2-sp-lbl {
+  font-size: 9px; color: var(--ink-3); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.mt-d2-trap {
+  position: absolute; right: 5px; top: 26px;
+  font-size: 9px; font-weight: 800; color: #fff; background: #dc2626;
+  padding: 1px 6px; border-radius: 4px; letter-spacing: 1px;
+}
+
+/* ---------- 转盘格：候选效果清单 ---------- */
+.mt-d2-wheel .mt-d2-sp-icon { flex: 0 0 auto; height: 34%; }
+.mt-d2-wheel .mt-d2-sp-icon .mt-svg { width: auto; height: 100%; aspect-ratio: 1; }
+/* 候选清单：永远不溢出。
+   ⚠ overflow:hidden 只是「裁掉」，scrollHeight 依然会大于 clientHeight ——
+      溢出检测按 scrollHeight/clientHeight 判定，所以必须让**内容本身**
+      装得进盒子，而不是靠裁剪蒙混过关。
+   做法：
+     ① 行高用固定 px（line-height:1.25 × 9px ≈ 11.25 → 取 11px），
+        3 行 + 2 个 2px 间隙 + 4px 上边距 = 41px，恰好落在最小盒子内；
+     ② 行与「+N 项」都允许被压缩（flex-shrink:1 + min-height:0），
+        盒子再矮也只裁内容，不会撑破父级；
+     ③ 按格高分档决定显示几行 —— 永远至少 2 行。 */
+.mt-d2-sp-list {
+  flex: 1; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--line);
+}
+.mt-d2-sp-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 4px;
+  font-size: 9.5px; line-height: 1.25;
+  flex: 0 1 auto; min-height: 0; overflow: hidden;
+}
+.mt-d2-sp-rowname {
+  color: var(--ink-2); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.mt-d2-sp-rowname.is-trap { color: #dc2626; font-weight: 700; }
+.mt-d2-sp-rowval {
+  font-family: var(--font-num); font-weight: 700; color: var(--acc-dk);
+  white-space: nowrap; flex: none;
+  overflow: hidden; text-overflow: ellipsis; max-width: 46%;
+}
+.mt-d2-sp-rowval.is-trap { color: #dc2626; }
+.mt-d2-sp-more {
+  font-size: 9px; line-height: 11px; color: var(--ink-3); text-align: center;
+  white-space: nowrap;
+  flex: 0 1 auto; min-height: 0; overflow: hidden;
+}
+.mt-poker-icon { width: 78%; height: 100%; }
+
+/* ===========================================================
+ * 小格降级 —— 格子太小时逐级隐藏次要信息
+ *
+ * 棋盘是 10×7 的横向网格，格子宽高比固定为 10/7 = 1.4286，
+ * 因此**宽度永远大于高度**，纵向空间才是瓶颈。
+ * 实测格子尺寸（5 个基准视口）：
+ *   1280×720  →  98.6 ×  69.0
+ *   1440×900  → 111.4 ×  78.0
+ *   1600×950  → 127.4 ×  89.2
+ *   1920×1080 → 159.4 × 111.6
+ *   2560×1440 → 223.4 × 156.4
+ * 所以按**高度**分档：156 / 112 / 90 / 80 / 70。
+ * 用容器查询（container-type: size）保证任何尺寸下都不出现文字裁切。
+ * =========================================================== */
+.mt-cell { container-type: size; container-name: tile; }
+
+/* ---- 档位 A：≤ 140px（1920×1080 及以下命中）----
+   收起次要读数（sub / 效果名），保留主读数 + 名称 + 买断价。 */
+@container tile (max-height: 140px) {
+  .mt-d2 { padding: 6px 7px 5px; gap: 3px; }
+  .mt-d2-main { font-size: 17px; }
+  .mt-d2-mainlbl { font-size: 9px; }
+  .mt-d2-sub { display: none; }
+  .mt-d2-name { font-size: 12px; }
+  .mt-d2-foot { font-size: 9.5px; padding-top: 3px; }
+  .mt-reg-effectname { display: none; }
+  .mt-reg-big { font-size: 13.5px; }
+  .mt-d2-sp-name { font-size: 11.5px; }
+  .mt-d2-sp-big { font-size: 12.5px; }
+  .mt-d2-sp-lbl { display: none; }
+  .mt-d2-wheel .mt-d2-sp-icon { height: 30%; }
+  .mt-d2-sp-row { font-size: 9px; }
+}
+
+/* ---- 档位 A2：> 140px（大格，1920×1080 以上命中）----
+   转盘格内容变多，但**清单盒子反而没变高**（清单高度 = 格高 − 图标 34% − 其余行）。
+   2560×1440 实测：格高 156px → 清单只有 43px，
+   而 3 行 + 「+N 项」需要 4 + 3×12 + 2×2 + 12 = 52px → 溢出 9px。
+   修法：① 有「+N 项」时只显示 2 行（:has() 判定）；
+        ② 转盘图标从 34% 收到 26%，把 12px 还给清单。 */
+@container tile (min-height: 141px) {
+  .mt-d2-wheel .mt-d2-sp-icon { height: 26%; }
+  /* 有「+N 项」尾巴时，第 3 行让位给尾巴行（保证永远装得下） */
+  .mt-d2-sp-list:has(.mt-d2-sp-more) .mt-d2-sp-row:nth-child(n+3) { display: none; }
+}
+
+/* ---- 档位 B：≤ 112px（1440×900 / 1600×950 命中）----
+   收起等级刻度与立绘，保证「名称 / 主读数 / 价格」三件套完整。 */
+@container tile (max-height: 112px) {
+  .mt-d2-segs { display: none; }
+  .mt-d2-figR { display: none; }
+  .mt-d2-main { font-size: 15.5px; }
+  .mt-d2-name { font-size: 11px; }
+  .mt-d2-tier { font-size: 8.5px; }
+  .mt-d2-owner { font-size: 9px; }
+  .mt-chip { font-size: 9px; padding: 0 4px; }
+  /* 监管格降级：保留专属徽章，舍弃建筑立绘。
+     徽章约 30cqh，用容器高度单位随格子尺寸自适应；
+     max-height 不超过场景可用高度，避免任何溢出。 */
+  .mt-reg-scene {
+    display: flex;
+    min-height: 0;
+  }
+  .mt-reg-badge {
+    height: 30cqh; width: auto;
+    max-height: 100%; max-width: 34%;
+  }
+  .mt-reg-bld { display: none; }
+  /* 徽章与效果带之间不需要额外的独立场景高度；
+     名称 / 效果读数 / 底栏全部保留，靠 gap 收紧腾出徽章空间。 */
+  .mt-d2-reg { gap: 0; }
+  .mt-d2-reg .mt-reg-effect { padding: 0 4px; }
+  .mt-reg-big { font-size: 12.5px; }
+  .mt-d2-sp-icon { display: none; }
+  .mt-d2-sp-name { font-size: 11px; }
+  /* 转盘清单：只留 2 行候选（硬指标：至少 2 行），
+     并把行距 / 上边距收紧到刚好装进 25px 的清单盒。 */
+  .mt-d2-sp-list { margin-top: 2px; padding-top: 2px; gap: 0; }
+  .mt-d2-sp-row { font-size: 8.5px; line-height: 1.2; }
+  .mt-d2-sp-row:nth-child(n+3) { display: none; }
+  .mt-d2-sp-more { font-size: 8.5px; line-height: 1.2; }
+}
+
+/* ---- 档位 C：≤ 90px（1440×900 / 1600×950 下沿命中）----
+   监管格不再同时显示「效果行」与「底栏」—— 二选一，优先保留效果行。 */
+@container tile (max-height: 90px) {
+  .mt-d2-reg .mt-d2-foot { display: none; }
+  .mt-d2-reg .mt-reg-effect { display: flex; }
+  .mt-d2-sp-more { display: none; }
+}
+
+/* ---- 档位 D：≤ 80px（1440×900 命中）----
+   监管格只留「名称 + 效果行」，顶栏与底栏全部收起；
+   两行机构名（8 字切成两行）会多占 14px —— 此时名称压到单行，
+   主读数与等级行同步收紧，保证整卡零溢出。 */
+@container tile (max-height: 80px) {
+  .mt-d2-reg .mt-d2-top { display: none; }
+  .mt-d2-reg .mt-reg-effect { padding: 2px 4px; }
+  .mt-d2-reg .mt-reg-big { font-size: 12px; }
+  .mt-d2 { gap: 2px; }
+  .mt-d2-name { font-size: 10.5px; line-height: 1.15; }
+  .mt-d2-name span:first-child { white-space: normal; }
+  .mt-d2-main { font-size: 14.5px; }
+  .mt-d2-mainlbl { margin-top: 1px; font-size: 8px; }
+  .mt-d2-foot { padding-top: 2px; font-size: 9px; }
+}
+
+/* ---- 档位 E：≤ 70px（1280×720 命中）----
+   只保留名称 + 主读数，底栏与效果行全部收起。
+   转盘格仍**保留 2 行候选**（硬指标：至少 2 行）——
+   实测（1280×720，格高 69px）：内容区可用高度 ≈ 47px
+     （69 − 2 边框 − 11 内边距 − 9 间隙）。
+     顶栏 19 + 名称 12 + 清单 25（2 行 × 10.2 + 间隙 + 内边距）= 56px > 47px。
+     所以必须舍弃「分类顶栏」与「转盘图标」——
+     候选清单是硬指标，图标与分类标签是装饰，优先保住清单。 */
+@container tile (max-height: 70px) {
+  .mt-d2-foot { display: none; }
+  .mt-d2-top .mt-d2-tier,
+  .mt-d2-top .mt-d2-owner { display: none; }
+  .mt-d2-main { font-size: 14px; }
+  .mt-d2-mainlbl { display: none; }
+  .mt-d2-name { font-size: 10.5px; }
+  .mt-reg-effect { display: none; }
+  .mt-d2-sp-eff { display: none; }
+  /* 转盘格：舍弃分类顶栏与转盘图标，换取 2 行完整候选 */
+  .mt-d2-wheel .mt-d2-sp-head { display: none; }
+  .mt-d2-wheel .mt-d2-sp-icon { display: none; }
+  .mt-d2-wheel .mt-d2-sp-name { font-size: 11px; line-height: 1.1; }
+  .mt-d2-sp-list { margin-top: 2px; padding-top: 2px; gap: 1px; }
+  .mt-d2-sp-row { font-size: 8.5px; line-height: 1.2; flex: 0 0 auto; }
+  .mt-d2-sp-row:nth-child(n+3) { display: none; }
+  .mt-d2-sp-more { display: none; }
+}
+
+/* ---------- 窄格降级（按宽度）----------
+   格子宽度 = 高度 × 10/7，因此宽度下限对应更小的视口。
+   实测宽度区间 98.6 ~ 223.4 px，档位：160 / 128 / 110 / 98。 */
+
+/* ≤ 160px：监管效果行（大字 + 单位）横向吃紧 —— 允许大字收缩让出单位宽度 */
+@container tile (max-width: 160px) {
+  .mt-reg-effect { gap: 3px; }
+  .mt-reg-big { font-size: 13px; flex: 0 1 auto; min-width: 0; }
+  .mt-reg-unit { font-size: 8px; }
+}
+
+/* ≤ 128px：监管格主价（「￥3,200」）开始拥挤 —— 先缩字号保数值完整 */
+@container tile (max-width: 128px) {
+  .mt-d2-price { font-size: 9px; }
+  .mt-reg-unit { font-size: 8px; }
+}
+
+/* ≤ 110px：等级徽章与效果单位让位给核心信息 */
+@container tile (max-width: 110px) {
+  .mt-d2-top .mt-d2-tier { display: none; }
+  .mt-reg-unit { display: none; }
+  .mt-d2-price { font-size: 8.5px; }
+  .mt-reg-sign { font-size: 8px; padding: 1px 3px; }
+}
+
+/* ≤ 98px：只保留主读数与价格，等级/效果单位全部收起 */
+@container tile (max-width: 98px) {
+  .mt-d2-foot .mt-d2-lv { display: none; }
+  .mt-reg-effect { flex-direction: column; align-items: flex-start; gap: 1px; }
+  .mt-reg-big { font-size: 11px; }
+}

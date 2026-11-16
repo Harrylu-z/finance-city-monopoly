@@ -380,12 +380,14 @@ export function showEventCardDialog(card, effect, onClose) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'display:flex;justify-content:center;margin-bottom:12px;';
   const cv = document.createElement('canvas');
-  cv.width = 96;
-  cv.height = 128;
-  cv.style.cssText = 'width:96px;height:128px;image-rendering:pixelated;animation:cardFlipIn 600ms steps(8,end);';
+  cv.width = 192;
+  cv.height = 256;
+  cv.style.cssText = 'width:96px;height:128px;image-rendering:auto;'
+    + 'border-radius:10px;box-shadow:0 6px 20px rgba(15,23,42,.22);'
+    + 'animation:cardFlipIn 600ms cubic-bezier(.22,.61,.36,1);';
   const cctx = cv.getContext('2d');
-  cctx.imageSmoothingEnabled = false;
-  drawEventCardFace(cctx, card, 96, 128);
+  cctx.imageSmoothingEnabled = true;
+  drawEventCardFace(cctx, card, 192, 256);
   wrap.appendChild(cv);
   body.appendChild(wrap);
 
@@ -409,46 +411,102 @@ export function showEventCardDialog(card, effect, onClose) {
   });
 }
 
-/** 事件卡正面 */
+/**
+ * 事件卡正面 —— 现代扁平风：现告纸版式卡面。
+ *
+ * 与像素版的差异：圆角白底 + 红色报头条 + 真实字体 +
+ * 浅色正文行 + 右下角印章。
+ */
 function drawEventCardFace(ctx, card, W, H) {
-  ctx.fillStyle = PALETTE.navy;
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = PALETTE.gold;
-  ctx.fillRect(0, 0, W, 4);
-  ctx.fillRect(0, H - 4, W, 4);
-  ctx.fillRect(0, 0, 4, H);
-  ctx.fillRect(W - 4, 0, 4, H);
-  ctx.fillStyle = PALETTE.ink;
-  ctx.fillRect(4, 4, W - 8, 2);
-  ctx.fillRect(4, H - 6, W - 8, 2);
+  const INK = '#0f172a';
+  const INK2 = '#334155';
+  const INK3 = '#64748b';
+  const LINE = '#e2e8f0';
+  const RED = '#c8392b';
+  const RED_DK = '#8d2419';
 
-  ctx.fillStyle = PALETTE.red;
-  ctx.fillRect(10, 14, W - 20, 14);
-  ctx.fillStyle = PALETTE.paper;
-  ctx.font = 'bold 11px "Microsoft YaHei", sans-serif';
+  // ===== 卡面白底 + 圆角 =====
+  roundRect(ctx, 0, 0, W, H, 18);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.save();
+  roundRect(ctx, 0, 0, W, H, 18);
+  ctx.clip();
+
+  // 纸张纹理（很浅）
+  ctx.fillStyle = 'rgba(15,23,42,.025)';
+  for (let i = 0; i < H; i += 8) ctx.fillRect(0, i, W, 3);
+
+  // 报头条
+  ctx.fillStyle = RED;
+  ctx.fillRect(0, 0, W, 34);
+  ctx.fillStyle = 'rgba(255,255,255,.16)';
+  ctx.fillRect(0, 0, W, 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px "Microsoft YaHei", "PingFang SC", sans-serif';
   ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
   ctx.fillText('华尔街日报', W / 2, 25);
 
-  ctx.fillStyle = PALETTE.gold;
-  ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
-  ctx.fillText(card.title, W / 2, 48);
+  // 标题
+  ctx.fillStyle = INK;
+  ctx.font = 'bold 26px "Microsoft YaHei", "PingFang SC", sans-serif';
+  ctx.fillText(card.title, W / 2, 72);
 
-  ctx.fillStyle = PALETTE.glassDk;
-  ctx.fillRect(12, 56, W - 24, 1);
+  // 分隔线
+  ctx.strokeStyle = LINE;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(24, 88);
+  ctx.lineTo(W - 24, 88);
+  ctx.stroke();
 
-  ctx.fillStyle = PALETTE.glass;
+  // 正文行（浅灰横条，类报纸排版）
+  ctx.fillStyle = 'rgba(100,116,139,.42)';
   for (let i = 0; i < 7; i++) {
-    const w = 30 + ((i * 13) % 44);
-    ctx.fillRect(12, 64 + i * 7, w, 2);
+    const w = 60 + ((i * 27) % 92);
+    roundRect(ctx, 24, 104 + i * 14, w, 4, 2);
+    ctx.fill();
   }
 
-  ctx.fillStyle = PALETTE.red;
-  ctx.fillRect(W - 34, H - 40, 22, 22);
-  ctx.fillStyle = PALETTE.redDk;
-  ctx.fillRect(W - 31, H - 37, 16, 16);
-  ctx.fillStyle = PALETTE.red;
-  ctx.fillRect(W - 29, H - 35, 12, 12);
+  // 右下角印章
+  ctx.fillStyle = RED;
+  ctx.beginPath();
+  ctx.arc(W - 42, H - 42, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = RED_DK;
+  ctx.beginPath();
+  ctx.arc(W - 42, H - 42, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = RED;
+  ctx.beginPath();
+  ctx.arc(W - 42, H - 42, 12, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // 外框
+  ctx.strokeStyle = 'rgba(15,23,42,.16)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 1, 1, W - 2, H - 2, 17);
+  ctx.stroke();
   ctx.textAlign = 'left';
+}
+
+/** 圆角矩形路径 */
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
 }
 
 /** 破产结算面板 */

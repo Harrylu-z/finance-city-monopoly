@@ -1,6 +1,12 @@
 /**
- * UI 像素图标 —— 骰子、特殊格图标、通用 UI 元素。
- * 全部原生小尺寸绘制，整数倍放大，硬边缘。
+ * UI 图标 —— 骰子、特殊格图标、通用 UI 元素。
+ *
+ * ================== 现代扁平风 ==================
+ * 原生小尺寸绘制但**不再使用像素阶梯**：骰子改为圆角方块 +
+ * 柔和投影 + 渐变球面，点数为圆角圆点。
+ *
+ * ⚠ 注意：`makeCanvas` 来自 `pixeldraw.js`，默认关闭平滑；
+ *   这里绘制矢量图形，需要自己打开 `imageSmoothingEnabled`。
  */
 
 import {
@@ -17,31 +23,70 @@ function cached(key, factory) {
   return v;
 }
 
-/* 骰子 —— 16×16 */
+/* 骰子 —— 16×16 现代圆角骰面 */
 export function getDie(face) {
   return cached(`die${face}`, () => {
     const cv = makeCanvas(16, 16);
     const ctx = cv.getContext('2d');
-    rect(ctx, 2, 2, 12, 12, 'paper');
-    rect(ctx, 1, 3, 14, 10, 'paper');
-    rect(ctx, 3, 1, 10, 14, 'paper');
-    hline(ctx, 1, 12, 14, 'paperDeep');
-    hline(ctx, 2, 13, 12, 'paperDeep');
-    vline(ctx, 13, 3, 10, 'paperDeep');
-    strokeRect(ctx, 1, 1, 14, 14, 'ink');
+    ctx.imageSmoothingEnabled = true;
 
+    // 柔和落影
+    ctx.fillStyle = 'rgba(15,23,42,0.18)';
+    ctx.beginPath();
+    ctx.ellipse(8, 14.2, 5.6, 1.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 骰身：圆角方块 + 顶部高光 / 底部暗面
+    const r = 3.2;
+    const x = 2; const y = 1.6; const w = 12; const h = 12;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(1, '#e2e8f0');
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    // 内面微阴影
+    ctx.strokeStyle = 'rgba(15,23,42,0.10)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // 外描边（墨色，1px 现代细线）
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 点数
     const pts = {
-      1: [[8, 8]],
-      2: [[5, 5], [11, 11]],
-      3: [[5, 5], [8, 8], [11, 11]],
-      4: [[5, 5], [11, 5], [5, 11], [11, 11]],
-      5: [[5, 5], [11, 5], [8, 8], [5, 11], [11, 11]],
-      6: [[5, 4], [11, 4], [5, 8], [11, 8], [5, 12], [11, 12]],
-    }[face] || [[8, 8]];
+      1: [[8, 7.6]],
+      2: [[5.4, 5.2], [10.6, 10]],
+      3: [[5.4, 5.2], [8, 7.6], [10.6, 10]],
+      4: [[5.4, 5.2], [10.6, 5.2], [5.4, 10], [10.6, 10]],
+      5: [[5.4, 5.2], [10.6, 5.2], [8, 7.6], [5.4, 10], [10.6, 10]],
+      6: [[5.4, 4.8], [10.6, 4.8], [5.4, 7.6], [10.6, 7.6], [5.4, 10.4], [10.6, 10.4]],
+    }[face] || [[8, 7.6]];
 
-    for (const [x, y] of pts) {
-      rect(ctx, x - 1, y - 1, 3, 3, 'ink');
-      rect(ctx, x - 1, y - 1, 2, 2, 'red');
+    for (const [px, py] of pts) {
+      // 圆点 + 柔和内影
+      ctx.fillStyle = '#e05a4a';
+      ctx.beginPath();
+      ctx.arc(px, py, 1.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.42)';
+      ctx.beginPath();
+      ctx.arc(px - 0.38, py - 0.42, 0.48, 0, Math.PI * 2);
+      ctx.fill();
     }
     return cv;
   });

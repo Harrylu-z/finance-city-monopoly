@@ -1,40 +1,15 @@
 /**
- * 特效系统 —— 全部按"帧"离散变化，不做连续插值。
+ * 特效系统 —— **现代扁平风**：柔和径向光晕、圆角碎片、渐隐淡出。
+ *
+ * ================== 与像素版的差异 ==================
+ *   · 粒子：圆形（带径向渐变 + 柔光）取代 4×4 像素方块
+ *   · 金币：金色圆盘 + 高光弧 + 外发光
+ *   · 尘土：半透明柔边圆斑
+ *   · 礼花：圆角小矩形（可旋转）+ 重力
+ *   · 屏幕抖动：连续衰减（正弦）取代 5 段硬切
  */
 
 import { PALETTE } from '../core/palette.js';
-import { makeCanvas, pixelCircle } from '../art/pixeldraw.js';
-
-/** 像素方块精灵（4×4，用于粒子） */
-const particleSprites = (() => {
-  const cache = new Map();
-  const make = (color) => {
-    const cv = makeCanvas(4, 4);
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, 4, 4);
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.fillRect(0, 3, 4, 1);
-    return cv;
-  };
-  return {
-    get(color) {
-      if (!cache.has(color)) cache.set(color, make(color));
-      return cache.get(color);
-    },
-  };
-})();
-
-/** 尘土精灵 */
-const dustSprite = (() => {
-  const cv = makeCanvas(6, 6);
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = PALETTE.paperDeep;
-  ctx.fillRect(1, 1, 4, 4);
-  ctx.fillStyle = PALETTE.glass;
-  ctx.fillRect(2, 2, 2, 2);
-  return cv;
-})();
 
 export class Effects {
   constructor() {
@@ -48,11 +23,11 @@ export class Effects {
     this.shake = 0;
   }
 
-  /** 发射像素粒子 */
+  /** 发射柔光粒子 */
   burst(x, y, opts = {}) {
     if (!this.enabled) return;
     const {
-      count = 10, colors = [PALETTE.gold, PALETTE.amberLt, PALETTE.paper],
+      count = 10, colors = [PALETTE.gold, '#ffc861', '#f8fafc'],
       speed = 2, gravity = 0.08, size = 1, life = 40,
     } = opts;
     for (let i = 0; i < count; i++) {
@@ -66,12 +41,14 @@ export class Effects {
         size, gravity,
         life: life + Math.floor(Math.random() * 10),
         maxLife: life + 10,
-        kind: 'square',
+        kind: 'spark',
+        rot: Math.random() * Math.PI,
+        vrot: (Math.random() - 0.5) * 0.18,
       });
     }
   }
 
-  /** 向上飘的星星/金币 */
+  /** 向上飘的金币 */
   floatUp(x, y, opts = {}) {
     if (!this.enabled) return;
     const { count = 6, colors = [PALETTE.gold], rise = 1.4 } = opts;
@@ -86,6 +63,7 @@ export class Effects {
         life: 50 + Math.floor(Math.random() * 20),
         maxLife: 70,
         kind: 'coin',
+        rot: 0, vrot: 0,
       });
     }
   }
@@ -99,11 +77,12 @@ export class Effects {
         y: y + (Math.random() - 0.5) * 10,
         vx: (Math.random() - 0.5) * 1.2,
         vy: -Math.random() * 0.8,
-        color: 'dust',
-        size: 1, gravity: 0.05,
+        color: '#cbd5e1',
+        size: 1.6 + Math.random() * 1.4, gravity: 0.05,
         life: 30 + Math.floor(Math.random() * 20),
         maxLife: 50,
         kind: 'dust',
+        rot: 0, vrot: 0,
       });
     }
   }
@@ -112,7 +91,7 @@ export class Effects {
   confetti(x, y) {
     this.burst(x, y, {
       count: 22,
-      colors: [PALETTE.gold, PALETTE.red, PALETTE.neon, PALETTE.jade, PALETTE.paper, PALETTE.amber],
+      colors: [PALETTE.gold, PALETTE.red, '#22d3ee', PALETTE.green, '#f8fafc', '#fb923c'],
       speed: 3.2, gravity: 0.12, life: 70,
     });
   }
@@ -130,6 +109,7 @@ export class Effects {
       p.y += p.vy;
       p.vy += p.gravity;
       p.life -= 1;
+      p.rot += p.vrot;
       if (p.life > 0) ps.push(p);
     }
     this.particles = ps;
@@ -138,35 +118,87 @@ export class Effects {
 
   draw(ctx) {
     if (!this.particles.length) return;
-    ctx.imageSmoothingEnabled = false;
+    ctx.save();
     for (const p of this.particles) {
-      const alpha = p.life / p.maxLife;
-      if (alpha > 0.5) {
-        const s = p.size * 4;
-        if (p.kind === 'coin') {
-          pixelCircle(ctx, Math.round(p.x), Math.round(p.y), Math.max(1, Math.round(s / 4)), p.color);
-        } else if (p.kind === 'dust') {
-          ctx.globalAlpha = alpha;
-          ctx.drawImage(dustSprite, Math.round(p.x), Math.round(p.y));
-          ctx.globalAlpha = 1;
-        } else {
-          ctx.fillStyle = p.color;
-          ctx.fillRect(Math.round(p.x), Math.round(p.y), s, s);
-        }
+      const alpha = Math.max(0, Math.min(1, p.life / p.maxLife));
+      if (p.kind === 'coin') {
+        this.drawCoin(ctx, p, alpha);
+      } else if (p.kind === 'dust') {
+        this.drawDust(ctx, p, alpha);
       } else {
-        ctx.fillStyle = p.color;
-        ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size * 3, p.size * 3);
+        this.drawSpark(ctx, p, alpha);
       }
     }
+    ctx.restore();
   }
 
+  /** 金币：金色圆盘 + 高光弧 + 外发光 */
+  drawCoin(ctx, p, alpha) {
+    const r = 4.5 * p.size;
+    ctx.globalAlpha = alpha;
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
+    glow.addColorStop(0, hexA(p.color, 0.45));
+    glow.addColorStop(1, hexA(p.color, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = hexA('#b4791a', 0.85);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * 0.66, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    ctx.beginPath();
+    ctx.ellipse(p.x - r * 0.3, p.y - r * 0.34, r * 0.28, r * 0.18, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  /** 尘土：半透明柔边圆斑 */
+  drawDust(ctx, p, alpha) {
+    const r = p.size;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0, hexA(p.color, 0.55 * alpha));
+    g.addColorStop(1, hexA(p.color, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** 礼花碎片：圆角小矩形 + 旋转 */
+  drawSpark(ctx, p, alpha) {
+    const w = 4 * p.size;
+    const h = 7 * p.size;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    roundRect(ctx, -w / 2, -h / 2, w, h, 1.6);
+    ctx.fill();
+    ctx.globalAlpha = alpha * 0.5;
+    ctx.fillStyle = 'rgba(255,255,255,.6)';
+    roundRect(ctx, -w / 2, -h / 2, w * 0.42, h, 1.2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  /** 屏幕抖动 —— 连续衰减 */
   shakeOffset() {
     if (this.shake <= 0) return { x: 0, y: 0 };
-    const f = Math.floor(this.shake / 60);
-    const table = [
-      { x: -5, y: 3 }, { x: 5, y: -3 }, { x: -3, y: -2 }, { x: 3, y: 2 }, { x: 0, y: 0 },
-    ];
-    return table[f % table.length];
+    const k = Math.min(1, this.shake / 320);
+    const t = performance.now() / 1000;
+    return {
+      x: Math.sin(t * 47) * 5 * k,
+      y: Math.cos(t * 39) * 3 * k,
+    };
   }
 }
 
@@ -270,26 +302,22 @@ export class MoveAnimator {
     const toRect = rectOf(toIdx);
 
     const t = Math.min(1, local / CYCLE);
-    const FRAMES = 4;
-    const fstep = Math.floor(t * FRAMES) / (FRAMES - 1);
 
     // 站位槽偏移在两格之间插值（保证走完一格正好落到该格的静止站位）
     const fromSlot = slotOf ? (slotOf(fromIdx) || { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
     const toSlot = slotOf ? (slotOf(toIdx) || { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
-    const sdx = fromSlot.dx + (toSlot.dx - fromSlot.dx) * fstep;
-    const sdy = fromSlot.dy + (toSlot.dy - fromSlot.dy) * fstep;
+    const sdx = fromSlot.dx + (toSlot.dx - fromSlot.dx) * t;
+    const sdy = fromSlot.dy + (toSlot.dy - fromSlot.dy) * t;
 
-    const x = fromRect.x + (toRect.x - fromRect.x) * fstep + sdx;
-    const y = fromRect.y + (toRect.y - fromRect.y) * fstep + sdy;
+    const x = fromRect.x + (toRect.x - fromRect.x) * t + sdx;
+    const y = fromRect.y + (toRect.y - fromRect.y) * t + sdy;
 
-    // 跳跃弧线（4 段离散帧，像素风）
-    const JUMP = [0, -6, -8, -4];
-    const jumpIdx = Math.min(JUMP.length - 1, Math.floor(t * JUMP.length));
-    const jump = JUMP[jumpIdx];
+    // 跳跃弧线 —— 连续抛物线（现代扁平风，不再 4 段离散帧）
+    const jump = -Math.sin(t * Math.PI) * 9;
 
     let squash = null;
     if (local >= CYCLE - 40) {
-      squash = local < CYCLE - 20 ? { sx: 1.25, sy: 0.75 } : { sx: 0.9, sy: 1.1 };
+      squash = local < CYCLE - 20 ? { sx: 1.18, sy: 0.82 } : { sx: 0.93, sy: 1.07 };
     }
 
     const dir = toRect.x > fromRect.x ? 'right' : toRect.x < fromRect.x ? 'left'
@@ -300,4 +328,39 @@ export class MoveAnimator {
       squash, dir, frame: this.frame,
     };
   }
+}
+
+/** 圆角矩形路径 */
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
+}
+
+/**
+ * #rrggbb + alpha → rgba()
+ *
+ * ⚠ 容错：调用方有时会传入 undefined / 非十六进制色（例如调色板里
+ *   不存在的键名），此时不能产出 `rgba(NaN,...)` —— 那会让
+ *   `addColorStop` 直接抛异常、整个渲染循环中断。
+ *   解析失败时回落到不透明白，保证特效仍然绘制得出来。
+ */
+function hexA(hex, a) {
+  const raw = String(hex || '').trim();
+  const h = raw.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return `rgba(255,255,255,${a})`;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
 }

@@ -22,6 +22,7 @@ import {
 } from '../core/ai.js';
 import { makeRng, randomSeed, hashSeed } from '../core/rng.js';
 import { BoardRenderer } from '../render/canvas.js';
+import { TileLayer } from '../render/tiles.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Sfx } from '../audio/sfx.js';
@@ -44,6 +45,28 @@ import { getCareerPieceIcon, ensurePortraitsReady } from '../art/career-pieces.j
 import { CAREERS, CAREER_BY_ID, getCareer, assignAiCareers } from '../core/careers.js';
 import { getInstitutionSprite } from '../art/buildings.js';
 import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
+
+/**
+ * 特效 / 飘字用的调色板别名。
+ *
+ * ⚠ `PALETTE` 里只有精简后的 16 色（ink / panel / dim / board /
+ *   boardDk / gold / goldLt / goldDk / paper / red / redLt / green / greenLt）。
+ *   旧代码引用了 `amberLt` / `neon` / `jadeLt` / `glass` / `paperDeep`
+ *   等**并不存在**的键 —— 值是 undefined，
+ *   传到 `effects.hexA()` 就变成 `rgba(NaN,...)`，
+ *   `addColorStop` 直接抛异常、整个渲染循环中断。
+ *   这里显式映射到真实存在的色值。
+ */
+const FX = {
+  amber: PALETTE.gold,
+  amberLt: PALETTE.goldLt,
+  amberDk: PALETTE.goldDk,
+  neon: '#3fc6c6',
+  jade: PALETTE.green,
+  jadeLt: PALETTE.greenLt,
+  glass: PALETTE.dim,
+  paperDeep: '#b3aa96',
+};
 import { delay, interval } from '../core/scheduler.js';
 
 /** 集团 → 建筑造型索引（与 render/canvas.js 保持一致） */
@@ -53,6 +76,7 @@ class Game {
   constructor() {
     this.state = null;
     this.renderer = null;
+    this.tileLayer = null;
     this.background = null;
     this.effects = new Effects();
     this.mover = new MoveAnimator();
@@ -113,7 +137,7 @@ class Game {
       'input-nickname', 'career-picker', 'difficulty-picker', 'aicount-picker',
       'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
-      'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
+      'board-canvas', 'board-wrap', 'board-tiles', 'stage-bg', 'fx-layer',
       // HUD 容器（四角定位，用于测量与避让计算）
       'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
       // 左上：当前玩家紧凑单条
@@ -393,6 +417,13 @@ class Game {
     this.el['selftest-screen'].hidden = true;
 
     this.renderer = new BoardRenderer(this.el['board-canvas']);
+
+    // ===== 地块 DOM 层（46 个现代数据卡）=====
+    // 与 canvas 共享同一套几何：cellRect(index) → 百分比定位。
+    this.tileLayer = new TileLayer(this.el['board-tiles'], this.renderer);
+    this.tileLayer.build();
+    this.bindTileEvents();
+
     this.background = new Background(window.innerWidth, window.innerHeight);
     this.onResize();
     // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
@@ -511,6 +542,76 @@ class Game {
 
     const unlock = () => { this.sfx.unlock(); document.removeEventListener('pointerdown', unlock); };
     document.addEventListener('pointerdown', unlock);
+  }
+
+  /**
+   * 地块 DOM 事件绑定 —— 46 个数据卡直接响应点击 / 悬停 / 键盘。
+   *
+   * 地块层盖在 canvas 之上（pointer-events: auto），
+   * 因此命中判定由浏览器直接完成，无需 `cellAt(px,py)` 反算。
+   */
+  bindTileEvents() {
+    const root = this.el['board-tiles'];
+    if (!root) return;
+
+    const findIndex = (target) => {
+      const cell = target && target.closest ? target.closest('.mt-cell') : null;
+      return cell ? Number(cell.dataset.index) : -1;
+    };
+
+    root.addEventListener('click', (e) => {
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      const rect = this.el['board-wrap'].getBoundingClientRect();
+      // 详情卡定位：用地块自身的中心（DOM 坐标系）
+      const node = this.tileLayer && this.tileLayer.nodes[index];
+      let px = 0;
+      let py = 0;
+      if (node) {
+        const r = node.getBoundingClientRect();
+        px = r.left - rect.left + r.width / 2;
+        py = r.top - rect.top + r.height / 2;
+      } else {
+        px = e.clientX - rect.left;
+        py = e.clientY - rect.top;
+      }
+      this.showCellDetail(index, px, py);
+    });
+
+    root.addEventListener('dblclick', (e) => {
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      this.focusTile(index);
+    });
+
+    // 悬停高亮（沿用 canvas 的 hoverCell 状态，供棋子绘制等使用）
+    root.addEventListener('mousemove', (e) => {
+      if (!this.renderer) return;
+      const index = findIndex(e.target);
+      this.renderer.hoverCell = index;
+    });
+    root.addEventListener('mouseleave', () => {
+      if (this.renderer) this.renderer.hoverCell = -1;
+    });
+
+    // 键盘可达性：Enter / Space = 选中该格
+    root.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      e.preventDefault();
+      this.focusTile(index);
+    });
+  }
+
+  /** 选中并高亮某个地块（键盘 / 双击路径） */
+  focusTile(index) {
+    if (!this.tileLayer) return;
+    this.tileLayer.nodes.forEach((n, i) => {
+      if (n) n.classList.toggle('is-selected', i === index);
+    });
+    const node = this.tileLayer.nodes[index];
+    if (node) node.classList.add('is-active');
   }
 
   /**
@@ -774,14 +875,14 @@ class Game {
         cv.style.width = '44px';
         cv.style.height = '44px';
         const ctx = cv.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
+        ctx.imageSmoothingEnabled = true;
         tray.appendChild(cv);
 
         const frames = m.getDieRollFrames();
         let i = 0;
         const timer = interval(90, () => {
           ctx.clearRect(0, 0, 16, 16);
-          ctx.imageSmoothingEnabled = false;
+          ctx.imageSmoothingEnabled = true;
           ctx.drawImage(frames[i % frames.length], 0, 0, 16, 16);
           i++;
           if (i > 6) {
@@ -885,7 +986,7 @@ class Game {
         log(state, player.isAI ? 'ai' : 'good',
           `${player.name} ${passedOverStart ? '经过' : '抵达'}陆家嘴金融中心，获得货币发行补贴 ￥${CONFIG.startBonus}`, '补贴');
         this.sfx.buy();
-        this.effects.floatUp(c.x, c.y, { count: 6, colors: [PALETTE.gold, PALETTE.amberLt] });
+        this.effects.floatUp(c.x, c.y, { count: 6, colors: [PALETTE.gold, FX.amberLt] });
       }
       return;
     }
@@ -984,7 +1085,7 @@ class Game {
           this.sfx.payRent();
           const c = this.cellCenter(r.cellIndex);
           this.effects.burst(c.x, c.y, {
-            count: 12, colors: [PALETTE.gold, PALETTE.amberLt, PALETTE.paper], speed: 2.6,
+            count: 12, colors: [PALETTE.gold, FX.amberLt, PALETTE.paper], speed: 2.6,
           });
           this.effects.triggerShake();
           this.shakeScreen();
@@ -1017,7 +1118,7 @@ class Game {
           log(state, 'bad', `${player.name} 缴纳${r.reason} ￥${r.amount}`, '成本');
           this.sfx.deny();
           const c = this.cellCenter(player.position);
-          this.effects.burst(c.x, c.y, { count: 8, colors: [PALETTE.glass, PALETTE.paperDeep], speed: 1.6 });
+          this.effects.burst(c.x, c.y, { count: 8, colors: [FX.glass, FX.paperDeep], speed: 1.6 });
           this.floatText(`-￥${r.amount}`, c, PALETTE.redLt);
           break;
         }
@@ -1118,7 +1219,7 @@ class Game {
         }
         case 'pbc-bonus': {
           log(state, 'good', `中国人民银行流动性投放 +￥${r.amount}`, '央行');
-          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), PALETTE.jadeLt);
+          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), FX.jadeLt);
           break;
         }
         case 'loan-offer': {
@@ -1183,7 +1284,7 @@ class Game {
           log(state, 'bad', `${player.name} 触发监管陷阱「${r.card.title}」`, '监管');
           this.sfx.deny();
           const c = this.cellCenter(player.position);
-          this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.red, PALETTE.redLt, PALETTE.amber], speed: 2.4 });
+          this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.red, PALETTE.redLt, FX.amber], speed: 2.4 });
           this.effects.triggerShake();
           this.shakeScreen();
           this.floatText('监管!', c, PALETTE.redLt);
@@ -1306,18 +1407,18 @@ class Game {
       `${player.name} 抽到「${card.title}」：${card.text}`, '事件');
     if (res.cash) {
       this.floatText(`${res.cash > 0 ? '+' : ''}￥${res.cash}`, this.cellCenter(player.position),
-        res.cash > 0 ? PALETTE.jadeLt : PALETTE.redLt);
+        res.cash > 0 ? FX.jadeLt : PALETTE.redLt);
     }
     const c = this.cellCenter(player.position);
-    this.effects.floatUp(c.x, c.y, { count: 8, colors: [PALETTE.gold, PALETTE.neon] });
+    this.effects.floatUp(c.x, c.y, { count: 8, colors: [PALETTE.gold, FX.neon] });
   }
 
   onPurchased(player, r) {
     this.sfx.buy();
     const c = this.cellCenter(r.cellIndex);
-    this.effects.floatUp(c.x, c.y, { count: 10, colors: [PALETTE.gold, PALETTE.amberLt, PALETTE.paper] });
-    this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.gold, PALETTE.amberLt], speed: 2.8 });
-    this.floatText(`-￥${r.price}`, c, PALETTE.amber);
+    this.effects.floatUp(c.x, c.y, { count: 10, colors: [PALETTE.gold, FX.amberLt, PALETTE.paper] });
+    this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.gold, FX.amberLt], speed: 2.8 });
+    this.floatText(`-￥${r.price}`, c, FX.amber);
     log(this.state, player.isAI ? 'ai' : 'good',
       `${player.name} 收购了 ${r.cell.name}（￥${r.price}）`, '收购');
   }
@@ -1771,6 +1872,9 @@ class Game {
       : null;
 
     this.renderer.draw(state, { elapsed: now, time: now, moveAnim, effects: this.effects });
+
+    // 地块 DOM 状态同步（内部做 key 比对，状态没变就不碰 DOM）
+    if (this.tileLayer) this.tileLayer.sync(state);
   }
 
   /**
@@ -1833,6 +1937,8 @@ class Game {
     this.renderer.resize(bw, bh, dpr);
     // resize 之后再设预留：setBottomReserve 会重算布局，需要正确的 w/h
     this.renderer.setBottomReserve(reserve);
+    // 地块 DOM 层同步布局：cellRect → 百分比（canvas 尺寸已定，cellRect 才是最终值）
+    if (this.tileLayer) this.tileLayer.layout();
     this.background.resize(Math.max(1, sw), Math.max(1, sh));
     this.resizeStageBg(sw, sh);
   }
