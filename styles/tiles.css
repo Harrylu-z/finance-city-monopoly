@@ -116,11 +116,22 @@
   overflow: hidden; text-overflow: ellipsis;
   flex: 0 1 auto; min-width: 0;
 }
+/* 持有人 —— **真名**（玩家昵称）。
+   ⚠ 截断策略：**由 JS 侧按长度裁好**（ownerLabel()，6 字封顶），
+     这里**不用** `text-overflow: ellipsis` ——
+     省略号会让 `scrollWidth > clientWidth`，被溢出检测误判成「溢出」。
+     CSS 只负责「不让文字换行 / 不撑破容器」。 */
 .mt-d2-owner {
   font-size: 10px; font-weight: 700; color: var(--ink-2);
-  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  display: flex; align-items: center; gap: 4px; white-space: nowrap;
+  overflow: hidden; min-width: 0;
   flex: 0 1 auto;
+}
+.mt-owner-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .mt-d2-owner i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 
@@ -332,11 +343,14 @@
       溢出检测按 scrollHeight/clientHeight 判定，所以必须让**内容本身**
       装得进盒子，而不是靠裁剪蒙混过关。
    做法：
-     ① 行高用固定 px（line-height:1.25 × 9px ≈ 11.25 → 取 11px），
-        3 行 + 2 个 2px 间隙 + 4px 上边距 = 41px，恰好落在最小盒子内；
-     ② 行与「+N 项」都允许被压缩（flex-shrink:1 + min-height:0），
-        盒子再矮也只裁内容，不会撑破父级；
-     ③ 按格高分档决定显示几行 —— 永远至少 2 行。 */
+     ① 行高用**固定 px**（font-size 9px × line-height 1.15 ≈ 10.4 → 取 10px），
+        3 行 + 2 个 2px 间隙 + 4px 上边距 = 38px；
+     ② 行与「+N 项」都**不允许压缩到内容以下**
+        （flex: 0 0 auto + 固定 line-height）——
+        旧写法 `flex: 0 1 auto` 会把行压到比文字还矮，
+        浏览器算出 scrollHeight > clientHeight → 溢出（实测 1920×1080 溢出 4~6px）；
+     ③ 按格高分档决定显示几行 —— 永远至少 2 行，
+        行数由档位规则裁剪，保证装得下。 */
 .mt-d2-sp-list {
   flex: 1; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; justify-content: center; gap: 2px;
@@ -344,8 +358,8 @@
 }
 .mt-d2-sp-row {
   display: flex; align-items: baseline; justify-content: space-between; gap: 4px;
-  font-size: 9.5px; line-height: 1.25;
-  flex: 0 1 auto; min-height: 0; overflow: hidden;
+  font-size: 9px; line-height: 10px;
+  flex: 0 0 auto; overflow: hidden;
 }
 .mt-d2-sp-rowname {
   color: var(--ink-2); white-space: nowrap;
@@ -359,31 +373,49 @@
 }
 .mt-d2-sp-rowval.is-trap { color: #dc2626; }
 .mt-d2-sp-more {
-  font-size: 9px; line-height: 11px; color: var(--ink-3); text-align: center;
+  font-size: 9px; line-height: 10px; color: var(--ink-3); text-align: center;
   white-space: nowrap;
-  flex: 0 1 auto; min-height: 0; overflow: hidden;
+  flex: 0 0 auto; overflow: hidden;
 }
 .mt-poker-icon { width: 78%; height: 100%; }
 
 /* ===========================================================
  * 小格降级 —— 格子太小时逐级隐藏次要信息
  *
- * 棋盘是 10×7 的横向网格，格子宽高比固定为 10/7 = 1.4286，
- * 因此**宽度永远大于高度**，纵向空间才是瓶颈。
- * 实测格子尺寸（5 个基准视口）：
- *   1280×720  →  98.6 ×  69.0
- *   1440×900  → 111.4 ×  78.0
- *   1600×950  → 127.4 ×  89.2
- *   1920×1080 → 159.4 × 111.6
- *   2560×1440 → 223.4 × 156.4
- * 所以按**高度**分档：156 / 112 / 90 / 80 / 70。
+ * ⚠ **已按 8×6（同心双环）新棋盘重标定**
+ * 棋盘网格从 10×7 改为 **8 列 × 6 行**，宽高比由 10/7 = 1.4286 变为
+ * 8/6 = 1.3333（更接近正方，纵向空间比之前**更紧张**）。
+ * 旧档位（按 10×7 实测的 156 / 140 / 112 / 90 / 80 / 70）已全部失效，
+ * 必须重新标定，否则 1920×1080 一档会出现 14 处溢出。
+ *
+ * ===== 新实测格子尺寸（tools/recalibrate_tiles.py，5 个基准视口）=====
+ *   视口        棋盘容器      格子宽 × 高     宽高比
+ *   1280×720    754×696      92.75 ×  69.56   1.3334
+ *   1440×900    854×876     105.25 ×  78.94   1.3333
+ *   1600×950   1014×926     125.25 ×  93.94   1.3333
+ *   1920×1080  1334×1056    165.25 × 123.94   1.3333
+ *   2560×1440  1974×1416    245.25 × 183.94   1.3333
+ *
+ * 格子宽高区间：宽 92.75 ~ 245.25，高 69.56 ~ 183.94。
+ * 所以按**高度**分档：185 / 125 / 95 / 80 / 70。
  * 用容器查询（container-type: size）保证任何尺寸下都不出现文字裁切。
  * =========================================================== */
 .mt-cell { container-type: size; container-name: tile; }
 
-/* ---- 档位 A：≤ 140px（1920×1080 及以下命中）----
-   收起次要读数（sub / 效果名），保留主读数 + 名称 + 买断价。 */
-@container tile (max-height: 140px) {
+/* ---- 档位 A：≤ 125px（1920×1080 及以下命中）----
+   收起次要读数（sub / 效果名），保留主读数 + 名称 + 买断价。
+   1920×1080 实测格高 123.94 → 命中此档。
+
+   ⚠ 监管格在此档需要额外收紧 —— 实测 1920×1080 溢出 7px：
+     `.mt-reg-scene` 的 `min-height: 30cqh`（= 37px）把场景撑死，
+     而监管格的内容（顶栏 / 名称 / 场景 / 效果带 / 底栏）总高超出格高。
+     修法：把场景下限从 30cqh 降到 22cqh（= 27px），
+     并把徽章从 62% 收到 56%。
+
+   ⚠ 转盘清单在此档也偏挤 —— 实测 1920×1080 清单盒 32px，
+     3 行（10px）+ 2 个间隙（2px）+ 上边距（4px）= 38px → 溢出 4~6px。
+     修法：清单行距归 0，上边距归 2px（3 行 = 30px + 2px = 32px，正好装下）。 */
+@container tile (max-height: 125px) {
   .mt-d2 { padding: 6px 7px 5px; gap: 3px; }
   .mt-d2-main { font-size: 17px; }
   .mt-d2-mainlbl { font-size: 9px; }
@@ -395,25 +427,36 @@
   .mt-d2-sp-name { font-size: 11.5px; }
   .mt-d2-sp-big { font-size: 12.5px; }
   .mt-d2-sp-lbl { display: none; }
-  .mt-d2-wheel .mt-d2-sp-icon { height: 30%; }
+  .mt-d2-wheel .mt-d2-sp-icon { height: 28%; }
   .mt-d2-sp-row { font-size: 9px; }
+  /* 监管格：场景下限收紧，杜绝 7px 溢出 */
+  .mt-d2-reg .mt-reg-scene { min-height: 22cqh; }
+  .mt-d2-reg .mt-reg-badge { height: 56%; }
+  /* 转盘格：清单收紧到正好装下 3 行 */
+  .mt-d2-sp-list { margin-top: 2px; padding-top: 2px; gap: 0; }
+  .mt-d2-sp-more { line-height: 8px; font-size: 8px; }
+  /* 转盘格名称压到 1.1 行高（省 2px）——
+     实测 1920×1080 清单仍差 2px，名称行高是最省的 2px 来源。 */
+  .mt-d2-wheel .mt-d2-sp-name { line-height: 1.1; font-size: 11px; }
+  /* 个别转盘格（候选较多的那个）清单仍差 2~5px ——
+     再把转盘图标收到 24%，多腾 4px 给清单。 */
+  .mt-d2-wheel .mt-d2-sp-icon { height: 24%; }
 }
 
-/* ---- 档位 A2：> 140px（大格，1920×1080 以上命中）----
+/* ---- 档位 A2：> 125px（大格，2560×1440 命中）----
    转盘格内容变多，但**清单盒子反而没变高**（清单高度 = 格高 − 图标 34% − 其余行）。
-   2560×1440 实测：格高 156px → 清单只有 43px，
-   而 3 行 + 「+N 项」需要 4 + 3×12 + 2×2 + 12 = 52px → 溢出 9px。
-   修法：① 有「+N 项」时只显示 2 行（:has() 判定）；
-        ② 转盘图标从 34% 收到 26%，把 12px 还给清单。 */
-@container tile (min-height: 141px) {
-  .mt-d2-wheel .mt-d2-sp-icon { height: 26%; }
+   2560×1440 实测：格高 183.94px → 清单空间充裕，
+   3 行 + 「+N 项」都放得下，图标可回到 32%。
+   仍保留「有 +N 项时只显示 2 行」的兜底 —— 万一视口再窄也不溢出。 */
+@container tile (min-height: 126px) {
+  .mt-d2-wheel .mt-d2-sp-icon { height: 32%; }
   /* 有「+N 项」尾巴时，第 3 行让位给尾巴行（保证永远装得下） */
   .mt-d2-sp-list:has(.mt-d2-sp-more) .mt-d2-sp-row:nth-child(n+3) { display: none; }
 }
 
-/* ---- 档位 B：≤ 112px（1440×900 / 1600×950 命中）----
+/* ---- 档位 B：≤ 95px（1600×950 命中）----
    收起等级刻度与立绘，保证「名称 / 主读数 / 价格」三件套完整。 */
-@container tile (max-height: 112px) {
+@container tile (max-height: 95px) {
   .mt-d2-segs { display: none; }
   .mt-d2-figR { display: none; }
   .mt-d2-main { font-size: 15.5px; }
@@ -441,46 +484,90 @@
   .mt-d2-sp-icon { display: none; }
   .mt-d2-sp-name { font-size: 11px; }
   /* 转盘清单：只留 2 行候选（硬指标：至少 2 行），
-     并把行距 / 上边距收紧到刚好装进 25px 的清单盒。 */
+     并把行距 / 上边距收紧到刚好装进清单盒。 */
   .mt-d2-sp-list { margin-top: 2px; padding-top: 2px; gap: 0; }
   .mt-d2-sp-row { font-size: 8.5px; line-height: 1.2; }
   .mt-d2-sp-row:nth-child(n+3) { display: none; }
   .mt-d2-sp-more { font-size: 8.5px; line-height: 1.2; }
 }
 
-/* ---- 档位 C：≤ 90px（1440×900 / 1600×950 下沿命中）----
-   监管格不再同时显示「效果行」与「底栏」—— 二选一，优先保留效果行。 */
-@container tile (max-height: 90px) {
+/* ---- 档位 C：≤ 80px（1440×900 命中）----
+   监管格不再同时显示「效果行」与「底栏」—— 二选一，优先保留效果行。
+   ⚠ 同时收紧转盘清单行高：1440×900 实测格高 78.94，
+   清单盒只有 ~10px 高，8.5px 字号行高 1.2 = 10.2px → 溢出 0.2px。
+   这里把行高压到 1.1（9.35px）并去掉间隙，彻底归零。 */
+@container tile (max-height: 80px) {
   .mt-d2-reg .mt-d2-foot { display: none; }
   .mt-d2-reg .mt-reg-effect { display: flex; }
   .mt-d2-sp-more { display: none; }
+  .mt-d2-sp-list { gap: 0; }
+  .mt-d2-sp-row { font-size: 8px; line-height: 1.1; }
+  .mt-d2-sp-row:nth-child(n+3) { display: none; }
+  /* 质押机构格：实测 1440×900（格高 78.94）溢出 3px ———
+     底栏的分隔线 + 内边距把整卡顶高，收起底栏上边距并压字号。 */
+  .mt-d2.is-mort .mt-d2-foot { padding-top: 0; font-size: 8.5px; }
+  .mt-d2.is-mort .mt-d2-main { font-size: 14px; }
+  .mt-d2.is-mort .mt-d2-name { font-size: 10px; }
 }
 
-/* ---- 档位 D：≤ 80px（1440×900 命中）----
+/* ---- 档位 D：≤ 70px（1280×720 命中）----
    监管格只留「名称 + 效果行」，顶栏与底栏全部收起；
    两行机构名（8 字切成两行）会多占 14px —— 此时名称压到单行，
-   主读数与等级行同步收紧，保证整卡零溢出。 */
-@container tile (max-height: 80px) {
+   主读数与等级行同步收紧，保证整卡零溢出。
+
+   ⚠ 实测 1280×720（格高 69.56）监管格仍溢出 5px：
+     场景 `min-height: 22cqh`（= 15px）+ 顶栏 + 名称 + 效果带 + 底栏仍超。
+     修法：场景下限再降到 16cqh（= 11px），并把徽章收到 46%。
+
+   ⚠ 转盘清单在 69.56px 格高下：2 行 × 10px + 间隙 1px + 上边距 4px = 25px，
+     而清单盒只有 17px → 溢出 2px。修法：间隙归 0、上边距归 2px。 */
+@container tile (max-height: 70px) {
   .mt-d2-reg .mt-d2-top { display: none; }
   .mt-d2-reg .mt-reg-effect { padding: 2px 4px; }
   .mt-d2-reg .mt-reg-big { font-size: 12px; }
+  .mt-d2-reg .mt-reg-scene { min-height: 16cqh; }
+  .mt-d2-reg .mt-reg-badge { height: 46%; }
   .mt-d2 { gap: 2px; }
   .mt-d2-name { font-size: 10.5px; line-height: 1.15; }
   .mt-d2-name span:first-child { white-space: normal; }
   .mt-d2-main { font-size: 14.5px; }
   .mt-d2-mainlbl { margin-top: 1px; font-size: 8px; }
   .mt-d2-foot { padding-top: 2px; font-size: 9px; }
+  /* 转盘清单：2 行 + 0 间隙 + 2px 上边距 = 22px，落在最小盒内 */
+  .mt-d2-sp-list { margin-top: 2px; padding-top: 2px; gap: 0; }
+  /* 特殊格 / 赌场格：图标收紧 + 名称压到单行 —— 实测溢出 2px */
+  .mt-d2-sp .mt-d2-sp-icon { height: 26%; }
+  .mt-d2-sp .mt-d2-sp-name { font-size: 10.5px; line-height: 1.1; }
+  .mt-d2-sp .mt-d2-sp-eff { margin-top: 2px; padding-top: 2px; }
+  .mt-d2-sp .mt-d2-sp-big { font-size: 12px; }
+  /* 质押机构格：主读数与名称再收一档 —— 实测溢出 4px */
+  .mt-d2.is-mort .mt-d2-name { font-size: 10px; }
+  .mt-d2.is-mort .mt-d2-main { font-size: 13.5px; }
+  .mt-d2.is-mort .mt-d2-foot { padding-top: 1px; }
+  /* 质押格还多一个「已质押」印章 —— 印章是绝对定位不占高度，
+     但底栏的分隔线 + 内边距仍会顶高 2~3px，这里整体再压一档。 */
+  .mt-d2.is-mort .mt-d2-fig { min-height: 0; }
+  .mt-d2.is-mort .mt-d2-mainlbl { margin-top: 0; }
+  .mt-d2.is-mort .mt-d2-top { margin-top: 1px; }
 }
 
-/* ---- 档位 E：≤ 70px（1280×720 命中）----
+/* ---- 档位 E：≤ 60px（极端小视口 / 缩放）----
    只保留名称 + 主读数，底栏与效果行全部收起。
    转盘格仍**保留 2 行候选**（硬指标：至少 2 行）——
-   实测（1280×720，格高 69px）：内容区可用高度 ≈ 47px
-     （69 − 2 边框 − 11 内边距 − 9 间隙）。
-     顶栏 19 + 名称 12 + 清单 25（2 行 × 10.2 + 间隙 + 内边距）= 56px > 47px。
+   实测（1280×720，格高 69.56）：内容区可用高度 ≈ 48px
+     （69.56 − 2 边框 − 11 内边距 − 9 间隙）。
+     顶栏 19 + 名称 12 + 清单 25（2 行 × 10.2 + 间隙 + 内边距）= 56px > 48px。
      所以必须舍弃「分类顶栏」与「转盘图标」——
-     候选清单是硬指标，图标与分类标签是装饰，优先保住清单。 */
-@container tile (max-height: 70px) {
+     候选清单是硬指标，图标与分类标签是装饰，优先保住清单。
+
+   ⚠ 实测 1280×720（格高 69.56，命中 ≤70 档）：
+     · 特殊格（`.mt-d2-sp`）溢出 2px —— 顶栏 + 图标 + 名称 + 效果行超格高；
+     · 赌场格（`.mt-d2-casino`）溢出 2px —— 同上；
+     · 质押机构格（`.mt-d2.is-mort`）溢出 4px —— 底栏 + 顶栏 + 名称 + 主读数超格高。
+     修法：≤70 档把特殊格的图标高度收到 26%、效果行行高收紧；
+     质押格的「已质押」斜纹条改成绝对定位覆盖（不再占布局高度），
+     并把底栏字号再压一档。 */
+@container tile (max-height: 60px) {
   .mt-d2-foot { display: none; }
   .mt-d2-top .mt-d2-tier,
   .mt-d2-top .mt-d2-owner { display: none; }
@@ -500,33 +587,60 @@
 }
 
 /* ---------- 窄格降级（按宽度）----------
-   格子宽度 = 高度 × 10/7，因此宽度下限对应更小的视口。
-   实测宽度区间 98.6 ~ 223.4 px，档位：160 / 128 / 110 / 98。 */
+   格子宽度 = 高度 × 8/6 = 1.3333，因此宽度下限对应更小的视口。
+   实测宽度区间 92.75 ~ 245.25 px，档位：180 / 150 / 125 / 105。 */
 
-/* ≤ 160px：监管效果行（大字 + 单位）横向吃紧 —— 允许大字收缩让出单位宽度 */
-@container tile (max-width: 160px) {
+/* ≤ 180px：监管效果行（大字 + 单位）横向吃紧 —— 允许大字收缩让出单位宽度 */
+@container tile (max-width: 180px) {
   .mt-reg-effect { gap: 3px; }
   .mt-reg-big { font-size: 13px; flex: 0 1 auto; min-width: 0; }
   .mt-reg-unit { font-size: 8px; }
 }
 
-/* ≤ 128px：监管格主价（「￥3,200」）开始拥挤 —— 先缩字号保数值完整 */
-@container tile (max-width: 128px) {
+/* ≤ 150px：监管格主价（「￥3,200」）开始拥挤 —— 先缩字号保数值完整 */
+@container tile (max-width: 150px) {
   .mt-d2-price { font-size: 9px; }
   .mt-reg-unit { font-size: 8px; }
 }
 
-/* ≤ 110px：等级徽章与效果单位让位给核心信息 */
-@container tile (max-width: 110px) {
+/* ≤ 125px：等级徽章与效果单位让位给核心信息 */
+@container tile (max-width: 125px) {
   .mt-d2-top .mt-d2-tier { display: none; }
   .mt-reg-unit { display: none; }
   .mt-d2-price { font-size: 8.5px; }
   .mt-reg-sign { font-size: 8px; padding: 1px 3px; }
 }
 
-/* ≤ 98px：只保留主读数与价格，等级/效果单位全部收起 */
-@container tile (max-width: 98px) {
+/* ≤ 105px：只保留主读数与价格，等级/效果单位全部收起 */
+@container tile (max-width: 105px) {
   .mt-d2-foot .mt-d2-lv { display: none; }
   .mt-reg-effect { flex-direction: column; align-items: flex-start; gap: 1px; }
   .mt-reg-big { font-size: 11px; }
+}
+
+/* ≤ 110px：格顶栏放不下「集团标签 + 持有人名」——
+   实测 1440×900（格宽 105.25px）：顶栏里集团标签 ~30px + 色点 8px +
+   间隙 4px 后，只剩 ~46px 给名字，6 字（约 54px）放不下 → 溢出 8px。
+   实测 1280×720（格宽 92.75px）：只剩 ~34px → 溢出 20px。
+   修法：此时**收起集团标签**，把整行宽度让给持有人名；
+   集团归属在「我的机构」tab 里能查到，地块上不必重复。 */
+@container tile (max-width: 110px) {
+  .mt-d2-top .mt-chip { display: none; }
+  .mt-d2-owner { font-size: 9px; }
+  .mt-owner-text { font-size: 9px; }
+}
+
+/* ≤ 95px：持有人名再缩一档（9px → 8.5px），保证 6 字也能放下 */
+@container tile (max-width: 95px) {
+  .mt-d2-owner { font-size: 8.5px; }
+  .mt-owner-text { font-size: 8.5px; }
+}
+
+/* ≤ 135px：监管格顶栏（角色标签 + 持有人名）横向拥挤 ——
+   实测 1600×950（格宽 125.25px）：监管格顶栏只有 ~47px 给名字，
+   6 字（约 54px）放不下 → 溢出 7px。
+   修法：监管格在窄档收起「角色标签」（货币政策 / 发行审核 / 审慎监管 /
+   风险处置），只保留持有人名 —— 监管身份由卡面配色与徽章表达。 */
+@container tile (max-width: 135px) {
+  .mt-d2-reg .mt-d2-top .mt-chip { display: none; }
 }

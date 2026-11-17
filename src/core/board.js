@@ -1,40 +1,50 @@
 /**
  * 棋盘数据 —— 中国金融城
  *
- * 规模：46 格（同心双环 · 疏朗）
- *   = 35 个普通机构格 + 4 个监管机构格 + 7 个特色特殊格（起点 / 4 转盘 / 2 赌场）
+ * 规模：34 格（同心双环 · 疏朗）
+ *   = 24 个普通机构格 + 4 个监管机构格 + 6 个特色特殊格
+ *     （起点 / 3 转盘 / 2 赌场）
  *
  * 顺时针布局，index 0 = 起点·陆家嘴金融中心。
  *
- * ================= 布局设计：同心双环（10×7 网格）=================
- * 棋盘是 **10 列 × 7 行**的横向网格，两圈同心环被 2 座城门架桥连成
+ * ================= 布局设计：同心双环（8×6 网格）=================
+ * 棋盘是 **8 列 × 6 行**的横向网格，两圈同心环被 2 座城门架桥连成
  * **一条闭合回路**（棋子全程平移不瞬移，规则层零改动）：
  *
- *    · **外环（城墙）** 30 格 —— 起点 ×1 + 转盘 ×4 + 外围分行带（25 家机构）；
+ *    · **外环（城墙）** 24 格 —— 起点 ×1 + 转盘 ×3 + 外围分行带（20 家机构）；
  *    · **护城河** —— 1 格宽空白带（视觉分隔，不占格）；
- *    · **城门** 2 格 —— 架在顶部护城河上，是 2 块「私人赌场 · 德州扑克」；
- *    · **内环（城中之城）** 14 格 —— 四大监管 ×4 + 总部级 / 地标级资产 ×10。
+ *    · **城门** 2 格 —— 架在顶部护城河上，两格各架一座「私人赌场 · 德州扑克」；
+ *    · **内环（城中之城）** 8 格 —— 四大监管 ×4 + 4 个 3 星机构。
  *
  * 外环的普通机构按集团切成连续段，顺序为 **银行 → 券商 → 保险 → 资管**，
  * 段与段之间插入一个转盘格，形成
- * \银行段 | 枢纽转盘 | 券商段 | 风险转盘 | 保险段 | 机会转盘 | 资管段 | 命运转盘 * 的节奏 —— 同一集团的土地连成一片，同时每段之间插入转盘制造起伏。
+ * \银行段 | 风险转盘 | 券商段 | 机会转盘 | 保险段 | 命运转盘 | 资管段 *
+ * 的节奏 —— 同一集团的土地连成一片，同时每段之间插入转盘制造起伏。
  *
- * 内环 = 越靠中心越贵的核心带：四大监管（可持有、不可升级）+ 10 个最高等级资产。
+ * 内环 = 越靠中心越贵的核心带：四大监管（可持有、不可升级）+ 4 个 3 星机构。
  *
- * ================= 特殊格合并：16 → 7 =================
- * 原来 16 个特殊格（起点 + 13 个功能格 + 2 个赌场）压缩成 7 个：
- *   · **起点 ×1** —— 陆家嘴金融中心（外环 (4,0)）；
- *   · **转盘 ×4** —— 枢纽 / 风险 / 机会 / 命运，踩到后从候选效果里随机抽一个；
- *   · **赌场 ×2** —— 私人赌场 · 德州扑克（架在城门上）。
+ * ================= 特殊格合并：16 → 6 =================
+ * 原来 16 个特殊格（起点 + 13 个功能格 + 2 个赌场）压缩成 6 个：
+ *   · **起点 ×1** —— 陆家嘴金融中心（外环 (3,0)）；
+ *   · **转盘 ×3** —— 风险 / 机会 / 命运，踩到后从候选效果里随机抽一个；
+ *   · **赌场 ×2** —— 私人赌场 · 德州扑克（分别架在城门 A / 城门 B 上）。
  *
  * ⚠ 13 个功能特殊格的**定义必须保留**（转盘内部要用），
  *   只是不再各自独占一个格子。
+ * ⚠ 「枢纽转盘」随棋盘压缩被取消 —— 它的三个移动类效果
+ *   （清算所 / 地铁枢纽 / 跨境互联）全部并入机会转盘，功能零丢失。
  *
- * ================= 地块裁剪 =================
- * 原始机构表共 47 个普通机构，本方案只需要 35 个 —— **裁掉 12 个**。
- * 裁剪顺序：等级低 → 买入价低 → 原 index 小；
- * 但**跳过会让某集团某等级断档的地块**（保证每个集团的每一级至少保留 1 个）。
+ * ================= 机构数量压缩：47 → 24 =================
+ * 每大类（银行 / 券商 / 保险 / 资管）**只保留 6 个机构**：
+ * **1 个 3 星 + 2 个 2 星 + 3 个 1 星**，四类合计 **24 个机构格**。
  *
+ * ================= 星级体系（用户拍板）=================
+ *   · **星级只影响价格 / 租金高低**（3 星最贵、1 星最便宜）；
+ *   · **所有人买下都是「网点级」（level 0）** —— tier 恒为 0，
+ *     不再有「买下即升到 tier」的行为；
+ *   · **星级不决定初始等级、不决定可升级上限**（上限一律 4 级 / 地标级）。
+ *
+ * ================= 监管机构 =================
  * 监管机构（人民银行 / 证监会 / 银保监 / 金稳会）：
  *   · 可以被玩家「收购经营权」（一次性买断，占用大量现金）
  *   · 不可升级（level 永远为 0）
@@ -141,65 +151,54 @@ export const REGULATORS = {
 const GROUPS = {
   bank: {
     entries: [
-      { name: '城东银行',     code: 'CDBK', price: [180, 320, 520, 820, 1240],   rent: [18, 32, 54, 86, 132],   kind: 'branch',   tier: 0 },
-      { name: '浦江银行',     code: 'PJBK', price: [200, 360, 580, 900, 1360],   rent: [20, 36, 60, 96, 148],   kind: 'branch',   tier: 0 },
-      { name: '江城银行',     code: 'JCBK', price: [220, 400, 640, 990, 1500],   rent: [22, 40, 66, 105, 162],  kind: 'branch',   tier: 1 },
-      { name: '华夏银行',     code: 'HXBK', price: [320, 560, 880, 1340, 2000],  rent: [32, 58, 92, 142, 218],  kind: 'branch',   tier: 1 },
-      { name: '华信银行',     code: 'HXBQ', price: [380, 660, 1040, 1580, 2360], rent: [38, 68, 108, 166, 254], kind: 'branch',   tier: 2 },
-      { name: '中国工商行',   code: 'ICBC', price: [520, 900, 1400, 2120, 3160], rent: [52, 94, 148, 226, 346], kind: 'branch',   tier: 2 },
-      { name: '中国建设银行', code: 'CCB',  price: [620, 1060, 1660, 2520, 3760],rent: [62, 112, 176, 268, 410], kind: 'branch',   tier: 3 },
-      { name: '中国银行',     code: 'BOC',  price: [720, 1240, 1940, 2940, 4380],rent: [72, 130, 206, 312, 478], kind: 'branch',   tier: 3 },
-      { name: '中国农业银行', code: 'ABC',  price: [860, 1480, 2300, 3480, 5180],rent: [86, 156, 244, 370, 566], kind: 'branch',   tier: 4 },
-      { name: '招商银行',     code: 'CMB',  price: [980, 1680, 2600, 3900, 5780],rent: [98, 178, 274, 416, 634], kind: 'branch',   tier: 4 },
-      { name: '中国工商银行', code: 'ICBC2',price: [1400, 2260, 3380, 4880, 6980],rent: [140, 226, 338, 488, 698], kind: 'landmark', tier: 4, landmark: true, landmarkName: '金融街塔' },
-      { name: '上海浦东发展银行', code: 'SPDB', price: [640, 1100, 1720, 2600, 3880],rent: [64, 116, 182, 276, 420], kind: 'branch', tier: 3 },
+      // ---- 3 星 ×1（地标 —— 内环核心）----
+      { name: '中国工商银行', code: 'ICBC', price: [1240, 2133, 3373, 4898, 6758], rent: [124, 223, 350, 508, 701], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '金融街塔' },
+      // ---- 2 星 ×2 ----
+      { name: '招商银行',     code: 'CMB',  price: [640, 1101, 1741, 2528, 3488], rent: [64, 115, 180, 262, 362], kind: 'branch', tier: 0, star: 2 },
+      { name: '中国建设银行', code: 'CCB',  price: [749, 1288, 2037, 2958, 4081], rent: [74, 132, 208, 302, 416], kind: 'branch', tier: 0, star: 2 },
+      // ---- 1 星 ×3 ----
+      { name: '城东银行',     code: 'CDBK', price: [300, 516, 816, 1185, 1635], rent: [30, 54, 85, 123, 170], kind: 'branch', tier: 0, star: 1 },
+      { name: '浦江银行',     code: 'PJBK', price: [348, 599, 947, 1375, 1897], rent: [34, 62, 96, 140, 193], kind: 'branch', tier: 0, star: 1 },
+      { name: '华夏银行',     code: 'HXBK', price: [402, 691, 1093, 1588, 2191], rent: [39, 70, 110, 160, 220], kind: 'branch', tier: 0, star: 1 },
     ],
   },
   broker: {
     entries: [
-      { name: '华瑞证券',   code: 'HRZQ', price: [200, 360, 580, 900, 1360],   rent: [21, 38, 62, 98, 150],   kind: 'tower', tier: 0 },
-      { name: '中信证券',   code: 'ZXZQ', price: [260, 460, 730, 1120, 1680],  rent: [27, 48, 78, 122, 186],  kind: 'tower', tier: 1 },
-      { name: '国泰海通',   code: 'GTHT', price: [300, 520, 820, 1260, 1880],  rent: [30, 54, 86, 134, 204],  kind: 'tower', tier: 1 },
-      { name: '中金公司',   code: 'CICC', price: [380, 660, 1040, 1580, 2360], rent: [38, 68, 108, 166, 254], kind: 'tower', tier: 2 },
-      { name: '招商证券',   code: 'ZSYQ', price: [420, 720, 1120, 1700, 2540], rent: [42, 74, 116, 178, 272], kind: 'tower', tier: 2 },
-      { name: '广发证券',   code: 'GFZQ', price: [520, 900, 1400, 2120, 3160], rent: [52, 94, 148, 226, 346], kind: 'tower', tier: 3 },
-      { name: '中信建投',   code: 'ZXJT', price: [580, 1000, 1560, 2360, 3520],rent: [58, 104, 164, 250, 382], kind: 'tower', tier: 3 },
-      { name: '东方证券',   code: 'DFZQ', price: [680, 1180, 1840, 2780, 4140],rent: [68, 122, 192, 292, 446], kind: 'tower', tier: 4 },
-      { name: '申万宏源',   code: 'SWHY', price: [820, 1420, 2200, 3320, 4940],rent: [82, 148, 232, 352, 538], kind: 'tower', tier: 4 },
-      { name: '中金财富',   code: 'CICCW',price: [900, 1560, 2400, 3620, 5380],rent: [90, 162, 252, 384, 584], kind: 'tower', tier: 4 },
-      { name: '华泰证券',   code: 'HTZQ', price: [1500, 2420, 3600, 5180, 7380],rent: [150, 242, 360, 518, 738],kind: 'landmark', tier: 4, landmark: true, landmarkName: '交易塔' },
+      // ---- 3 星 ×1（地标 —— 内环核心）----
+      { name: '华泰证券', code: 'HTZQ', price: [1160, 1995, 3155, 4582, 6322], rent: [120, 216, 338, 492, 678], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '交易塔' },
+      // ---- 2 星 ×2 ----
+      { name: '中金公司', code: 'CICC', price: [560, 963, 1523, 2212, 3052], rent: [58, 104, 164, 238, 328], kind: 'tower', tier: 0, star: 2 },
+      { name: '广发证券', code: 'GFZQ', price: [655, 1127, 1782, 2588, 3571], rent: [67, 120, 188, 273, 377], kind: 'tower', tier: 0, star: 2 },
+      // ---- 1 星 ×3 ----
+      { name: '华瑞证券', code: 'HRZQ', price: [260, 447, 707, 1027, 1417], rent: [28, 50, 79, 115, 158], kind: 'tower', tier: 0, star: 1 },
+      { name: '国泰海通', code: 'GTHT', price: [302, 519, 820, 1191, 1644], rent: [32, 57, 90, 131, 180], kind: 'tower', tier: 0, star: 1 },
+      { name: '中信证券', code: 'ZXZQ', price: [348, 599, 948, 1376, 1899], rent: [36, 66, 103, 149, 206], kind: 'tower', tier: 0, star: 1 },
     ],
   },
   insurer: {
     entries: [
-      { name: '太保产险',   code: 'CPICP', price: [190, 340, 540, 860, 1300],   rent: [19, 34, 56, 90, 138],   kind: 'midrise', tier: 0 },
-      { name: '平安财险',   code: 'PAP',   price: [210, 380, 600, 960, 1440],   rent: [21, 38, 62, 98, 150],   kind: 'midrise', tier: 0 },
-      { name: '人保财险',   code: 'PICCP', price: [230, 410, 650, 1040, 1560], rent: [23, 42, 68, 108, 166],  kind: 'midrise', tier: 1 },
-      { name: '中国人寿',   code: 'CHL',   price: [340, 600, 940, 1420, 2120],  rent: [34, 62, 98, 150, 228],  kind: 'midrise', tier: 1 },
-      { name: '中国平安',   code: 'PA',    price: [400, 700, 1100, 1660, 2480], rent: [40, 76, 120, 182, 278],  kind: 'midrise', tier: 2 },
-      { name: '阳光保险',   code: 'SUN',   price: [440, 760, 1200, 1820, 2720], rent: [44, 82, 128, 196, 300],  kind: 'midrise', tier: 2 },
-      { name: '大家保险',   code: 'DAJIA', price: [560, 960, 1500, 2280, 3400],  rent: [56, 100, 158, 240, 368], kind: 'midrise', tier: 3 },
-      { name: '太平洋保险', code: 'CPIC',  price: [660, 1140, 1780, 2680, 4000], rent: [66, 118, 186, 282, 432], kind: 'midrise', tier: 3 },
-      { name: '新华保险',   code: 'NCI',   price: [800, 1380, 2140, 3240, 4820], rent: [80, 144, 226, 344, 526], kind: 'midrise', tier: 4 },
-      { name: '中国太平',   code: 'CTP',   price: [900, 1540, 2380, 3600, 5340], rent: [90, 160, 250, 380, 580], kind: 'midrise', tier: 4 },
-      { name: '中国人保',   code: 'PICC',  price: [1500, 2400, 3580, 5180, 7380],rent: [150, 240, 358, 518, 738],kind: 'landmark', tier: 4, landmark: true, landmarkName: '保障巨擘' },
+      // ---- 3 星 ×1（地标 —— 内环核心）----
+      { name: '中国人保', code: 'PICC', price: [1200, 2064, 3264, 4740, 6540], rent: [121, 218, 341, 496, 684], kind: 'midrise', tier: 0, star: 3 },
+      // ---- 2 星 ×2 ----
+      { name: '中国平安',   code: 'PA',   price: [600, 1032, 1632, 2370, 3270], rent: [59, 106, 166, 242, 333], kind: 'midrise', tier: 0, star: 2 },
+      { name: '太平洋保险', code: 'CPIC', price: [702, 1207, 1909, 2773, 3826], rent: [68, 122, 191, 278, 383], kind: 'midrise', tier: 0, star: 2 },
+      // ---- 1 星 ×3 ----
+      { name: '太保产险', code: 'CPICP', price: [280, 482, 762, 1106, 1526], rent: [27, 49, 76, 111, 153], kind: 'midrise', tier: 0, star: 1 },
+      { name: '平安财险', code: 'PAP',   price: [325, 559, 883, 1283, 1770], rent: [31, 55, 87, 126, 174], kind: 'midrise', tier: 0, star: 1 },
+      { name: '中国人寿', code: 'CHL',   price: [375, 645, 1021, 1482, 2045], rent: [35, 63, 99, 144, 198], kind: 'midrise', tier: 0, star: 1 },
     ],
   },
   asset: {
     entries: [
-      { name: 'XX 私募基金',  code: 'PEFX',  price: [170, 300, 490, 780, 1180],   rent: [17, 30, 50, 82, 126],   kind: 'modern', tier: 0 },
-      { name: '华夏基金',     code: 'CHINA',price: [230, 400, 640, 1000, 1500],  rent: [23, 40, 66, 106, 162],  kind: 'modern', tier: 0 },
-      { name: '易方达基金',   code: 'EFD',  price: [270, 460, 730, 1140, 1700],  rent: [27, 48, 78, 122, 186],  kind: 'modern', tier: 1 },
-      { name: '南方基金',     code: 'NF',   price: [360, 620, 980, 1500, 2240],  rent: [36, 66, 104, 160, 244],  kind: 'modern', tier: 1 },
-      { name: '博时基金',     code: 'BOS',  price: [440, 760, 1200, 1820, 2720], rent: [44, 82, 128, 196, 300],  kind: 'modern', tier: 2 },
-      { name: '中信信托',     code: 'CIT',  price: [540, 920, 1440, 2180, 3260], rent: [54, 98, 154, 234, 358],  kind: 'modern', tier: 2 },
-      { name: '平安信托',     code: 'PAT',  price: [600, 1040, 1620, 2460, 3680],rent: [60, 110, 172, 262, 400],  kind: 'modern', tier: 3 },
-      { name: '五矿信托',     code: 'MKT',  price: [700, 1200, 1880, 2840, 4240],rent: [70, 124, 194, 296, 452],  kind: 'modern', tier: 3 },
-      { name: '工银瑞信',     code: 'ICBC', price: [780, 1340, 2100, 3160, 4700],rent: [78, 142, 222, 338, 516],  kind: 'modern', tier: 4 },
-      { name: '上海证券交易所',code: 'SSE',  price: [1000, 1700, 2640, 3980, 5920],rent: [100, 170, 264, 398, 592],kind: 'modern', tier: 4 },
-      { name: '深圳证券交易所',code: 'SZSE', price: [1080, 1840, 2860, 4320, 6440],rent: [108, 184, 286, 432, 660],kind: 'modern', tier: 4 },
-      { name: '中金所',       code: 'CFFEX',price: [1150, 1960, 3040, 4580, 6820],rent: [115, 196, 304, 458, 682],kind: 'modern', tier: 4 },
-      { name: '中证指数公司', code: 'CSI',  price: [880, 1520, 2360, 3540, 5280],rent: [88, 158, 246, 372, 566],kind: 'modern', tier: 4 },
+      // ---- 3 星 ×1（地标 —— 内环核心）----
+      { name: '上海证券交易所', code: 'SSE', price: [1320, 2270, 3590, 5214, 7194], rent: [135, 243, 381, 554, 763], kind: 'modern', tier: 0, star: 3 },
+      // ---- 2 星 ×2 ----
+      { name: '中信信托', code: 'CIT',   price: [680, 1170, 1850, 2686, 3706], rent: [69, 124, 195, 283, 390], kind: 'modern', tier: 0, star: 2 },
+      { name: '工银瑞信', code: 'ICBCX', price: [796, 1368, 2164, 3143, 4336], rent: [79, 143, 224, 325, 448], kind: 'modern', tier: 0, star: 2 },
+      // ---- 1 星 ×3 ----
+      { name: '华夏基金', code: 'CHINA', price: [320, 550, 870, 1264, 1744], rent: [33, 59, 93, 135, 186], kind: 'modern', tier: 0, star: 1 },
+      { name: '易方达基金', code: 'EFD',  price: [371, 638, 1010, 1466, 2023], rent: [38, 68, 106, 154, 213], kind: 'modern', tier: 0, star: 1 },
+      { name: '南方基金', code: 'NF',    price: [429, 738, 1166, 1694, 2337], rent: [43, 77, 121, 176, 242], kind: 'modern', tier: 0, star: 1 },
     ],
   },
 };
@@ -281,7 +280,7 @@ export const SPECIAL = {
 };
 
 /**
- * ==================== 四大转盘 ====================
+ * ==================== 三大转盘 ====================
  *
  * 原来 13 个功能特殊格把轨道切得太碎 —— 现在把它们按语义打包成
  * **4 个转盘格**：踩到格子 → 弹大转盘 → 指针旋转 → 停在某个扇区 →
@@ -292,16 +291,6 @@ export const SPECIAL = {
  * 这样转盘扇区和棋盘上的转盘格都能用真实图标与数值表达，而不是抽象文字。
  */
 export const WHEELS = [
-  {
-    id: 'hub', label: '枢纽转盘', cat: 'hub', color: '#2f9fc4', lt: '#63c6e6',
-    dk: '#1c6b88', sign: '流转', icon: 'hub',
-    desc: '三种「移动类」效果随机抽取一个：改写你落脚的地点',
-    outcomes: [
-      { id: 'clearing', name: '清算所', icon: 'clearing', big: '直达', lbl: '结算机构' },
-      { id: 'metro', name: '地铁枢纽', icon: 'metro', big: '1/2/3', lbl: '前进格数' },
-      { id: 'crossborder', name: '跨境互联', icon: 'crossborder', big: '随机', lbl: '飞往机构' },
-    ],
-  },
   {
     id: 'risk', label: '风险转盘', cat: 'cost', color: '#c8392b', lt: '#e4604d',
     dk: '#8d2419', sign: '付出', icon: 'risk',
@@ -315,13 +304,18 @@ export const WHEELS = [
   {
     id: 'chance', label: '机会转盘', cat: 'gain', color: '#4f9d55', lt: '#7ac77f',
     dk: '#336b38', sign: '收益', icon: 'chance',
-    desc: '五种「增益类」效果随机抽取一个：都与长期收益挂钩',
+    desc: '八种效果随机抽取一个：增益、收益与流转',
     outcomes: [
       { id: 'charity', name: '公益捐赠', icon: 'charity', big: '-￥120', lbl: '管理费 +12%' },
       { id: 'roadshow', name: '投资者路演', icon: 'roadshow', big: '+￥80', lbl: '成本 -15%' },
       { id: 'rating', name: '评级调整', icon: 'rating', big: '±15%', lbl: '管理费 3 回合' },
       { id: 'commodity', name: '大宗交易', icon: 'commodity', big: '折溢价', lbl: '套保 2 回合' },
       { id: 'refinance', name: '债券发行', icon: 'refinance', big: '债券', lbl: '票息浮动' },
+      // 以下三个原属「枢纽转盘」—— 枢纽格随棋盘压缩到 34 格后被取消，
+      // 三个移动类效果并入机会转盘，功能不丢失。
+      { id: 'clearing', name: '清算所', icon: 'clearing', big: '直达', lbl: '结算机构' },
+      { id: 'metro', name: '地铁枢纽', icon: 'metro', big: '1/2/3', lbl: '前进格数' },
+      { id: 'crossborder', name: '跨境互联', icon: 'crossborder', big: '随机', lbl: '飞往机构' },
     ],
   },
   {
@@ -370,9 +364,9 @@ function makeWheelSpecial(w) {
 export const SPECIAL_IDS = Object.keys(SPECIAL);
 
 /**
- * 棋盘形状 —— **同心双环（疏朗）**，共 46 格。
+ * 棋盘形状 —— **同心双环（疏朗）**，共 34 格。
  *
- * 10 列 × 7 行网格：外环 30 格（城墙）+ 护城河 + 城门 2 格 + 内环 14 格，
+ * 8 列 × 6 行网格：外环 24 格（城墙）+ 护城河 + 城门 2 格 + 内环 8 格，
  * 两环由城门架桥并成一条闭合回路，环道首尾相连、绝不断裂。
  *
  * 形状数据集中在 core/board-shape.js，渲染层依此计算每格矩形，
@@ -387,9 +381,9 @@ export {
 } from './board-shape.js';
 
 // 内部使用（棋盘组装时判断赌场是否落在城门槽位上）
-import { GATE_INDICES } from './board-shape.js';
+import { GATE_INDICES, INNER_INDICES } from './board-shape.js';
 
-export const BOARD_SIZE = 46;
+export const BOARD_SIZE = 34;
 
 function makeInstitution(groupId, e) {
   const isReg = !!e.regulator;
@@ -401,7 +395,16 @@ function makeInstitution(groupId, e) {
     price: e.price,
     rent: e.rent,
     kind: e.kind,
-    tier: e.tier,
+    /**
+     * 初始等级（买下即达到的 level）。
+     *
+     * ⚠ 星级体系（用户拍板）：**所有人买下都是「网点级」（level 0）**，
+     *   星级只影响价格 / 租金高低，**不决定初始等级、不决定可升级上限**。
+     *   因此普通机构的 tier 恒为 0；监管机构同样为 0 且 maxLevel = 0。
+     */
+    tier: 0,
+    /** 星级（1 / 2 / 3）—— 只影响 price / rent 的高低，不影响等级 */
+    star: isReg ? 0 : (e.star ?? 0),
     landmark: !!e.landmark,
     landmarkName: e.landmarkName || null,
     regulator: isReg,
@@ -416,7 +419,7 @@ function makeRegulator(groupId, regKey) {
   const r = REGULATORS[regKey];
   return makeInstitution(groupId, {
     name: r.name, code: r.code, price: [r.price], rent: [r.rent],
-    kind: r.kind, tier: r.tier, regulator: true, regulatorId: r.regulatorId,
+    kind: r.kind, tier: 0, regulator: true, regulatorId: r.regulatorId,
   });
 }
 
@@ -433,72 +436,84 @@ function makeRegulator(groupId, regKey) {
 const S = {
   start: 'start',
   casino: 'casino',
-  // 四大转盘（候选效果定义在 WHEELS / SPECIAL 中）
-  hub: 'hub', risk: 'risk', chance: 'chance', fate: 'fate',
+  // 三大转盘（候选效果定义在 WHEELS / SPECIAL 中）
+  // 枢纽转盘随棋盘压缩到 34 格被取消，其三个移动类效果已并入机会转盘。
+  risk: 'risk', chance: 'chance', fate: 'fate',
 };
 
 /**
- * 槽位表 —— 长度必须等于 BOARD_SIZE（46）。
+ * 槽位表 —— 长度必须等于 BOARD_SIZE（34）。
  *
  * 记号：
- *   'b0'~'b11'  银行集团（12 家，价格/租金由低到高）
- *   'r0'~'r10'  券商集团（11 家）
- *   'i0'~'i10'  保险集团（11 家）
- *   'a0'~'a12'  资管集团（13 家）
+ *   'b0'~'b5'  银行集团（6 家：1 个 3 星 + 2 个 2 星 + 3 个 1 星）
+ *   'r0'~'r5'  券商集团（6 家，同上）
+ *   'i0'~'i5'  保险集团（6 家，同上）
+ *   'a0'~'a5'  资管集团（6 家，同上）
  *   'P'/'C'/'N'/'F'  四家监管机构（央行 / 证监会 / 银保监 / 金稳会）
- *   'hub'/'risk'/'chance'/'fate'  四大转盘格
+ *   'risk'/'chance'/'fate'  三大转盘格（枢纽转盘已被取消，效果并入机会转盘）
  *   'start'/'casino'  起点 / 赌场
  *
+ * 下标即该组 entries 数组里的位置，**按星级从高到低排列**：
+ *   index 0      → 3 星（地标）
+ *   index 1..2   → 2 星
+ *   index 3..5   → 1 星
+ *
  * ================= 分区结构 =================
- *   index  0..29  外环（城墙）30 格
+ *   index  0..23  外环（城墙）24 格
  *       · 0        起点 · 陆家嘴金融中心
- *       · 1..7     银行段（7 家，网点级 → 分行级）
- *       · 8        枢纽转盘（流转：清算所 / 地铁 / 跨境互联）
- *       · 9..13    券商段（5 家）
- *       · 14       风险转盘（付出：印花税 / 监管抽查 / 风险警示）
- *       · 15..20   保险段（6 家）
- *       · 21       机会转盘（收益：公益 / 路演 / 评级 / 大宗 / 债券）
- *       · 22..28   资管段（7 家）
- *       · 29       命运转盘（抽取：财经快讯 / 牛熊切换）
- *   index  30      城门 A · 私人赌场（架在顶部护城河）
- *   index  31..44  内环（城中之城）14 格
- *       · 31..34   四大监管（央行 / 证监会 / 银保监 / 金稳会）
- *       · 35..44   10 个总部级 / 地标级资产（越靠中心越贵）
- *   index  45      城门 B · 私人赌场
+ *       · 1..5     银行段（5 家：2 星 2 + 1 星 3）
+ *       · 6        风险转盘（付出：印花税 / 监管抽查 / 风险警示）
+ *       · 7..11    券商段（5 家：2 星 2 + 1 星 3）
+ *       · 12       机会转盘（收益 + 流转：公益 / 路演 / 评级 / 大宗 / 债券 / 清算所 / 地铁 / 跨境互联）
+ *       · 13..17   保险段（5 家：2 星 2 + 1 星 3）
+ *       · 18       命运转盘（抽取：财经快讯 / 牛熊切换）
+ *       · 19..23   资管段（5 家：2 星 2 + 1 星 3）
+ *   index  24      城门 A · 私人赌场（架在顶部护城河 (2,1)）
+ *   index  25..32  内环（城中之城）8 格
+ *       · 25..28   四大监管（央行 / 证监会 / 银保监 / 金稳会）
+ *       · 29..32   4 个 3 星机构（华泰证券 / 上交所 / 中国人保 / 中国工商银行）
+ *   index  33      城门 B · 私人赌场（架在顶部护城河 (3,1)）
+ *
+ * ⚠ 为什么转盘是 3 个而不是 4 个？
+ *   34 格 = 内环 8（4 监管 + 4 个 3 星机构）+ 外环 24 + 城门 2。
+ *   外环与城门合计 26 格，必须同时容纳：
+ *     · 24 个机构中的 20 个（4 个 3 星已在内环）
+ *     · 起点 1 + 转盘 N + 赌场 2 = 3 + N
+ *   20 + 3 + N = 26 ⇒ **N = 3**。
+ *   被砍掉的「枢纽转盘」其三个移动类效果（清算所 / 地铁枢纽 / 跨境互联）
+ *   全部并入机会转盘 —— 功能零丢失，只是抽中概率变了。
  *
  * 布局要点（由 assertNoAdjacentFunctionalCells 在导入期强制校验）：
  *   · index 0 固定为「陆家嘴金融中心」起点；
  *   · 每个集团普通机构在外环连续排布，段与段之间插入一个转盘格；
- *   · 内环 14 格 = 4 监管 + 10 最高等级资产，前 4 格是监管、
- *     之后 10 格全是 tier 4 —— 越靠中心越贵；
- *   · 2 块赌场架在城门上（30 / 45），功能格互不相邻。
+ *   · 内环 8 格 = 4 监管 + 4 个 3 星机构，前 4 格是监管、
+ *     之后 4 格是 3 星机构 —— 越靠中心越贵；
+ *   · 城门 A（24）与城门 B（33）各架一座赌场，功能格互不相邻。
  */
 const LAYOUT = [
   // ===== 外环 · 起点 =====
   S.start,
-  // ===== 外环 · 银行段（7 家）=====
-  'b10', 'b6', 'b11', 'b7', 'b5', 'b3', 'b1',
-  // ===== 外环 · 枢纽转盘 =====
-  'hub',
-  // ===== 外环 · 券商段（5 家）=====
-  'r10', 'r6', 'r4', 'r2', 'r0',
+  // ===== 外环 · 银行段（5 家：2 星 ×2 + 1 星 ×3）=====
+  'b1', 'b2', 'b3', 'b4', 'b5',
   // ===== 外环 · 风险转盘 =====
   'risk',
-  // ===== 外环 · 保险段（6 家）=====
-  'i10', 'i6', 'i7', 'i5', 'i3', 'i1',
+  // ===== 外环 · 券商段（5 家：2 星 ×2 + 1 星 ×3）=====
+  'r1', 'r2', 'r3', 'r4', 'r5',
   // ===== 外环 · 机会转盘 =====
   'chance',
-  // ===== 外环 · 资管段（7 家）=====
-  'a10', 'a11', 'a6', 'a7', 'a5', 'a3', 'a1',
+  // ===== 外环 · 保险段（5 家：2 星 ×2 + 1 星 ×3）=====
+  'i1', 'i2', 'i3', 'i4', 'i5',
   // ===== 外环 · 命运转盘 =====
   'fate',
-  // ===== 城门 A · 赌场（架在顶部护城河，连接内外环）=====
+  // ===== 外环 · 资管段（5 家：2 星 ×2 + 1 星 ×3）=====
+  'a1', 'a2', 'a3', 'a4', 'a5',
+  // ===== 城门 A · 私人赌场（架在顶部护城河 (2,1)）=====
   S.casino,
   // ===== 内环 · 四大监管（城中之城最核心）=====
   'P', 'C', 'N', 'F',
-  // ===== 内环 · 总部级 / 地标级资产 ×10 =====
-  'r7', 'a8', 'i8', 'r8', 'b8', 'a12', 'r9', 'i9', 'b9', 'a9',
-  // ===== 城门 B · 赌场（回到外环起点）=====
+  // ===== 内环 · 4 个 3 星机构 =====
+  'r0', 'a0', 'i0', 'b0',
+  // ===== 城门 B · 私人赌场（架在顶部护城河 (3,1)）=====
   S.casino,
 ];
 
@@ -511,7 +526,7 @@ function parseSlot(slot) {
     case 'F': return { kind: 'regulator', group: 'asset', regKey: 'fsc' };
     default: break;
   }
-  // 四大转盘 —— 候选效果清单来自 WHEELS
+  // 三大转盘 —— 候选效果清单来自 WHEELS
   if (WHEEL_BY_ID[slot]) {
     return { kind: 'wheel', wheelId: slot };
   }
@@ -626,11 +641,11 @@ export const GROUP_CELLS = {
  *   2) 分散在地图不同方位，避免每次都跳到同一个角落；
  *   3) 传送步数必须为 1 ~ BOARD_SIZE-1 之间的正数，且落点精确等于目标。
  *
- * 当前对应（46 格同心双环棋盘）：
- *   银行段(2) / 券商段(12) / 保险段(18) / 资管段(25)
+ * 当前对应（34 格同心双环棋盘）：
+ *   银行段(3) / 券商段(9) / 保险段(15) / 资管段(21)
  * —— 分别落在四个集团区段，跳往四个完全不同的方位。
  */
-export const CLEARING_TARGETS = [2, 12, 18, 25];
+export const CLEARING_TARGETS = [3, 9, 15, 21];
 
 /** 事件卡池 —— 中国金融风小事件 */
 export const EVENT_CARDS = [
@@ -666,26 +681,41 @@ export function validateBoard() {
   if (BOARD_CELLS.length !== BOARD_SIZE) {
     errors.push(`棋盘格数 ${BOARD_CELLS.length} ≠ ${BOARD_SIZE}`);
   }
+  // ===== 每组 6 家机构 + 1 家监管 = 7 格 =====
   for (const g of ['bank', 'broker', 'insurer', 'asset']) {
     const n = GROUP_CELLS[g].length;
-    // 46 格版：每个集团 8~10 普通机构 + 1 监管机构
-    //   银行  9 普通 + 1 监管 = 10
-    //   券商  8 普通 + 1 监管 =  9
-    //   保险  8 普通 + 1 监管 =  9
-    //   资管 10 普通 + 1 监管 = 11
-    const expect = { bank: 10, broker: 9, insurer: 9, asset: 11 }[g];
+    // 34 格版：每组 6 普通机构 + 1 监管机构 = 7
+    const expect = 7;
     if (n !== expect) {
       errors.push(`集团 ${g} 有 ${n} 格，应为 ${expect}`);
     }
   }
-  const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
-  if (specials !== 7) {
-    errors.push(`特殊格 ${specials} 个，应为 7（起点 1 + 转盘 4 + 赌场 2）`);
+  // ===== 星级分布：每组 1 个 3 星 + 2 个 2 星 + 3 个 1 星 =====
+  for (const g of ['bank', 'broker', 'insurer', 'asset']) {
+    const stars = GROUP_CELLS[g]
+      .filter((i) => !BOARD_CELLS[i].regulator)
+      .map((i) => BOARD_CELLS[i].star)
+      .sort((a, b) => b - a);
+    const expect = [3, 2, 2, 1, 1, 1];
+    if (stars.length !== 6 || stars.some((s, i) => s !== expect[i])) {
+      errors.push(`集团 ${g} 星级分布为 [${stars.join(',')}]，应为 [3,2,2,1,1,1]`);
+    }
   }
-  // ===== 转盘格：必须恰好 4 个，且候选效果都要有定义 =====
+  // ===== 所有机构 tier 必须为 0（买下即网点级）=====
+  for (const c of BOARD_CELLS) {
+    if (c.type !== 'institution') continue;
+    if (c.tier !== 0) {
+      errors.push(`${c.name} 的 tier 应为 0（买下即网点级），实为 ${c.tier}`);
+    }
+  }
+  const specials = BOARD_CELLS.filter((c) => c.type === 'special').length;
+  if (specials !== 6) {
+    errors.push(`特殊格 ${specials} 个，应为 6（起点 1 + 转盘 3 + 赌场 2）`);
+  }
+  // ===== 转盘格：必须恰好 3 个，且候选效果都要有定义 =====
   const wheelCells = BOARD_CELLS.filter((c) => c.type === 'special' && c.special?.kind === 'wheel');
-  if (wheelCells.length !== 4) {
-    errors.push(`转盘格 ${wheelCells.length} 个，应为 4`);
+  if (wheelCells.length !== 3) {
+    errors.push(`转盘格 ${wheelCells.length} 个，应为 3`);
   }
   for (const c of wheelCells) {
     const sp = c.special;
@@ -702,7 +732,7 @@ export function validateBoard() {
       }
     }
   }
-  // ===== 赌场地块：必须恰好 2 块 =====
+  // ===== 赌场地块：必须恰好 2 块（分别架在城门 A / 城门 B 上）=====
   const casinos = BOARD_CELLS.filter((c) => c.type === 'special' && c.special?.id === 'casino');
   if (casinos.length !== 2) {
     errors.push(`赌场地块 ${casinos.length} 个，应为 2`);
@@ -723,6 +753,13 @@ export function validateBoard() {
       errors.push(`${c.name} 为监管机构，maxLevel 应为 0`);
     }
     if (!c.regulator) {
+      if (c.maxLevel !== 4) {
+        errors.push(`${c.name} 的 maxLevel 应为 4（星级不决定升级上限），实为 ${c.maxLevel}`);
+      }
+      if (c.price.length !== 5 || c.rent.length !== 5) {
+        errors.push(`${c.name} 的 price/rent 应为 5 级数组`);
+        continue;
+      }
       for (let i = 1; i < c.price.length; i++) {
         if (c.price[i] <= c.price[i - 1]) {
           errors.push(`${c.name} 买入价未递增 @${i}`);
@@ -734,10 +771,42 @@ export function validateBoard() {
     }
   }
 
+  // ===== 内环必须是 4 监管 + 4 个 3 星机构 =====
+  const innerRegs = INNER_INDICES.filter((i) => BOARD_CELLS[i].regulator).length;
+  if (innerRegs !== 4) {
+    errors.push(`内环监管格 ${innerRegs} 个，应为 4`);
+  }
+  const innerThreeStar = INNER_INDICES
+    .map((i) => BOARD_CELLS[i])
+    .filter((c) => c.type === 'institution' && !c.regulator && c.star === 3);
+  if (innerThreeStar.length !== 4) {
+    errors.push(`内环 3 星机构 ${innerThreeStar.length} 个，应为 4`);
+  }
+  // ===== 4 个 3 星机构必须全在内环 =====
+  const allThreeStar = BOARD_CELLS.filter((c) => c.type === 'institution' && !c.regulator && c.star === 3);
+  if (allThreeStar.length !== 4) {
+    errors.push(`全盘 3 星机构 ${allThreeStar.length} 个，应为 4`);
+  }
+  for (const c of allThreeStar) {
+    if (!INNER_INDICES.includes(c.index)) {
+      errors.push(`3 星机构 ${c.name}（#${c.index}）应在内环`);
+    }
+  }
+  // ===== 地标标记：3 星机构应带地标造型 =====
+  const landmarks = BOARD_CELLS.filter((c) => c.type === 'institution' && !c.regulator && c.landmark);
+  if (landmarks.length < 1 || landmarks.length > 2) {
+    errors.push(`地标机构 ${landmarks.length} 个，应为 1~2`);
+  }
+  for (const c of landmarks) {
+    if (c.star !== 3) {
+      errors.push(`地标机构 ${c.name} 应为 3 星（实为 ${c.star}）`);
+    }
+  }
+
   // ===== 功能格不相邻（城门豁免）=====
   // 「功能格」= 特殊格 + 监管机构格。二者在环形序列中不得彼此紧邻，
   // 否则特殊格会连成一片，玩家落点分布严重偏斜。
-  // 例外：城门格（赌场）架在护城河上，一侧必然挨着外环末格、
+  // 例外：城门格架在护城河上，一侧必然挨着外环末格、
   // 另一侧必然挨着内环首格 —— 拓扑决定，允许贴邻。
   const isFunctional = (c) => c.type === 'special' || c.regulator;
   const isGateCell = (c) => c.type === 'special' && c.special?.kind === 'gate';
@@ -757,12 +826,13 @@ export function validateBoard() {
   }
 
   // ===== 清算所跳转目标有效且分散 =====
-  // 46 格版没有独立的「清算所」格（它被合并进枢纽转盘），
-  // 因此以「枢纽转盘格」为传送源来校验落点精确性。
+  // 34 格版没有独立的「清算所」格（它被合并进转盘），
+  // 因此以「机会转盘格」为传送源来校验落点精确性 ——
+  // 枢纽转盘随棋盘压缩被取消，其「跨境互联」效果已并入机会转盘。
   const clearingIdx = BOARD_CELLS.findIndex(
-    (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special?.wheelId === 'hub');
+    (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special?.wheelId === 'chance');
   if (clearingIdx < 0) {
-    errors.push('未找到枢纽转盘格（清算所跳转源）');
+    errors.push('未找到机会转盘格（清算所跳转源）');
   }
   for (const t of CLEARING_TARGETS) {
     const c = BOARD_CELLS[t];

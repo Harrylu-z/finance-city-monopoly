@@ -4,7 +4,6 @@
  * ================== 为什么需要它 ==================
  * 原来 16 个功能特殊格把轨道切得太碎。现在它们被合并成 **4 个转盘格**，
  * 踩到格子 → 弹大转盘 → 指针旋转 → 停在某个扇区 → 结算对应效果。
- * 玩家体验反而更强：走过去，命运由转盘决定。
  *
  * ================== 三条关键实现约束（踩过的坑）==================
  *   ① **扇区文字径向摆放**，下半圈翻转 180° —— 否则中文倒置；
@@ -21,6 +20,16 @@
  *   · 视觉：计算 target 旋转角，让 pick 扇区转到指针正下方；
  *   · 逻辑：把 pick 对应的候选效果 id 回传给规则层。
  * `spinWheel()` 返回的 outcomeId 就是规则层实际结算的那个效果。
+ *
+ * ================== 新语义：连续转盘（v2）==================
+ * ① **玩家可连续转多次**：每点一次「转」→ 抽一个效果 → **立即真实结算**
+ *    → 转盘重置回可转状态 → 玩家可以继续转。玩家点「关闭」才退出并继续回合。
+ *    次数上限 = `maxSpins`（默认 5），UI 上显示剩余次数；
+ *    达到上限后「转」按钮禁用并提示「次数已用完，请关闭」。
+ * ② **AI 触发时玩家只读**：`readonly: true` → 「转」按钮被移除/禁用，
+ *    玩家只能看到 AI 抽中的结果与结算过程。
+ * ③ **模态拦截**：弹窗打开期间背景有遮罩（modal-backdrop），挡住棋盘点击，
+ *    玩家无法在 AI 转盘期间触发自己的转盘格。
  */
 
 import { openModal, closeModal } from '../app/dialogs.js';
@@ -37,6 +46,8 @@ const WHEEL_STYLE = {
 const SPIN_TURNS = 5;
 /** 动画时长（毫秒）—— 与 CSS transition 时长保持一致 */
 const SPIN_MS = 3600;
+/** 默认最大连续转盘次数 —— 防止玩家无限刷收益，同时满足「连续转好几次」 */
+export const DEFAULT_MAX_SPINS = 5;
 
 /**
  * 构造转盘 SVG。
@@ -144,9 +155,12 @@ export function pointerSector(rotation, n) {
  *
  * @param {object} wheel     转盘定义（board.js 的 WHEELS 元素）
  * @param {object} opts
- * @param {function} opts.onSpin  转动结束回调 —— 接收 {outcomeId, outcome, pick, rotation}
- * @param {function} opts.onClose 关闭回调
+ * @param {function} opts.onSpin  每次转动结束回调 —— 接收 {outcomeId, outcome, pick, rotation, spinIndex}
+ * @param {function} opts.onClose 关闭回调（玩家点「关闭」时触发）
  * @param {boolean}  opts.autoSpin 是否自动开转（AI 玩家用）
+ * @param {boolean}  opts.readonly 只读模式（AI 触发时玩家不能转）
+ * @param {number}   opts.maxSpins 最大连续转盘次数（默认 5）
+ * @param {string}   opts.playerName 转动者名字（显示用）
  */
 export function showWheelDialog(wheel, opts = {}) {
   // 候选数据的三种可能来源（按优先级）：
@@ -162,6 +176,10 @@ export function showWheelDialog(wheel, opts = {}) {
       : { id: o, name: o, big: '', lbl: '' }
   ));
   const style = WHEEL_STYLE[wheel.cat] || WHEEL_STYLE.fate;
+
+  const readonly = !!opts.readonly;
+  const maxSpins = opts.maxSpins != null ? opts.maxSpins : DEFAULT_MAX_SPINS;
+  const playerName = opts.playerName || '';
 
   const body = document.createElement('div');
 
@@ -205,8 +223,14 @@ export function showWheelDialog(wheel, opts = {}) {
   result.className = 'wheel-result';
   result.style.cssText = 'font-size:15px;font-weight:800;color:var(--c-paper);'
     + 'min-height:24px;text-align:center;';
-  result.textContent = '点击下方按钮开始转动';
+  result.textContent = readonly ? 'AI 正在转动…' : '点击下方按钮开始转动';
   body.appendChild(result);
+
+  // ---- 剩余次数 ----
+  const counter = document.createElement('div');
+  counter.className = 'wheel-counter';
+  counter.style.cssText = 'font-size:12px;color:var(--c-dim);text-align:center;margin-top:4px;';
+  body.appendChild(counter);
 
   // ---- 说明文字 ----
   const desc = document.createElement('div');
@@ -217,24 +241,52 @@ export function showWheelDialog(wheel, opts = {}) {
     + '</span>';
   body.appendChild(desc);
 
-  // ---- 转动按钮 ----
-  const spinBtn = document.createElement('button');
-  spinBtn.className = 'pixel-btn pixel-btn-primary';
-  spinBtn.style.cssText = 'margin:0 auto 10px;display:block;';
-  spinBtn.textContent = '转 盘';
-  body.appendChild(spinBtn);
+  // ---- 转动按钮（只读模式下**不渲染**，玩家无法点）----
+  let spinBtn = null;
+  if (!readonly) {
+    spinBtn = document.createElement('button');
+    spinBtn.className = 'pixel-btn pixel-btn-primary';
+    spinBtn.style.cssText = 'margin:0 auto 10px;display:block;';
+    spinBtn.textContent = '转 盘';
+    body.appendChild(spinBtn);
+  } else {
+    // AI 触发：显示只读提示，明确告诉玩家「这是 AI 在转」
+    const note = document.createElement('div');
+    note.className = 'wheel-readonly';
+    note.style.cssText = 'margin:0 auto 10px;display:block;text-align:center;font-size:12.5px;'
+      + 'color:var(--c-dim);background:var(--c-panel-dk);border:1px solid var(--line);'
+      + 'border-radius:6px;padding:8px 12px;';
+    note.textContent = playerName ? `${playerName} 正在转动 —— 你只能观看，无法操作` : 'AI 正在转动 —— 你只能观看，无法操作';
+    body.appendChild(note);
+  }
 
   const modal = openModal({
     title: wheel.label || '命运转盘',
     body,
-    dismissible: false,
-    actions: [{ text: '关闭', primary: false }],
+    // 只读（AI）模式**不可**点击遮罩关闭 —— 必须等 AI 转完
+    dismissible: !readonly,
+    actions: [{ text: readonly ? '关闭' : '完成并离开', primary: !readonly }],
   });
 
   // 暴露给自动化测试
   body.dataset.wheelId = wheel.id || '';
+  body.dataset.wheelReadonly = readonly ? '1' : '0';
 
   let spinning = false;
+  let spinIndex = 0;      // 已转次数
+
+  /** 更新剩余次数文案 */
+  const updateCounter = () => {
+    if (readonly) {
+      counter.textContent = '';
+      return;
+    }
+    const left = Math.max(0, maxSpins - spinIndex);
+    counter.textContent = left > 0
+      ? `剩余可转 ${left} 次（每次转盘都会立即结算）`
+      : '次数已用完 —— 点击「完成并离开」继续回合';
+  };
+  updateCounter();
 
   /**
    * 执行一次转动。
@@ -243,8 +295,12 @@ export function showWheelDialog(wheel, opts = {}) {
    */
   const spin = (pick) => {
     if (spinning) return;
+    if (!readonly && spinIndex >= maxSpins) return;
     spinning = true;
-    spinBtn.disabled = true;
+    if (spinBtn) {
+      spinBtn.disabled = true;
+      spinBtn.textContent = '转动中…';
+    }
     hub.textContent = '···';
 
     const n = outcomes.length;
@@ -263,17 +319,31 @@ export function showWheelDialog(wheel, opts = {}) {
         + `<div style="font-size:12.5px;color:var(--c-dim);margin-top:6px;font-weight:600">`
         + `${escapeXml(o.big)} · ${escapeXml(o.lbl)}</div>`;
       spinning = false;
-      spinBtn.disabled = false;
-      hub.textContent = 'SPIN';
+      spinIndex++;
+      if (spinBtn) {
+        // 达到上限 → 禁用按钮，引导玩家关闭
+        const exhausted = spinIndex >= maxSpins;
+        spinBtn.disabled = exhausted;
+        spinBtn.textContent = exhausted ? '次数已用完' : '再 转 一 次';
+      }
+      updateCounter();
       if (opts.onSpin) {
-        opts.onSpin({ outcomeId: o.id, outcome: o, pick: chosen, rotation: target });
+        opts.onSpin({
+          outcomeId: o.id,
+          outcome: o,
+          pick: chosen,
+          rotation: target,
+          spinIndex,
+        });
       }
     }, SPIN_MS);
   };
 
-  spinBtn.addEventListener('click', () => spin());
+  if (spinBtn) {
+    spinBtn.addEventListener('click', () => spin());
+  }
 
-  // AI 玩家 —— 自动开转
+  // AI 玩家 —— 自动开转（只读，玩家不能干预）
   if (opts.autoSpin) {
     setTimeout(() => spin(), 260);
   }
@@ -285,6 +355,8 @@ export function showWheelDialog(wheel, opts = {}) {
     close: () => { closeModal(); if (opts.onClose) opts.onClose(); },
     spin,
     modal,
+    /** 当前已转次数（自动化测试用） */
+    get spinCount() { return spinIndex; },
   };
 }
 

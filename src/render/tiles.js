@@ -12,7 +12,7 @@
  *   · 状态（未持有 / 已持有 / 质押 / 可收购）用 class 切换即可。
  *
  * ================== 与 canvas.js 的职责切分 ==================
- *   · **DOM（本模块）**：46 个地块的全部内容 —— 卡面、名称、读数、徽章、状态；
+ *   · **DOM（本模块）**：34 个地块的全部内容 —— 卡面、名称、读数、徽章、状态；
  *   · **Canvas（canvas.js）**：底板、护城河、中央广场、棋子、特效。
  *   两者共享同一套几何（`cellRect` 换算成百分比），因此永远对齐。
  *
@@ -136,6 +136,27 @@ function nameHTML(name, cls) {
     return `<div class="${cls}"><span>${esc(n.slice(0, cut))}</span><span>${esc(n.slice(cut))}</span></div>`;
   }
   return `<div class="${cls}">${esc(n)}</div>`;
+}
+
+/**
+ * 持有人显示 —— **玩家真名**（玩家设定的昵称 / player.name）。
+ *
+ * 历史包袱：卡片上曾显示设计稿简化名（「霓青持有」「橙方持有」），
+ * 那只是颜色代号，玩家认不出自己的地盘。现在统一显示真名。
+ *
+ * ⚠ 截断策略：**JS 侧按格宽自适应**（不用 CSS 省略号）。
+ *   原因：`text-overflow: ellipsis` 会让 `scrollWidth > clientWidth`，
+ *   溢出检测按这个判据判定 —— 省略号本身就会被误报成「溢出」。
+ *   所以这里在渲染时就把名字裁到能放下的长度：
+ *     · 昵称上限 10 字（index.html 的 maxlength），AI 名也差不多；
+ *     · 6 字以内原样显示；超过则裁到 5 字 + 「…」。
+ *   `title` 属性保留完整真名，悬停可见。
+ */
+function ownerLabel(player) {
+  const raw = String((player && player.name) || '').trim();
+  if (!raw) return '—';
+  // 6 字封顶 —— 地块卡面最窄处（92px）只能放 6~7 个中文字
+  return raw.length > 6 ? raw.slice(0, 5) + '…' : raw;
 }
 
 /** 集团配色（未持有时楼体是集团色，已持有才换成玩家色） */
@@ -346,7 +367,7 @@ function tileRegulator(cell, st) {
       <div class="mt-d2-top">
         <span class="mt-chip" style="background:${info.color}1f;color:${info.dk}">${esc(info.role)}</span>
         ${held
-          ? `<span class="mt-d2-owner"><i style="background:${owner.main}"></i>${esc(owner.name)}</span>`
+          ? `<span class="mt-d2-owner" title="${esc(st.ownerName || owner.name)}"><i style="background:${owner.main}"></i><span class="mt-owner-text">${esc(st.ownerName || owner.name)}</span></span>`
           : `<span class="mt-d2-tier" style="--acc:${info.dk}">监管</span>`}
       </div>
       ${nameHTML(cell.name, 'mt-d2-name')}
@@ -489,7 +510,7 @@ function tileInstitution(cell, st) {
       <div class="mt-d2-top">
         <span class="mt-chip" style="background:${g.base}22;color:${g.dk}">${esc(g.name)}</span>
         ${held
-          ? `<span class="mt-d2-owner"><i style="background:${owner.main}"></i>${esc(owner.name)}</span>`
+          ? `<span class="mt-d2-owner" title="${esc(st.ownerName || owner.name)}"><i style="background:${owner.main}"></i><span class="mt-owner-text">${esc(st.ownerName || owner.name)}</span></span>`
           : `<span class="mt-d2-tier">${esc(lvLabel)}</span>`}
       </div>
       ${nameHTML(cell.name, 'mt-d2-name')}
@@ -555,7 +576,7 @@ export class TileLayer {
     }
   }
 
-  /** 构建 46 个地块 DOM（只在首次创建时调用） */
+  /** 构建 34 个地块 DOM（只在首次创建时调用） */
   build() {
     this.root.innerHTML = '';
     this.nodes = [];
@@ -623,6 +644,8 @@ export class TileLayer {
       const st = {
         level: lv,
         owner: owner ? owner.colorIndex : null,
+        // 持有人**真名**（玩家昵称 / AI 名），不再用「霓青」这类颜色代号
+        ownerName: owner ? ownerLabel(owner) : '',
         mortgaged: !!(inst && inst.mortgaged),
         affordable,
       };

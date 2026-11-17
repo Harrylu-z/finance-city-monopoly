@@ -318,7 +318,13 @@ export function settleOnCell(state, player, cellIndex) {
     const owner = ownerOf(state, cellIndex);
     if (!owner) {
       // 无主 —— 触发收购决策（路演等限时状态 + 投行家职业可降低收购成本）
-      const level = cell.tier;
+      //
+      // ⚠ 买下即**网点级（level 0）**（用户拍板的星级体系）：
+      //   星级只影响价格 / 租金高低，**不决定初始等级**。
+      //   board.js 里所有机构的 `tier` 恒为 0，因此这里取到的恒是 0 ——
+      //   但为了语义明确，这里不再依赖 `cell.tier` 的数据巧合，
+      //   而是显式写死 INITIAL_LEVEL = 0（网点级）。
+      const level = 0;
       const basePrice = purchasePrice(cell, level, state.market);
       const price = Math.round(basePrice * playerCostMult(player, 'buyCostMult'));
       results.push({ kind: 'purchase-offer', cellIndex, price, level, cell });

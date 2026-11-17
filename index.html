@@ -90,18 +90,63 @@
       <!-- 背景层：始终铺满整个 stage（天际线视差） -->
       <canvas id="stage-bg" class="stage-bg" aria-hidden="true"></canvas>
 
-      <!-- ===== 顶部左角：当前玩家紧凑单条 ===== -->
-      <div id="hud-player" class="hud hud-player">
-        <div id="active-player-card" class="active-card pixel-panel">
-          <canvas id="active-avatar" class="active-avatar" width="20" height="30" aria-hidden="true"></canvas>
-          <div class="active-info">
-            <span id="active-player-name" class="active-name">—</span>
-            <span id="active-player-cash" class="active-cash">￥0</span>
+      <!-- ===== 左侧竖栏：当前玩家卡 → Tab 面板 → 回合播报 ===== -->
+      <!-- 整栏宽度 = --left-panel-w；棋盘的 left 由同一变量推导，
+           因此棋盘左侧 0 像素被 HUD 覆盖。 -->
+      <div id="hud-left" class="hud hud-left">
+        <!-- ① 当前玩家卡：**永远显示人类玩家**，不随 AI 回合切换 -->
+        <div id="hud-player" class="hud-player">
+          <div id="active-player-card" class="active-card pixel-panel">
+            <canvas id="active-avatar" class="active-avatar" width="20" height="30" aria-hidden="true"></canvas>
+            <div class="active-info">
+              <span id="active-player-name" class="active-name">—</span>
+              <span id="active-player-cash" class="active-cash">￥0</span>
+            </div>
+            <span id="active-player-sub" class="active-sub">—</span>
           </div>
-          <span id="active-player-sub" class="active-sub">—</span>
+          <!-- 贷款 / 债券 / 限时状态提示（仅在有内容时显示） -->
+          <div id="active-status" class="active-status" hidden></div>
         </div>
-        <!-- 贷款 / 债券 / 限时状态提示（仅在有内容时显示） -->
-        <div id="active-status" class="active-status" hidden></div>
+
+        <!-- ② Tab 面板：玩家关键信息 -->
+        <div id="hud-tabs" class="hud-tabs">
+          <div id="tab-list" class="tab-list" role="tablist" aria-label="玩家信息">
+            <button class="tab-btn" role="tab" id="tab-btn-inst"
+                    aria-controls="tab-panel-inst" aria-selected="true" data-tab="inst">我的机构</button>
+            <button class="tab-btn" role="tab" id="tab-btn-buff"
+                    aria-controls="tab-panel-buff" aria-selected="false" data-tab="buff" tabindex="-1">Buff</button>
+            <button class="tab-btn" role="tab" id="tab-btn-loan"
+                    aria-controls="tab-panel-loan" aria-selected="false" data-tab="loan" tabindex="-1">贷款</button>
+            <button class="tab-btn" role="tab" id="tab-btn-bond"
+                    aria-controls="tab-panel-bond" aria-selected="false" data-tab="bond" tabindex="-1">债券</button>
+            <button class="tab-btn" role="tab" id="tab-btn-net"
+                    aria-controls="tab-panel-net" aria-selected="false" data-tab="net" tabindex="-1">净值</button>
+          </div>
+          <div class="tab-panels">
+            <div id="tab-panel-inst" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-inst" tabindex="0"></div>
+            <div id="tab-panel-buff" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-buff" tabindex="0" hidden></div>
+            <div id="tab-panel-loan" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-loan" tabindex="0" hidden></div>
+            <div id="tab-panel-bond" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-bond" tabindex="0" hidden></div>
+            <div id="tab-panel-net" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-net" tabindex="0" hidden></div>
+          </div>
+        </div>
+
+        <!-- ③ 回合播报 —— 贴左下角（margin-top:auto 顶到竖栏底部） -->
+        <div id="hud-feed" class="hud-feed">
+          <button id="feed-toggle" class="feed-toggle pixel-panel" aria-expanded="false" aria-controls="log-list">
+            <span class="feed-toggle-icon">▸</span>
+            <span id="feed-latest" class="feed-latest">等待开局…</span>
+          </button>
+          <div id="log-panel" class="log-panel pixel-panel" hidden>
+            <h3 class="panel-title">回合播报</h3>
+            <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
+          </div>
+        </div>
       </div>
 
       <!-- ===== 顶部右角：回合数 + 骰子指示 + 排行榜 ===== -->
@@ -112,7 +157,6 @@
           <span id="hud-market" class="hud-market">震荡</span>
         </div>
         <button id="btn-rank" class="pixel-btn pixel-btn-icon" title="资产排行" aria-label="资产排行">≡</button>
-        <button id="btn-menu" class="pixel-btn pixel-btn-icon" title="菜单" aria-label="菜单">☰</button>
       </div>
 
       <!-- ===== 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） ===== -->
@@ -125,18 +169,6 @@
         <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
         <!-- 移动端：点击地块弹出的详情卡 -->
         <div id="cell-detail" class="cell-detail" hidden></div>
-      </div>
-
-      <!-- ===== 左侧窄条：回合播报（默认只显示最新 1 条，点击展开） ===== -->
-      <div id="hud-feed" class="hud hud-feed">
-        <button id="feed-toggle" class="feed-toggle pixel-panel" aria-expanded="false" aria-controls="log-list">
-          <span class="feed-toggle-icon">▸</span>
-          <span id="feed-latest" class="feed-latest">等待开局…</span>
-        </button>
-        <div id="log-panel" class="log-panel pixel-panel" hidden>
-          <h3 class="panel-title">回合播报</h3>
-          <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
-        </div>
       </div>
 
       <!-- ===== 底部中央：主行动按钮 + 常用操作（常驻，不再收进抽屉） ===== -->
@@ -170,6 +202,20 @@
     <div id="rank-box" class="modal-box pixel-panel" role="dialog" aria-modal="true" aria-label="资产排行">
       <h2 class="modal-title">资产排行</h2>
       <div id="rank-list" class="rank-list rank-list-modal"></div>
+      <!-- ===== 菜单分组（原「菜单」按钮的功能迁移到此）===== -->
+      <div class="rank-menu">
+        <div class="panel-title">菜单</div>
+        <div class="rank-menu-grid">
+          <button id="btn-menu-share" class="pixel-btn rank-menu-btn">分享战绩</button>
+          <button id="btn-menu-assets" class="pixel-btn rank-menu-btn">我的机构</button>
+          <button id="btn-menu-metrics" class="pixel-btn rank-menu-btn">财务指标总览</button>
+          <button id="btn-menu-sound" class="pixel-btn rank-menu-btn">音效：开</button>
+          <button id="btn-menu-anim" class="pixel-btn rank-menu-btn">特效：开</button>
+          <button id="btn-menu-theme" class="pixel-btn rank-menu-btn">主题：暗色</button>
+          <button id="btn-menu-selftest" class="pixel-btn rank-menu-btn">规则引擎自检</button>
+          <button id="btn-menu-setup" class="pixel-btn rank-menu-btn">返回开局界面</button>
+        </div>
+      </div>
       <div class="modal-actions">
         <button id="btn-rank-close" class="pixel-btn">关闭</button>
       </div>

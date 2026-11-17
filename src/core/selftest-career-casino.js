@@ -145,8 +145,9 @@ export function runCareerChecks() {
   /* ---------- 被动实际生效 ---------- */
 
   check(results, '被动 · 投行家收购价 -8%', () => {
+    // ⚠ 34 格版：tier 恒为 0 —— 改用「星级」挑一个 1 星标的（门槛最低）。
     const cellIdx = BOARD_CELLS.findIndex(
-      (c) => c.type === 'institution' && !c.regulator && c.tier === 0,
+      (c) => c.type === 'institution' && !c.regulator && c.star === 1,
     );
     // 对照组：无投行家职业
     const plain = makeCasinoState();
@@ -175,8 +176,10 @@ export function runCareerChecks() {
     const p = state.players[0];
     p.career = 'fund';
     p.careerId = 'fund';
+    // ⚠ 34 格版：所有机构买下即网点级（tier 恒为 0）——
+    //   改用「星级」来挑一个高门槛标的（3 星 = 最贵）。
     const cellIdx = BOARD_CELLS.findIndex(
-      (c, i) => c.type === 'institution' && !c.regulator && c.tier >= 1,
+      (c) => c.type === 'institution' && !c.regulator && c.star === 3,
     );
     const cell = BOARD_CELLS[cellIdx];
     p.institutions.push({ cellIndex: cellIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
@@ -217,8 +220,9 @@ export function runCareerChecks() {
     owner.career = 'actuary';
     owner.careerId = 'actuary';
     const payer = state.players[0];
+    // ⚠ 34 格版：tier 恒为 0 —— 改用「星级」挑一个 2 星标的。
     const cellIdx = BOARD_CELLS.findIndex(
-      (c) => c.type === 'institution' && !c.regulator && c.tier === 2,
+      (c) => c.type === 'institution' && !c.regulator && c.star === 2,
     );
     const cell = BOARD_CELLS[cellIdx];
     owner.institutions.push({ cellIndex: cellIdx, level: 2, mortgaged: false, mortgageAmount: 0 });
@@ -238,7 +242,7 @@ export function runCareerChecks() {
     const p = state.players[3];
     p.career = 'trader';
     p.careerId = 'trader';
-    // 46 格版：「市场周期 · 牛熊切换」被收进「命运转盘」
+    // 34 格版：「市场周期 · 牛熊切换」被收进「命运转盘」
     const cellIdx = BOARD_CELLS.findIndex(
       (c) => c.type === 'special' && c.special?.kind === 'wheel' && c.special.wheelId === 'fate',
     );
@@ -279,12 +283,21 @@ export function runCareerChecks() {
 export function runCasinoChecks() {
   const results = [];
 
-  check(results, '棋盘含 2 块赌场地块', () => {
+  check(results, '棋盘含 2 块赌场地块（架在城门 A / B）', () => {
     const idxs = casinoCellIndices();
+    // 34 格版：外环 24 + 城门 2 + 内环 8 = 34 格，
+    //   外环与城门合计 26 格，要装 20 个外围机构 + 起点 1 + 转盘 3 + 赌场 2 = 26 格 ✓
+    //   因此保留双赌场，转盘从 4 个减为 3 个
+    //   （枢纽转盘的三个移动类效果已并入机会转盘，功能不丢失）。
     assert(idxs.length === 2, `赌场格 ${idxs.length} 个（应为 2）`);
     assert(SPECIAL.casino, '缺少 casino 特殊格定义');
     assert(SPECIAL.casino.icon === 'casino', '赌场图标 key 应为 casino');
-    return `赌场格 index ${idxs.join(' / ')}`;
+    // 两座赌场必须都架在城门上（渲染层画城门造型）
+    for (const i of idxs) {
+      assert(BOARD_CELLS[i].special?.kind === 'gate',
+        `赌场格 #${i} 应标记为 gate 造型（架在城门上）`);
+    }
+    return `赌场格 index ${idxs.join(' / ')}（城门 A / 城门 B）`;
   });
 
   check(results, '踩入赌场触发全员同桌', () => {

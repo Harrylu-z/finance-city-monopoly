@@ -16,7 +16,7 @@
   --ink-2:    #334155;   /* 次文字 */
   --ink-3:    #64748b;   /* 弱文字 */
   --line:     #e2e8f0;   /* 分隔线 / 卡片描边 */
-  --bg:       #f1f5f9;   /* 页面底色 */
+  --bg:       #eef2f8;   /* 页面底色（现代扁平 · 柔和冷灰蓝） */
   --surface:  #ffffff;   /* 卡片 / 面板底色 */
 
   /* ---- 语义色（沿用受限色板，保证与地块一致）---- */
@@ -98,6 +98,14 @@
   --hud-corner-w: 260px;
   /* 右侧常驻面板（资产排行 + 财务对比）宽度 */
   --right-panel-w: 284px;
+  /* ==========================================================
+     左侧 HUD 竖栏宽度 —— 统一控制「当前玩家卡 + Tab 面板 + 回合播报」
+     棋盘左侧必须整体让位出这个宽度，棋盘永不被左侧 HUD 覆盖。
+     与 --right-panel-w 对称：board-wrap 的 left / right 都由它推导。
+     ========================================================== */
+  --left-panel-w: 264px;
+  /* 左侧竖栏与棋盘之间的安全间隙 */
+  --left-gutter: 8px;
 }
 
 /* ============================================================
@@ -390,10 +398,14 @@ canvas, .pixel-panel, .pixel-btn, img {
 }
 
 /* 棋盘容器 —— 撑满舞台，HUD 浮在其上（pointer-events 由 HUD 自行接管）。
-   宽屏时右侧让位给「资产排行 + 财务对比」常驻面板，棋盘永不被面板遮挡。 */
+   宽屏时右侧让位给「资产排行 + 财务对比」常驻面板，棋盘永不被面板遮挡。
+   左侧让位给「当前玩家卡 + Tab 面板 + 回合播报」竖栏（--left-panel-w），
+   因此棋盘**左右两侧都不会被 HUD 覆盖**。 */
 .board-wrap {
   position: absolute;
-  inset: var(--sp-3);
+  top: var(--sp-3);
+  bottom: var(--sp-3);
+  left: calc(var(--left-panel-w) + var(--sp-3) + var(--left-gutter));
   right: calc(var(--right-panel-w) + var(--sp-3) + 6px);
   z-index: 1;
   overflow: hidden;
@@ -465,12 +477,39 @@ canvas, .pixel-panel, .pixel-btn, img {
 .hud { z-index: 10; pointer-events: none; }
 .hud > * { pointer-events: auto; }
 
-/* ---------- 左上角：当前玩家紧凑单条 ---------- */
-.hud-player {
+/* ============================================================
+   左侧 HUD 竖栏 —— 当前玩家卡 / Tab 面板 / 回合播报
+   ------------------------------------------------------------
+   三块全部收进 **同一个绝对定位的竖栏容器** `.hud-left`：
+     ① 当前玩家卡（永远显示**人类玩家**，不随 AI 回合切换）
+     ② Tab 面板（我的机构 / Buff / 贷款 / 债券 / 净值）
+     ③ 回合播报（贴**左下角**，与底部操作栏共存）
+   竖栏右边界 = var(--left-panel-w)，棋盘的 left 由同一个变量推导 ——
+   因此**棋盘左侧 0 像素被 HUD 覆盖**。
+   ============================================================ */
+.hud-left {
   position: absolute;
   top: var(--sp-3);
   left: var(--sp-3);
-  max-width: var(--hud-corner-w);
+  bottom: var(--sp-3);
+  width: var(--left-panel-w);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  /* 竖栏自身不吃点击（只有子面板接管） */
+  pointer-events: none;
+  /* 回合播报是绝对定位钉在竖栏底边的，
+     所以这里给竖栏留出播报的高度，Tab 面板不会压到它下面。
+     --feed-h 默认 245px（播报展开时的高度），窄屏由媒体查询收窄。 */
+  --feed-h: 245px;
+  padding-bottom: calc(var(--feed-h) + var(--sp-2));
+}
+.hud-left > * { pointer-events: auto; }
+
+/* ---------- 当前玩家卡（人类玩家）---------- */
+.hud-player {
+  flex: none;
+  max-width: 100%;
 }
 .active-card {
   display: flex;
@@ -512,13 +551,13 @@ canvas, .pixel-panel, .pixel-btn, img {
   max-width: 96px;
 }
 
-/* ---------- 左上角：贷款 / 债券 / 限时状态 ---------- */
+/* ---------- 贷款 / 债券 / 限时状态（挂在当前玩家卡下方）---------- */
 .active-status {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
-  max-width: var(--hud-corner-w);
+  max-width: 100%;
 }
 .status-chip {
   font-family: var(--font-num);
@@ -575,17 +614,26 @@ canvas, .pixel-panel, .pixel-btn, img {
 .hud-market.is-bull { background: var(--c-red); color: var(--ink); }
 .hud-market.is-bear { background: var(--c-green); color: var(--c-ink); }
 
-/* ---------- 左侧窄条：可折叠回合播报 ---------- */
+/* ---------- 回合播报 —— 左侧竖栏**底部**（左下角）---------- */
 .hud-feed {
+  /* 需求：「回合播报移到左下角」——
+     用 `position: absolute; bottom: 0; top: auto` 真正钉在竖栏底边，
+     而不是靠 flex 的 margin-top:auto（那样 top/bottom 计算值都是 auto，
+     无法表达「贴底」语义）。
+     竖栏 `.hud-left` 是 position:absolute 的定位容器，这里是它的子级，
+     绝对定位相对 `.hud-left` 计算 —— 左下角 = 竖栏左下角，
+     恰好与底部中央操作栏 `.hud-bottom` 左右并存、互不遮挡。 */
   position: absolute;
-  /* 默认 64px；左上状态芯片增多时由 JS 写入实际值，播报栏自动下移避让 */
-  top: var(--feed-top, 64px);
-  left: var(--sp-3);
-  width: 232px;
-  max-width: 34vw;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  width: 100%;
+  max-width: none;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: none;
 }
 .feed-toggle {
   display: flex;
@@ -650,12 +698,254 @@ canvas, .pixel-panel, .pixel-btn, img {
 .log-item.l-bad  { color: var(--c-red-dk); }
 .log-item.l-good { color: var(--c-green-dk); }
 
+/* ---------- 资产排行弹窗底部的「菜单」分组 ----------
+   原右上角「菜单」按钮（#btn-menu）已删除，功能全部迁到这里。 */
+.rank-menu {
+  border-top: var(--border-w) solid var(--line);
+  margin-top: var(--sp-2);
+}
+.rank-menu .panel-title {
+  border-radius: 0;
+  border-top: none;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+}
+.rank-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  padding: var(--sp-2) var(--sp-3);
+}
+.rank-menu-btn {
+  font-size: 11px;
+  padding: 5px 6px;
+  min-height: 28px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================
+   左侧 Tab 面板 —— 玩家关键信息（机构 / Buff / 贷款 / 债券 / 净值）
+   ------------------------------------------------------------
+   真实 tab 语义：role=tablist / tab / tabpanel + aria-selected。
+   高度用 flex 弹性占满竖栏剩余空间（回合播报以下），
+   窄屏时自动收起为纯 tab 条。
+   ============================================================ */
+.hud-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255,255,255,.94);
+  overflow: hidden;
+}
+.tab-list {
+  display: flex;
+  flex: none;
+  border-bottom: var(--border-w) solid var(--line);
+  background: var(--c-panel-dk);
+}
+.tab-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: var(--ink-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 5px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+.tab-btn:hover { color: var(--ink); background: rgba(255,255,255,.6); }
+.tab-btn[aria-selected="true"] {
+  color: var(--c-gold-dk);
+  background: #fff;
+  border-bottom-color: var(--c-gold);
+}
+/* 未选中的 tab 也要能看出「可点」 */
+.tab-btn:focus-visible { outline: 2px solid var(--c-gold); outline-offset: -2px; }
+
+.tab-panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2);
+}
+.tab-panels::-webkit-scrollbar { width: 6px; }
+.tab-panels::-webkit-scrollbar-thumb { background: var(--c-dim); border-radius: 3px; }
+
+.tab-panel[hidden] { display: none; }
+
+/* ---------- 面板内的小节标题 ---------- */
+.tab-sec {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+  padding: 3px 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.tab-sec + .tab-sec { border-top: 1px dashed var(--line); margin-top: 5px; padding-top: 6px; }
+.tab-sec-v {
+  font-family: var(--font-num);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+
+/* ---------- 键值行 ---------- */
+.tab-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  padding: 2px 0;
+}
+.tab-row-k {
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tab-row-v {
+  font-family: var(--font-num);
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  flex: none;
+}
+.tab-row-v.is-gold  { color: var(--c-gold-dk); }
+.tab-row-v.is-red   { color: var(--c-red-dk); }
+.tab-row-v.is-green { color: var(--c-green-dk); }
+.tab-row-v.is-dim   { color: var(--ink-3); font-weight: 400; font-family: var(--font-ui); }
+
+/* ---------- 机构条目 ---------- */
+.tab-inst {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  padding: 3px 0;
+  border-bottom: 1px dotted var(--line);
+}
+.tab-inst:last-child { border-bottom: none; }
+.tab-inst-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex: none;
+}
+.tab-inst-name {
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.tab-inst-lv {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--c-dim-lt);
+  padding: 0 4px;
+  border-radius: 3px;
+  flex: none;
+}
+.tab-inst-rent {
+  font-family: var(--font-num);
+  font-weight: 700;
+  color: var(--ink-2);
+  white-space: nowrap;
+  flex: none;
+}
+.tab-inst-flag {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--c-red-dk);
+  background: rgba(141,36,25,.10);
+  border: 1px solid var(--c-red-dk);
+  padding: 0 3px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* ---------- Buff 条 ---------- */
+.tab-buff {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  padding: 3px 0;
+  border-bottom: 1px dotted var(--line);
+}
+.tab-buff:last-child { border-bottom: none; }
+.tab-buff-tag {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex: none;
+  margin-top: 1px;
+}
+.tab-buff.is-good .tab-buff-tag { color: var(--c-green-dk); background: rgba(79,157,85,.12); border: 1px solid var(--c-green-dk); }
+.tab-buff.is-bad  .tab-buff-tag { color: var(--c-red-dk);   background: rgba(141,36,25,.10);  border: 1px solid var(--c-red-dk); }
+.tab-buff-body { min-width: 0; flex: 1 1 auto; }
+.tab-buff-name { font-weight: 700; color: var(--ink); }
+.tab-buff-desc {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.tab-buff-left {
+  font-family: var(--font-num);
+  font-size: 10px;
+  color: var(--ink-3);
+  flex: none;
+  margin-top: 1px;
+}
+
+/* ---------- 空状态 ---------- */
+.tab-empty {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  text-align: center;
+  padding: var(--sp-4) var(--sp-2);
+  line-height: 1.7;
+}
+
 /* ---------- 底部中央：主行动 + 常用操作（常驻） ----------
    水平范围与 .board-wrap 完全一致 → 操作栏永远与棋盘居中对齐 */
 .hud-bottom {
   position: absolute;
   bottom: var(--sp-4);
-  left: var(--sp-3);
+  /* 底部操作栏也必须避开左侧竖栏 ——
+     竖栏右边界 = var(--left-panel-w) + var(--sp-3) = 276px，
+     留 8px 间隙 → left = 284px，与棋盘左边界对齐。
+     这样**棋盘左侧 0 像素被任何 HUD 覆盖**（含底部操作栏）。 */
+  left: calc(var(--left-panel-w) + var(--sp-3) + var(--left-gutter));
   right: calc(var(--right-panel-w) + var(--sp-3) + 6px);
   display: flex;
   justify-content: center;
@@ -1340,8 +1630,9 @@ canvas, .pixel-panel, .pixel-btn, img {
    响应式
    ============================================================ */
 @media (max-width: 1280px) {
-  :root { --hud-corner-w: 220px; --right-panel-w: 252px; }
-  .hud-feed { width: 200px; }
+  :root { --hud-corner-w: 220px; --right-panel-w: 252px; --left-panel-w: 236px; }
+  /* 1280×720 实测竖栏高 696px，播报最多占 265px —— 留 265px 即可 */
+  .hud-left { --feed-h: 265px; }
 }
 
 /* 中窄屏：右侧面板收起（排行退回弹窗入口 ≡），棋盘恢复满宽 */
@@ -1353,22 +1644,29 @@ canvas, .pixel-panel, .pixel-btn, img {
 
 @media (max-width: 820px) {
   .stage { padding: var(--sp-2); }
-  .board-wrap { inset: var(--sp-2); }
-  .hud-player { top: var(--sp-2); left: var(--sp-2); }
+  :root { --left-panel-w: 200px; }
+  .board-wrap {
+    top: var(--sp-2);
+    bottom: var(--sp-2);
+    left: calc(var(--left-panel-w) + var(--sp-2) + 4px);
+    right: var(--sp-2);
+  }
+  .hud-left {
+    top: var(--sp-2);
+    left: var(--sp-2);
+    bottom: var(--sp-2);
+    gap: var(--sp-1);
+    --feed-h: 168px;
+  }
   .hud-top-right { top: var(--sp-2); right: var(--sp-2); }
   .active-sub { display: none; }
   .active-name { max-width: 78px; }
-  .active-status { max-width: 52vw; gap: 3px; }
+  .active-status { max-width: 100%; gap: 3px; }
   .status-chip { font-size: 9px; padding: 2px 4px; }
-  .hud-feed {
-    top: auto;
-    bottom: calc(var(--sp-4) + 96px);
-    left: var(--sp-2);
-    width: min(260px, 56vw);
-    max-width: none;
-  }
-  .log-panel { max-height: 34vh; }
-  .hud-bottom { bottom: var(--sp-2); left: var(--sp-2); right: var(--sp-2); }
+  .tab-btn { font-size: 10px; letter-spacing: 0; }
+  .tab-panels { padding: 5px; }
+  .log-panel { max-height: 30vh; }
+  .hud-bottom { bottom: var(--sp-2); left: calc(var(--left-panel-w) + var(--sp-2) + 4px); right: var(--sp-2); }
   .pixel-btn-primary-xl { font-size: var(--fs-md); padding: 12px 20px; min-width: 132px; min-height: 48px; }
   .bottom-bar { gap: 6px; padding: 6px 8px; max-width: 96vw; }
   .bottom-act { min-width: 0; padding: 8px 12px; min-height: 46px; font-size: var(--fs-xs); }
@@ -1379,7 +1677,6 @@ canvas, .pixel-panel, .pixel-btn, img {
   .bottom-bar { flex-wrap: wrap; justify-content: center; }
   .bottom-sep { display: none; }
   .bottom-act { flex: 1 1 30%; padding: 8px 6px; }
-  .hud-feed { width: min(220px, 52vw); }
   .pixel-btn-primary-xl { min-width: 110px; padding: 10px 14px; }
 }
 
