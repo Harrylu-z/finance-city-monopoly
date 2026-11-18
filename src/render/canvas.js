@@ -18,6 +18,7 @@ import {
 } from '../core/board.js';
 import { PLAYER_COLORS, PALETTE, GROUP_COLORS, REGULATOR_COLOR } from '../core/palette.js';
 import { getAvatarSprites } from '../art/avatars.js';
+import { CharEntityRenderer } from './charEntity.js';
 
 const GROUP_INDEX = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
@@ -164,6 +165,10 @@ export class BoardRenderer {
     // ⚠ 3D 模式标记 —— 角色底座在 3D 下要用「立体台座」画法
     //   （带侧壁 + 顶面高光），平面模式保持原来的扁平椭圆底座。
     this.is3D = false;
+    // 角色实体渲染器 —— 2.5D 台座 / 柱体 / 球头（PR-E 重设计）
+    // ⚠ 独立成对象而非散落在 drawTokens 里，是因为它需要跨帧缓存
+    //   （渐变对象每帧重建会拖慢渲染）。
+    this.charEntities = new CharEntityRenderer();
   }
 
   /**
@@ -877,6 +882,10 @@ export class BoardRenderer {
       byCell.get(p.position).push(p);
     }
 
+    // ⚠ 实体计数归零 —— 供自检断言「角色实体确实被绘制」
+    this.charEntities.entityCount = 0;
+    this.lastTokenCount = 0;
+
     for (const [cellIndex, players] of byCell) {
       const r = this.cellRect(cellIndex);
       const n = players.length;
@@ -914,10 +923,52 @@ export class BoardRenderer {
         const baseCy = ty + (sh - 1) * s;
         // 当前回合玩家 → 底座带呼吸光晕（PR-E）
         const isCurrent = state.currentPlayerIndex === p.index;
-        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main, halfW, isCurrent);
 
-        if (anim && anim.squash) {
-          const sq = anim.squash;
+        // ==========================================================
+        // 角色实体（2.5D）—— 台座 + 柱体 + 球头
+        // ==========================================================
+        //
+        // ⚠ 为什么「实体」画在立绘**下面**：
+        //   实体的职责是**体积**（底座 / 躯干 / 头部），
+        //   而职业立绘表达的是**人物细节**（脸 / 服饰）。
+        //   两者叠加：实体提供「站在台座上的小人」的体积感，
+        //   立绘浮在躯干之上，提供身份辨识度。
+        //
+        // ⚠ 实体尺寸与立绘尺寸的换算：
+        //   实体的「脚底」= 立绘的脚底（baseCy），
+        //   实体的身高按 s 缩放，与立绘的 40px 高形成比例关系。
+        //   实体比立绘**矮**（躯干 + 头 ≈ 立绘身高的 60%），
+        //   这样立绘的头部会探出实体之上，形成层次而非重叠。
+        //
+        // ⚠ squash 压缩：落地时整个实体一起压扁 —— 不只是立绘。
+        //   只压立绘会让「立绘浮在半空」，实体不压则脚底会离地。
+        const squash = (anim && anim.squash) ? anim.squash : null;
+        // 弹跳位移（腾空时向上）
+        const bob = (anim && anim.bob) ? anim.bob : 0;
+        // 朝向微倾（-1~1，左/右）
+        const lean = (anim && anim.lean) ? anim.lean : 0;
+
+        this.charEntities.draw(ctx, {
+          cx: baseCx,
+          cy: baseCy,
+          s,
+          color: pc.main,
+          colorLt: pc.lt,
+          colorDk: pc.dk,
+          avatar: p.avatar,
+          isCurrent,
+          isAI: !!p.isAI,
+          time: this.time,
+          flat: this.is3D,
+          lean,
+          bob,
+          squash,
+        });
+        this.lastTokenCount++;
+
+        // ---- 立绘叠加（浮在实体之上）----
+        if (squash) {
+          const sq = squash;
           const outlined = this.outlinedSprite(sprite, pc.main);
           const pad = 4;
           ctx.save();

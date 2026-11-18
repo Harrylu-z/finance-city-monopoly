@@ -76,6 +76,43 @@ import { delay, interval } from '../core/scheduler.js';
 /** 集团 → 建筑造型索引（与 render/canvas.js 保持一致） */
 const GROUP_INDEX_BY_GROUP = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
+/**
+ * ==========================================================
+ * 逐格步进的**集中调速参数** —— 唯一调速入口
+ * ==========================================================
+ *
+ * ⚠ 此前步进时长散落在两处（`MoveAnimator.stepMs` 与
+ *   `moveAndSettle` 里的 `interval(120, …)`），
+ *   两者还不同步（120 vs 110），导致音效与画面错位。
+ *   现在统一到下面这一个常量。
+ *
+ * · `STEP_MS` —— 人类玩家**每格**的完整耗时（毫秒）
+ *   300ms ≈ 每秒 3.3 格：足够看清「起跳 → 腾空 → 落地」三段，
+ *   多格连走时有节奏感，又不至于让 6 格的移动拖到近 2 秒。
+ *
+ * · `AI_STEP_FACTOR` —— AI 回合的加速系数
+ *   AI 不需要看清每一步的细节，但仍要**看得见逐格**，
+ *   因此只给温和的 0.75（225ms/格），不做整体跳过。
+ *
+ * · `LANDING_SFX_OFFSET` —— 落地音效相对动画的偏移
+ *   音效必须**对齐落地瞬间**（动画的 76% 处开始下坠，
+ *   压缩帧在 76%~90%），否则会听到「还在空中就落地了」。
+ */
+const STEP_MS = 300;
+const AI_STEP_FACTOR = 0.75;
+const LANDING_SFX_OFFSET = 0;
+
+/**
+ * 骰子翻滚动画时长 —— 与 `showDice` 的帧数**绑定**。
+ *
+ * ⚠ 为什么不能写死：帧数改了就必须同步改这里的等待时间，
+ *   否则会出现「骰子还在滚，人已经开始走」。
+ *   集中成常量后，两处引用同一来源。
+ */
+const DIE_FRAME_MS = 90;
+const DIE_FRAMES = 7;              // 7 帧滚动 + 1 帧定格
+const DIE_ROLL_MS = DIE_FRAME_MS * DIE_FRAMES;   // = 630ms
+
 class Game {
   constructor() {
     this.state = null;
@@ -975,7 +1012,13 @@ class Game {
     this.showDice(dice);
     this.sfx.diceRoll();
 
-    delay(620, () => {
+    // ⚠ 骰子动画与移动起点对齐
+    //
+    // 骰子翻滚动画是 7 帧 × 90ms = 630ms（见 showDice）。
+    // 此前用固定 620ms 启动移动 —— 与动画收尾差 10ms，
+    // 加上渲染抖动会让人看到「骰子还没停、人已经开始走」。
+    // 这里把等待时间定义成与骰子帧数绑定，两处永远一致。
+    delay(DIE_ROLL_MS, () => {
       this.sfx.diceLand();
       this.moveAndSettle(p, total);
     });
@@ -998,12 +1041,12 @@ class Game {
 
         const frames = m.getDieRollFrames();
         let i = 0;
-        const timer = interval(90, () => {
+        const timer = interval(DIE_FRAME_MS, () => {
           ctx.clearRect(0, 0, 16, 16);
           ctx.imageSmoothingEnabled = true;
           ctx.drawImage(frames[i % frames.length], 0, 0, 16, 16);
           i++;
-          if (i > 6) {
+          if (i >= DIE_FRAMES) {
             timer.cancel();
             ctx.clearRect(0, 0, 16, 16);
             ctx.drawImage(m.getDie(d), 0, 0, 16, 16);
@@ -1030,12 +1073,20 @@ class Game {
     // 记录本次移动经过的格子 —— 用于判定「是否经过起点格」（不只是落在起点）
     this._lastPath = path.slice();
 
+    // ⚠ 步速：AI 稍快，但**仍然逐格可见**（不跳过动画）
+    const isAI = !!(player && player.isAI);
+    const stepMs = Math.round(STEP_MS * (isAI ? AI_STEP_FACTOR : 1));
+
+    // ⚠ 音效对齐 —— 关键修复点
+    //
+    // 此前用独立的 `interval(120, …)` 播脚步音，而动画本身是 110ms/格，
+    // 两者**不同步**：音效会先于画面到达，逐渐累积偏移，
+    // 听感上像「脚步落地时角色还悬在半空」。
+    //
+    // 现在改为：**由动画的落地事件驱动音效**。
+    // onLand 在角色真正踩上那一格的瞬间触发（step 从 n-1 → n），
+    // 此时播落地音 + 生成落地特效 —— 音画严格同步。
     let stepTick = 0;
-    const stepTimer = interval(120, () => {
-      this.sfx.step();
-      stepTick++;
-      if (stepTick >= steps) stepTimer.cancel();
-    });
 
     this.mover.start({
       playerId: player.id,
@@ -1043,12 +1094,15 @@ class Game {
       to: path[path.length - 1],
       steps,
       path,
+      stepMs,
       // PR-E：每踩上一格触发一次落地特效（椭圆冲击波 + 轻微上浮）
       onLand: (stepIdx) => {
+        // 落地音与落地特效**同一帧**触发 —— 保证音画同步
+        this.sfx.step();
+        stepTick++;
         this.spawnLandingFx(player, path, stepIdx);
       },
       onDone: () => {
-        stepTimer.cancel();
         const passedStart = computeMove(from, steps, BOARD_SIZE).passedStart;
         player.position = path[path.length - 1];
         player.lastAction = { ...(player.lastAction || {}), passedStart };

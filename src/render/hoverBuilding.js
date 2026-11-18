@@ -172,21 +172,54 @@ export class HoverBuildingLayer {
     wrap.dataset.index = String(index);
     wrap.setAttribute('aria-hidden', 'true');
 
+    // 地面光晕 —— 最底层，柔和辉光，暗示「这里有能量」
+    const glow = document.createElement('div');
+    glow.className = 'mt-hb-glow';
+
+    // 地面投影
     const shadow = document.createElement('div');
     shadow.className = 'mt-hb-shadow';
+
+    // 底座广场 —— 建筑站立的透视地台
+    const plaza = document.createElement('div');
+    plaza.className = 'mt-hb-plaza';
+
+    // 楼体容器 —— 承载立绘 + 窗灯 + 招牌
+    const tower = document.createElement('div');
+    tower.className = 'mt-hb-tower';
 
     const img = document.createElement('img');
     img.className = 'mt-hb-img';
     img.alt = '';
     img.draggable = false;
 
+    // 窗格灯光层（叠在立绘之上，screen 混合只提亮）
+    const windows = document.createElement('div');
+    windows.className = 'mt-hb-windows';
+
+    // 顶部招牌 —— 等级星标 + 归属点
+    const sign = document.createElement('div');
+    sign.className = 'mt-hb-sign';
+    const signLv = document.createElement('span');
+    signLv.className = 'mt-hb-sign-lv';
+    const signOwner = document.createElement('i');
+    signOwner.className = 'mt-hb-sign-owner';
+    sign.appendChild(signLv);
+    sign.appendChild(signOwner);
+
+    tower.appendChild(img);
+    tower.appendChild(windows);
+    tower.appendChild(sign);
+
+    wrap.appendChild(glow);
     wrap.appendChild(shadow);
-    wrap.appendChild(img);
+    wrap.appendChild(plaza);
+    wrap.appendChild(tower);
     this.layer.appendChild(wrap);
 
     this._position(wrap, index);
 
-    return { wrap, img, shadow };
+    return { wrap, img, shadow, plaza, tower, windows, sign, signLv, signOwner };
   }
 
   /**
@@ -203,8 +236,14 @@ export class HoverBuildingLayer {
     const rect = r.cellRect(index);
 
     // 建筑容器：横跨格子，底部略微下沉 —— 让建筑「探出」牌面
-    const boxW = rect.w * 2.4;          // 建筑比牌面宽（楼比牌大）
-    const boxH = rect.h * 1.9;          // 建筑比牌面高
+    //
+    // ⚠ 体量比例经过实拍校准：
+    //   原来的 2.4×1.9 在 45° 俯视下显得**又扁又小**，
+    //   楼只探出牌面一点点，远看像「牌上贴了个小图标」。
+    //   现在放大到 2.9×2.5 —— 建筑明显高过牌面，
+    //   在俯视下才读得出「一栋楼」而不是「一块贴纸」。
+    const boxW = rect.w * 2.9;          // 建筑比牌面宽（楼比牌大）
+    const boxH = rect.h * 2.5;          // 建筑比牌面高
     const cx = rect.x + rect.w / 2;     // 格心 X
     const bottom = rect.y + rect.h * 0.86; // 底沿（略低于格心）
 
@@ -215,6 +254,12 @@ export class HoverBuildingLayer {
     // 投影：贴着格子底部，宽略大于牌面 —— 与建筑体量匹配
     wrap.style.setProperty('--hb-shadow-w', `${(rect.w * 1.05).toFixed(1)}px`);
     wrap.style.setProperty('--hb-shadow-h', `${(rect.h * 0.30).toFixed(1)}px`);
+    // 地面光晕：比投影略大 —— 辉光应当「溢」出投影边缘
+    wrap.style.setProperty('--hb-glow-w', `${(rect.w * 1.55).toFixed(1)}px`);
+    wrap.style.setProperty('--hb-glow-h', `${(rect.h * 0.42).toFixed(1)}px`);
+    // 窗灯区域：覆盖楼体中段（随体量微调）
+    wrap.style.setProperty('--hb-win-w', `${(rect.w * 0.62).toFixed(1)}px`);
+    wrap.style.setProperty('--hb-win-h', `${(rect.h * 0.80).toFixed(1)}px`);
   }
 
   /**
@@ -254,12 +299,35 @@ export class HoverBuildingLayer {
     node.wrap.dataset.group = cell.group || '';
     node.wrap.dataset.level = String(info.level);
     node.wrap.dataset.held = info.ownerColor ? '1' : '0';
+    node.wrap.dataset.reg = cell.regulator ? '1' : '0';
 
     // 立绘高度：填满容器高度 —— 让建筑「站满」牌面之上。
     // ⚠ 用 height 而非 width —— 建筑的视觉体量由高度决定，
     //   宽度会自动按立绘原始比例缩放（不同等级宽高比不同）。
     node.img.style.height = '100%';
     node.img.style.width = 'auto';
+
+    // ---------- 顶部招牌 ----------
+    // 等级星标 + 归属点 —— 让「这是几级 + 属于谁」一眼可读
+    if (node.signLv) {
+      node.signLv.textContent = '★'.repeat(Math.max(1, info.level + 1));
+    }
+    if (node.signOwner) {
+      if (info.ownerColor) {
+        node.signOwner.style.display = '';
+        node.signOwner.style.setProperty('--hb-owner', info.ownerColor);
+      } else {
+        // 未持有 → 隐藏归属点，只留等级星标
+        node.signOwner.style.display = 'none';
+      }
+    }
+
+    // ---------- 窗灯强度 ----------
+    // ⚠ 等级越高窗灯越亮（高层写字楼夜里更亮），且监管机构用金色而非组色。
+    const winOp = info.ownerColor
+      ? 0.88
+      : (cell.regulator ? 0.92 : 0.62);
+    node.wrap.style.setProperty('--hb-win-op', String(winOp));
   }
 
   /**
@@ -332,8 +400,12 @@ export class HoverBuildingLayer {
     const ownerMain = pc ? pc.main : null;
 
     // 缩放：等级越高建筑越大
-    // lv0 网点 → 1.0；lv1 → 1.12；lv2 → 1.26；lv3 → 1.42；lv4 地标 → 1.9
-    const scale = [1.0, 1.12, 1.26, 1.42, 1.9][Math.max(0, Math.min(4, level))];
+    // ⚠ 梯度要**明显递增**（而不是线性 1.0→1.9）——
+    //   玩家靠「远看一眼就能分辨等级」来决策，
+    //   线性梯度在 40px 高的建筑上几乎看不出差别。
+    //   现在用「前两级平缓（网点/支行）、后三级陡增（分行/总部/地标）」的曲线：
+    //     网点 1.00 → 支行 1.14 → 分行 1.34 → 总部 1.58 → 地标 2.00
+    const scale = [1.0, 1.14, 1.34, 1.58, 2.0][Math.max(0, Math.min(4, level))];
 
     return {
       level: isReg ? 0 : Math.max(0, Math.min(4, level)),

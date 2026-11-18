@@ -212,7 +212,26 @@ export class Effects {
 }
 
 /**
- * 逐格跳跃移动动画器 —— 一格一跳，落地压扁
+ * 逐格跳跃移动动画器 —— 一格一跳，落地压扁。
+ *
+ * ================== 步速设计 ==================
+ * 每格耗时由 `stepMs` 控制（默认 300ms，可在 `main.js` 集中调速）。
+ * 单格内部切成**三段**：
+ *
+ *   0% ──── 32% ──── 76% ──── 100%
+ *   起跳      腾空        落地
+ *   0→1      1→1        1→0（压缩回弹）
+ *
+ * · **起跳（0~32%）**：身体上抬 + 后仰蓄力，水平位移缓（easeOutQuad）
+ * · **腾空（32~76%）**：抛物线最高点，水平位移线性，垂直走正弦弧
+ * · **落地（76~100%）**：快速下坠 + 压缩（squash），水平位移收尾（easeInQuad）
+ *
+ * ⚠ 三段的意义：单一正弦弧只能给出「跳起来再落下」，
+ *   但缺少「蓄力」与「砸下」的重量感。分段后每一步都有明确的重心转移。
+ *
+ * ================== 为什么 AI 可以稍快 ==================
+ * AI 回合玩家不需要看清每一步的细节，但**仍要看得见逐格**，
+ * 因此只给一个温和的加速系数（默认 0.75），不做整体跳过。
  */
 export class MoveAnimator {
   constructor() {
@@ -227,7 +246,8 @@ export class MoveAnimator {
     this.onDone = null;
     this.path = [];
     this.startedAt = 0;
-    this.stepMs = 110;   // 每格跳跃耗时（毫秒）
+    // 每格跳跃耗时（毫秒）—— 由调用方在 start() 时指定
+    this.stepMs = 300;
     this.deadline = 0;   // 兜底截止时间，防止动画卡死锁住回合
   }
 
@@ -244,9 +264,11 @@ export class MoveAnimator {
     this.onDone = opts.onDone || null;
     // ⚠ 落地回调 —— 每踩过一格触发一次（PR-E 落地特效）
     this.onLand = opts.onLand || null;
+    // ⚠ 每格耗时可被调用方覆盖（AI 回合用稍快的系数）
+    this.stepMs = Math.max(80, Math.round(opts.stepMs || this.stepMs));
     this.startedAt = performance.now();
     // 兜底：即使渲染循环被浏览器暂停（后台标签页），也必须在此时限内完成
-    this.deadline = this.startedAt + this.steps * this.stepMs + 400;
+    this.deadline = this.startedAt + this.steps * this.stepMs + 600;
   }
 
   get progress() {
@@ -306,6 +328,19 @@ export class MoveAnimator {
    * 因此这里在两个格子的站位槽之间做插值 —— 起点用起点槽，终点用终点槽，
    * 走完最后一格时正好落在静止站位上，零跳变。
    *
+   * ================== 三段 easing ==================
+   *   0% ──── 32% ──── 76% ──── 100%
+   *   起跳      腾空        落地
+   *
+   * · **起跳**：水平用 easeOutQuad（快速离地），垂直上抬用 easeOutCubic
+   * · **腾空**：水平线性推进，垂直走正弦弧（最高点在中段）
+   * · **落地**：水平 easeInQuad 收尾，垂直快速下坠，末段压缩回弹
+   *
+   * ⚠ 为什么落地压缩放在**最后 24%** 而不是瞬时触发：
+   *   压缩若与下坠同时发生，角色会「陷进地面」而不是「砸在地面」。
+   *   分成「先压扁（sy=0.78）→ 再弹回（sy=1.06）」两帧，
+   *   才有弹性玩具的质感。
+   *
    * @param {function} rectOf 格子索引 → 矩形
    * @param {function} slotOf 格子索引 → {dx, dy} 站位槽在格内的偏移
    */
@@ -313,35 +348,95 @@ export class MoveAnimator {
     if (!this.active) return null;
     const CYCLE = this.stepMs;
     const local = this.tick;
-    const fromIdx = this.path[Math.max(0, this.step - 1)] ?? this.from;
+    // ⚠ 起跳格 = 当前步的**终点**；上一格 = 当前步的**起点**。
+    //   step=0 时「上一格」应回退到 path[0] 之外（即 from 本身）。
+    //   早期写法 `path[Math.max(0, step-1)]` 在 step=0 时会取到 path[0]，
+    //   与 toIdx 相同 → dir 退化为 'up' → lean 恒为 0（朝向微倾失效）。
+    const fromIdx = this.step > 0
+      ? (this.path[Math.min(this.path.length - 1, this.step - 1)] ?? this.from)
+      : this.from;
     const toIdx = this.path[Math.min(this.path.length - 1, this.step)] ?? this.to;
     const fromRect = rectOf(fromIdx);
     const toRect = rectOf(toIdx);
 
     const t = Math.min(1, local / CYCLE);
 
+    // ===== 三段 easing =====
+    const T_LIFT = 0.32;   // 起跳段结束
+    const T_FALL = 0.76;   // 落地段开始
+
+    let easeH;   // 水平进度
+    let easeV;   // 垂直抬升进度（0 = 地面，1 = 最高点）
+    if (t < T_LIFT) {
+      // 起跳：水平快、垂直慢（蓄力上抬）
+      const u = t / T_LIFT;
+      easeH = u * (2 - u);                 // easeOutQuad
+      easeV = 1 - Math.pow(1 - u, 3);     // easeOutCubic
+    } else if (t < T_FALL) {
+      // 腾空：水平线性，垂直走正弦弧（在 0.32→0.76 区间内到达最高点再回落）
+      const u = (t - T_LIFT) / (T_FALL - T_LIFT);
+      easeH = (1 - Math.pow(1 - (t / T_LIFT) * 0.5, 2)) * 0.5 + u * 0.5;
+      easeV = Math.sin(u * Math.PI);
+    } else {
+      // 落地：水平收尾，垂直归零
+      //
+      // ⚠ 关键：腾空段末尾 easeV 已降到 0（sin(π)=0），
+      //   所以落地段必须**从 0 开始**（不能再用 cos(0)=1）——
+      //   否则会在 76% 处出现「角色忽然弹回最高点」的跳变。
+      //   落地段用 easeInQuad 下坠：从地面高度开始，快速砸到 0。
+      const u = (t - T_FALL) / (1 - T_FALL);
+      const hEnd = 1;
+      const hStart = 0.75;                // 落地段起点的水平进度（近似）
+      easeH = hStart + (hEnd - hStart) * (u * u);
+      // 下坠：从腾空末端的 0 高度「贴地」→ 保持 0
+      //   （腾空段的 sin 弧已经把高度带回 0，落地段不再叠加抬升）
+      easeV = 0;
+    }
+
     // 站位槽偏移在两格之间插值（保证走完一格正好落到该格的静止站位）
     const fromSlot = slotOf ? (slotOf(fromIdx) || { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
     const toSlot = slotOf ? (slotOf(toIdx) || { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
-    const sdx = fromSlot.dx + (toSlot.dx - fromSlot.dx) * t;
-    const sdy = fromSlot.dy + (toSlot.dy - fromSlot.dy) * t;
+    const sdx = fromSlot.dx + (toSlot.dx - fromSlot.dx) * easeH;
+    const sdy = fromSlot.dy + (toSlot.dy - fromSlot.dy) * easeH;
 
-    const x = fromRect.x + (toRect.x - fromRect.x) * t + sdx;
-    const y = fromRect.y + (toRect.y - fromRect.y) * t + sdy;
+    const x = fromRect.x + (toRect.x - fromRect.x) * easeH + sdx;
+    const y = fromRect.y + (toRect.y - fromRect.y) * easeH + sdy;
 
-    // 跳跃弧线 —— 连续抛物线（现代扁平风，不再 4 段离散帧）
-    const jump = -Math.sin(t * Math.PI) * 9;
+    // 跳跃弧线 —— 腾空高度由 easeV 驱动（起跳抬升 + 腾空最高点 + 落地归零）
+    const JUMP_H = 11;
+    const bob = -easeV * JUMP_H;
 
+    // 落地压缩 —— 最后 24% 内分两帧：先压扁，再回弹
     let squash = null;
-    if (local >= CYCLE - 40) {
-      squash = local < CYCLE - 20 ? { sx: 1.18, sy: 0.82 } : { sx: 0.93, sy: 1.07 };
+    const squashStart = CYCLE * 0.76;
+    if (local >= squashStart) {
+      const u = (local - squashStart) / Math.max(1, CYCLE - squashStart);
+      if (u < 0.45) {
+        // 砸下：压扁 + 横向撑开
+        squash = { sx: 1.16, sy: 0.80 };
+      } else if (u < 0.72) {
+        // 回弹：略微拉长
+        squash = { sx: 0.95, sy: 1.08 };
+      } else {
+        // 复位
+        squash = { sx: 1.0, sy: 1.0 };
+      }
     }
 
     const dir = toRect.x > fromRect.x ? 'right' : toRect.x < fromRect.x ? 'left'
       : toRect.y > fromRect.y ? 'down' : 'up';
 
+    // ===== 朝向微倾 =====
+    // ⚠ 倾斜方向与移动方向相反（像人被惯性甩出去）：
+    //   向右走 → 身体向左后仰（lean < 0）。
+    //   起跳瞬间倾角最大，落地时归零。
+    const dirSign = dir === 'right' ? 1 : dir === 'left' ? -1 : 0;
+    const lean = -dirSign * easeV * 0.9;
+
     return {
-      x, y: y + jump,
+      x, y,
+      bob,
+      lean,
       squash, dir, frame: this.frame,
     };
   }

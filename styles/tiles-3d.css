@@ -1,13 +1,14 @@
 /* ===========================================================
- * 立体麻将牌 —— 3D 视角下的牌体外观
+ * 立体麻将牌 —— 3D 视角下的牌体外观（精细建模版）
  * ===========================================================
  *
  * ================== 目标 ==================
- * 把 D+ 数据卡做成「麻将牌」的实体感：
- *   · 牌有**厚度**（底面侧边可见）
- *   · 牌面**微浮雕**（顶面高光 + 底面阴影）
- *   · 牌有**落影**（投影到桌面上）
- *   · 牌的**边光**随视角变化
+ * 把 D+ 数据卡做成「麻将牌」的实体感，材质分五层：
+ *   ① **多层边框** —— 外墨线 + 主体 + 内侧亮边，形成三段式包边
+ *   ② **倒角高光 / 阴影** —— 顶面左上受光、右下投影
+ *   ③ **顶部受光面** —— 牌面顶缘一条独立的高光带
+ *   ④ **侧面厚度** —— translateZ 抬起的牌底 + 侧壁渐变
+ *   ⑤ **组色光带** —— 集团色的半透明边光，暗示「这块地归属某集团」
  *
  * ================== 与平面模式的关系 ==================
  * ⚠ 默认（平面模式）**完全不受影响** —— 本节所有规则都挂在
@@ -18,14 +19,24 @@
  *
  * ================== 厚度与内容的平衡 ==================
  * 牌厚 = translateZ 值。太大 → 透视下牌面错位严重、遮住相邻格；
- * 太小 → 看不出厚度。取 **6px** —— 在 1400px 透视下约 0.4% 的视深，
+ * 太小 → 看不出厚度。取 **8px**（原 6px）—— 在 1400px 透视下约 0.57% 的视深，
  * 视觉上刚好能看出是「有厚度的牌」，又不影响可读性。
+ *
+ * ================== 光照一致性 ==================
+ * 全局光源固定在**左上后方**（与 src/render/charEntity.js 的 LIGHT 同一方向）。
+ * 本文件所有高光 / 阴影都按这个方向写：
+ *   · 顶缘高光偏左上
+ *   · 底部 / 右侧投影
+ *   · 侧壁左暗右亮（配合俯视透视）
+ * 这样牌 / 角色 / 悬停建筑三者的立体感互相吻合。
  * =========================================================== */
 
-/* ---------- 牌体厚度 + 浮雕 + 落影 ---------- */
+/* ===========================================================
+ * ① 牌体：厚度 + 多层边框 + 落影
+ * =========================================================== */
 #board-stage.is-3d .mt-cell {
   /* 牌体沿 Z 轴抬起来 —— 这就是「厚度」的来源 */
-  transform: translateZ(6px);
+  transform: translateZ(8px);
   /* 让牌的 6 个面能正确互相遮挡 */
   transform-style: preserve-3d;
   /* 抬起后投影要更柔（离桌面更高 = 投影更大更虚） */
@@ -42,35 +53,117 @@
   transform: translateZ(0);
 }
 
-/* 牌的底面 / 侧边 —— 用伪元素画厚度面 */
+/* ===========================================================
+ * ④ 侧面厚度 —— 牌底的侧壁
+ * ===========================================================
+ * ⚠ 这里画的是「牌的底面」：沿 Z 轴下移 8px，
+ *   配合梯形收窄形成可见的侧边。
+ *   左上受光 → 侧壁右上更亮；右下入影 → 侧壁右下更暗。
+ */
 #board-stage.is-3d .mt-cell::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 8px;
   /* 底面比顶面「矮」一截，形成可见的侧边 */
-  transform: translateZ(-6px);
-  background: linear-gradient(180deg, rgba(15,23,42,.20), rgba(15,23,42,.34));
-  /* 底面在顶面之下，靠 z-index 与 3D 变换共同压住 */
+  transform: translateZ(-8px);
+  /* 侧壁材质：上亮下暗 + 轻微的冷暖分离（左上受光） */
+  background:
+    linear-gradient(
+      168deg,
+      rgba(255,255,255,.20) 0%,
+      rgba(148,163,184,.26) 26%,
+      rgba(15,23,42,.34) 62%,
+      rgba(15,23,42,.46) 100%
+    );
   pointer-events: none;
   z-index: -1;
-  box-shadow: 0 10px 22px rgba(15,23,42,.22);
+  /* 牌底落影 —— 离桌面 8px，投影更大更虚 */
+  box-shadow:
+    0 12px 26px rgba(15,23,42,.24),
+    0 3px 8px rgba(15,23,42,.18);
 }
 
-/* ---------- 边光：沿牌面顶部的一道亮边 ---------- */
-/* ⚠ 必须画在 .mt-face 上，不能画在 .mt-tile 上：
+/* ===========================================================
+ * ②③ 牌面：倒角浮雕 + 顶部受光面 + 落影
+ * ===========================================================
+ * ⚠ 浮雕拆成 5 层阴影叠加，模拟「倒角」的光学表现：
+ *   inset 顶部亮线   → 倒角受光
+ *   inset 底部暗线   → 倒角背光
+ *   inset 左上亮 / 右下暗 → 平面倾斜后的环境光遮蔽
+ *   外投影 ×2        → 桌面接触影 + 环境影
+ */
+#board-stage.is-3d .mt-face {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow:
+    /* 倒角：顶亮 */
+    inset 0 1.5px 0 rgba(255,255,255,.98),
+    /* 倒角：底暗 */
+    inset 0 -1.5px 0 rgba(15,23,42,.13),
+    /* 环境光遮蔽：左上受光 / 右下入影 */
+    inset 1.5px 0 0 rgba(255,255,255,.42),
+    inset 0 1.5px 0 rgba(255,255,255,.42),
+    inset -1px 0 0 rgba(15,23,42,.05),
+    inset 0 -1px 0 rgba(15,23,42,.05),
+    /* 接触影 */
+    0 2px 5px rgba(15,23,42,.24),
+    /* 环境影 */
+    0 10px 22px rgba(15,23,42,.18);
+}
+
+/* ===========================================================
+ * ⑤ 组色光带 —— 牌面的「边缘泛光」
+ * ===========================================================
+ * ⚠ 为什么要这一层：牌的顶缘在 3D 下会被透视压缩，
+ *   组色光带能顺着顶缘勾出一条彩色亮边，
+ *   既强化了「麻将牌」的釉面质感，
+ *   又让「这块地属于哪个集团」在 3D 下依然一眼可辨。
+ *
+ * ⚠ 用 --acc（集团色 / 持有人色）驱动 —— 与牌面信息层同一来源。
+ */
+#board-stage.is-3d .mt-face::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1;
+  background:
+    /* 顶缘组色光带（左侧最亮 —— 光源在左上） */
+    linear-gradient(
+      168deg,
+      color-mix(in srgb, var(--acc, #64748b) 40%, transparent) 0%,
+      color-mix(in srgb, var(--acc, #64748b) 12%, transparent) 22%,
+      transparent 46%
+    );
+  /* 顶缘内侧的釉面高光 */
+  box-shadow:
+    inset 0 2px 3px -1px rgba(255,255,255,.85),
+    inset 0 0 0 1px color-mix(in srgb, var(--acc, #64748b) 16%, transparent);
+}
+
+/* ===========================================================
+ * 牌面顶缘高光（独立一层，压在 ::before 之上）
+ * ===========================================================
+ * ⚠ 必须画在 .mt-face 上，不能画在 .mt-tile 上：
  *   .mt-cell::after 已经用来画牌厚侧边了；
- *   .mt-tile::after 若也用来画边光，两者会互相覆盖。 */
+ *   .mt-tile::after 若也用来画边光，两者会互相覆盖。
+ */
 #board-stage.is-3d .mt-face::after {
   content: "";
   position: absolute;
   left: 0; right: 0; top: 0;
   height: 2px;
   border-radius: 8px 8px 0 0;
-  background: linear-gradient(90deg,
-    rgba(255,255,255,.85),
-    rgba(255,255,255,.25) 55%,
-    rgba(255,255,255,0));
+  /* 高光偏左上 —— 与全局光照一致 */
+  background: linear-gradient(
+    100deg,
+    rgba(255,255,255,.98) 0%,
+    rgba(255,255,255,.55) 42%,
+    rgba(255,255,255,.05) 78%,
+    rgba(255,255,255,0) 100%
+  );
   pointer-events: none;
   z-index: 2;
 }
@@ -83,29 +176,40 @@
  *   让 hover 的格子突然跳到最前，破坏立体感。
  *
  *   3D 模式改用「抬起」表达 hover：
- *     沿 Z 轴再抬 10px + 阴影加深 —— 视觉上「浮起来」，但不改 z-index。
- * =========================================================== */
+ *     沿 Z 轴再抬 12px + 阴影加深 —— 视觉上「浮起来」，但不改 z-index。
+ */
 #board-stage.is-3d .mt-cell:hover {
   z-index: auto;
-  transform: translateZ(16px);
-  filter: drop-shadow(0 8px 14px rgba(15,23,42,.30));
+  transform: translateZ(20px);
+  filter: drop-shadow(0 10px 16px rgba(15,23,42,.32));
 }
 
 #board-stage.is-3d .mt-cell.is-active {
   z-index: auto;
-  transform: translateZ(18px);
-  filter: drop-shadow(0 10px 16px rgba(232,169,60,.34));
+  transform: translateZ(22px);
+  filter: drop-shadow(0 12px 18px rgba(232,169,60,.36));
 }
 
 /* 当前回合所在格的金色高亮 —— 移到 .mt-face（牌面才是有高亮的那一层） */
 #board-stage.is-3d .mt-cell.is-active .mt-face {
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.95),
-    inset 0 -1px 0 rgba(15,23,42,.10),
+    inset 0 1.5px 0 rgba(255,255,255,.98),
+    inset 0 -1.5px 0 rgba(15,23,42,.13),
     0 0 0 2px var(--c-gold),
-    0 3px 8px rgba(232,169,60,.30),
-    0 12px 24px rgba(15,23,42,.24) !important;
+    0 4px 10px rgba(232,169,60,.32),
+    0 14px 28px rgba(15,23,42,.26) !important;
   border: 1px solid var(--c-gold);
+}
+
+/* 当前回合格：牌面泛一层暖金 —— 与角色底座的金色呼吸光晕呼应 */
+#board-stage.is-3d .mt-cell.is-active .mt-face::before {
+  background:
+    linear-gradient(
+      168deg,
+      color-mix(in srgb, var(--c-gold) 34%, transparent) 0%,
+      color-mix(in srgb, var(--c-gold) 10%, transparent) 26%,
+      transparent 52%
+    );
 }
 
 /* ---------- 焦点圈：3D 下要跟着抬起来 ---------- */
@@ -115,13 +219,46 @@
 }
 
 /* ===========================================================
- * 顶面色条在 3D 下的处理
+ * 未持有 / 已持有 / 可收购 —— 牌面材质
  * ===========================================================
- * `.mt-d2::before` 是顶部的组色条。它是牌面的一部分，
- * 但**不能**跟着 translateZ —— 否则会脱离牌面变成浮空彩条。
- * 牌面本身 translateZ(0)，伪元素默认继承父级变换，
- * 因此色条会贴在牌面上，无需额外处理。
- * =========================================================== */
+ * ⚠ 语义翻转保留（PR-C）：未持有 = 蓝图态（冷白），
+ *   已持有 = 完色态（品牌色），信息层的主次读数由 tiles.js 决定。
+ */
+
+/* 未收购态的底色 —— 冷白，略带青灰（"尚未属于任何人"） */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-vacant) {
+  background: linear-gradient(168deg, #fdfefe 0%, #f4f7fb 58%, #eef2f7 100%);
+}
+
+/* 已持有态 —— 玩家品牌色的极淡底调 + 描边 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-held) {
+  background: linear-gradient(
+    168deg,
+    color-mix(in srgb, var(--acc, #e8a93c) 9%, #ffffff) 0%,
+    color-mix(in srgb, var(--acc, #e8a93c) 4%, #fbfcfe) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px var(--acc),
+    inset 0 1.5px 0 rgba(255,255,255,.98),
+    inset 0 -1.5px 0 rgba(15,23,42,.13),
+    0 2px 5px rgba(15,23,42,.24),
+    0 10px 22px rgba(15,23,42,.18);
+}
+
+/* 可收购态的绿色微光 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-afford) {
+  box-shadow:
+    inset 0 0 0 1px rgba(79,157,85,.55),
+    inset 0 1.5px 0 rgba(255,255,255,.98),
+    inset 0 0 16px rgba(79,157,85,.20),
+    0 2px 5px rgba(15,23,42,.24),
+    0 10px 22px rgba(15,23,42,.18);
+}
+
+/* 质押态 —— 牌面压暗 + 红色警示 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-mort) {
+  filter: saturate(.62) brightness(.94);
+}
 
 /* ===========================================================
  * 信息层平铺（content-layer-flat）—— PR-C 核心
@@ -133,9 +270,9 @@
  * ================== 做法 ==================
  * 把**信息层**（.mt-d2）从牌体的倾斜里「抽出来」：
  *
- *   .mt-cell   translateZ(6px)      ← 抬起 + 倾斜（牌体）
+ *   .mt-cell   translateZ(8px)      ← 抬起 + 倾斜（牌体）
  *     .mt-tile   rotateX 由父级继承   ← 牌体跟着倾斜
- *       .mt-face                      ← 牌面底板：浮雕 / 底色 / 落影
+ *       .mt-face                      ← 牌面底板：浮雕 / 底色 / 落影 / 组色光带
  *         .mt-d2  ← 信息层：反向补偿，正对屏幕
  *
  * ⚠ 补偿量 = 倾斜角（45°）。因为 .mt-d2 在 .mt-face 之内，
@@ -164,40 +301,6 @@
   box-shadow: none;
 }
 
-/* 信息层在 3D 下需要一点额外的空间（补偿后视觉高度会变化） */
-#board-stage.is-3d .mt-face {
-  /* 牌面底色 / 浮雕 / 落影 —— 从 .mt-d2 接过来了 */
-  background: #fff;
-  border-radius: 8px;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.95),
-    inset 0 -1px 0 rgba(15,23,42,.10),
-    0 2px 6px rgba(15,23,42,.22),
-    0 8px 18px rgba(15,23,42,.16);
-}
-
-/* 未收购态的底色移到牌面层 */
-#board-stage.is-3d .mt-face:has(.mt-d2.is-vacant) {
-  background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
-}
-/* 已持有态的描边移到牌面层 */
-#board-stage.is-3d .mt-face:has(.mt-d2.is-held) {
-  box-shadow:
-    inset 0 0 0 1px var(--acc),
-    inset 0 1px 0 rgba(255,255,255,.95),
-    0 2px 6px rgba(15,23,42,.22),
-    0 8px 18px rgba(15,23,42,.16);
-}
-/* 可收购态的绿色微光移到牌面层 */
-#board-stage.is-3d .mt-face:has(.mt-d2.is-afford) {
-  box-shadow:
-    inset 0 0 0 1px rgba(79,157,85,.55),
-    inset 0 1px 0 rgba(255,255,255,.95),
-    0 0 14px rgba(79,157,85,.22),
-    0 2px 6px rgba(15,23,42,.22),
-    0 8px 18px rgba(15,23,42,.16);
-}
-
 /* 牌体本身在 3D 下不再需要白底（底色已交给 .mt-face） */
 #board-stage.is-3d .mt-tile {
   background: transparent;
@@ -205,11 +308,84 @@
 }
 
 /* ===========================================================
+ * 等级星级 —— 金属感
+ * ===========================================================
+ * ⚠ 需求：等级刻度要有「金属感」。
+ *   做法：不用纯色填充，而是用**双向渐变**（左上亮 → 右下暗）
+ *   模拟金属面的环境反射，再加一道顶部高光描边。
+ *   实心段 = 亮金属；待升级段（虚线）= 半哑光；锁定段 = 哑光灰。
+ *
+ * ⚠ 只在 3D 下加强 —— 平面模式保持原有的扁平色块。
+ */
+#board-stage.is-3d .mt-seg {
+  background-image: linear-gradient(
+    135deg,
+    rgba(255,255,255,.92) 0%,
+    rgba(255,255,255,.18) 26%,
+    transparent 52%
+  );
+  background-blend-mode: overlay;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.80),
+    inset 0 -1px 0 rgba(15,23,42,.22),
+    0 1px 1px rgba(15,23,42,.14);
+}
+
+#board-stage.is-3d .mt-seg.is-pending {
+  /* 待升级段：金属感减半 + 虚线保留 */
+  background-image: linear-gradient(
+    135deg,
+    rgba(255,255,255,.42) 0%,
+    rgba(255,255,255,.06) 30%,
+    transparent 56%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.42),
+    inset 0 -1px 0 rgba(15,23,42,.10);
+}
+
+/* ===========================================================
+ * 监管格 —— 特殊材质
+ * ===========================================================
+ * ⚠ 监管机构（央行 / 证监会 / 银保监 / 金稳会）不是普通机构：
+ *   它们是「行政主体」，材质应该更庄重、更像纪念碑。
+ *   做法：深色石质底 + 紫金边 + 顶部一道金属压边，
+ *   与普通机构的白色数据卡形成明确区分。
+ */
+#board-stage.is-3d .mt-cell:has(.mt-reg-badge) .mt-face {
+  background:
+    linear-gradient(
+      168deg,
+      color-mix(in srgb, var(--acc, #8b5cc7) 16%, #fdfcff) 0%,
+      color-mix(in srgb, var(--acc, #8b5cc7) 7%, #f6f3fb) 100%
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--acc, #8b5cc7) 58%, transparent),
+    inset 0 1.5px 0 rgba(255,255,255,.98),
+    inset 0 -1.5px 0 rgba(15,23,42,.16),
+    0 2px 5px rgba(15,23,42,.26),
+    0 10px 22px rgba(15,23,42,.20);
+}
+
+/* 监管格：顶缘的金属压边（比普通格更亮更硬） */
+#board-stage.is-3d .mt-cell:has(.mt-reg-badge) .mt-face::after {
+  height: 3px;
+  background: linear-gradient(
+    100deg,
+    rgba(255,255,255,1) 0%,
+    color-mix(in srgb, var(--acc-lt, #b189e0) 72%, white) 40%,
+    color-mix(in srgb, var(--acc-lt, #b189e0) 24%, transparent) 82%,
+    transparent 100%
+  );
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--acc, #8b5cc7) 46%, transparent);
+}
+
+/* ===========================================================
  * 特殊格 / 监管格的徽章 —— 抬到牌面之上
  * ===========================================================
- * 徽章是牌面上的浮层元素。在 preserve-3d 下，
- * 若不给 Z 值，它们会与牌面共面，可能被伪元素侧边盖住。
- * 抬 1px 让它们明确在牌面之上。
+ * ⚠ 徽章是牌面上的浮层元素。在 preserve-3d 下，
+ *   若不给 Z 值，它们会与牌面共面，可能被伪元素侧边盖住。
+ *   抬 1px 让它们明确在牌面之上。
  *
  * ⚠ 徽章原有的 transform 必须**原样保留**（居中 / 旋转偏移），
  *   只在其前面追加 translateZ —— 否则会把徽章挪错位置。
@@ -225,4 +401,16 @@
 }
 #board-stage.is-3d .mt-reg-badge {
   transform: translateZ(1px);
+}
+
+/* ===========================================================
+ * 特殊格（转盘 / 赌场 / 事件 …）—— 分类色光带
+ * ===========================================================
+ * ⚠ 特殊格靠**分类色**（枢纽蓝 / 随机紫 / 成本红 / 增益绿 / 周期金）
+ *   表达语义。在 3D 下给它们的牌面加一圈更强的分类色，
+ *   让玩家在俯视时也能靠「颜色环」区分格子类型。
+ */
+#board-stage.is-3d .mt-d2-afford,
+#board-stage.is-3d .mt-d2-trap {
+  filter: drop-shadow(0 1px 2px rgba(15,23,42,.30));
 }

@@ -35,6 +35,7 @@ import { CAREERS, CAREER_BY_ID } from './careers.js';
 import { runAll as runCareerCasinoChecks } from './selftest-career-casino.js';
 import { runAll as runPersonalityChecks } from './selftest-personality.js';
 import { runAll as runCashflowChecks } from './selftest-cashflow.js';
+import { runAll as runCharEntityChecks } from './selftest-char-entity.js';
 
 /** 断言工具 */
 function check(results, name, fn) {
@@ -1709,6 +1710,12 @@ export function runAll() {
   /* ============ 资金流水账本（专项模块） ============ */
   const cashflowChecks = runCashflowChecks();
   for (const r of cashflowChecks) {
+    results.push(r);
+  }
+
+  /* ============ 角色实体 2.5D + 步速放慢（专项模块） ============ */
+  const charEntityChecks = runCharEntityChecks();
+  for (const r of charEntityChecks) {
     results.push(r);
   }
 
