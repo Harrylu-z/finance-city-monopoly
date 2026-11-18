@@ -248,8 +248,17 @@ export class Stage3D {
   /** 写入 transform */
   _apply() {
     if (!this.pan) return;
+    // ⚠ 倾斜与平移必须写在**同一个** transform 里。
+    //   .board-pan 的 transform 是行内样式 —— 行内优先级高于选择器，
+    //   若把 rotateX 单独写在 CSS 规则里，会被这里整个盖掉，
+    //   表现为「切了 3D 但画面完全没倾斜」（实测踩过）。
+    //
+    // ⚠ 顺序很重要：先 rotateX 再 translate3d —— 平移在倾斜**之内**，
+    //   拖拽量才不会被透视投影二次放大。
+    const tilt = this.is3D ? 'rotateX(45deg) ' : '';
     // 3D 模式下额外给一点 Z 位移，避免棋盘「贴脸」
     const z = this.is3D ? '-40px' : '0px';
-    this.pan.style.transform = `translate3d(${this.x.toFixed(2)}px, ${this.y.toFixed(2)}px, ${z})`;
+    this.pan.style.transform =
+      `${tilt}translate3d(${this.x.toFixed(2)}px, ${this.y.toFixed(2)}px, ${z})`;
   }
 }

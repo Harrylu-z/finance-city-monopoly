@@ -32,16 +32,13 @@
   transition: transform .2s ease, filter .16s ease;
 }
 
-/* 牌面本体 —— 顶面 */
+/* 牌体（.mt-tile）—— 纯 3D 容器。
+   ⚠ 底色 / 浮雕 / 落影已移到 .mt-face（PR-C 的信息层平铺需要它分层）。
+   ⚠ overflow: hidden 必须保留 —— 否则牌面内容会溢出到相邻格。 */
 #board-stage.is-3d .mt-tile {
-  /* 浮雕感：内阴影（顶部暗、底部亮）模拟凸起 */
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.95),
-    inset 0 -1px 0 rgba(15,23,42,.10),
-    0 2px 6px rgba(15,23,42,.22),
-    0 8px 18px rgba(15,23,42,.16);
-  border-color: rgba(15,23,42,.16);
-  /* 顶面略微内缩，让侧边露出来 —— 这是麻将牌「有厚度」的观感来源 */
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
   transform: translateZ(0);
 }
 
@@ -61,7 +58,10 @@
 }
 
 /* ---------- 边光：沿牌面顶部的一道亮边 ---------- */
-#board-stage.is-3d .mt-tile::after {
+/* ⚠ 必须画在 .mt-face 上，不能画在 .mt-tile 上：
+ *   .mt-cell::after 已经用来画牌厚侧边了；
+ *   .mt-tile::after 若也用来画边光，两者会互相覆盖。 */
+#board-stage.is-3d .mt-face::after {
   content: "";
   position: absolute;
   left: 0; right: 0; top: 0;
@@ -97,14 +97,15 @@
   filter: drop-shadow(0 10px 16px rgba(232,169,60,.34));
 }
 
-#board-stage.is-3d .mt-cell.is-active .mt-tile {
+/* 当前回合所在格的金色高亮 —— 移到 .mt-face（牌面才是有高亮的那一层） */
+#board-stage.is-3d .mt-cell.is-active .mt-face {
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,.95),
     inset 0 -1px 0 rgba(15,23,42,.10),
     0 0 0 2px var(--c-gold),
     0 3px 8px rgba(232,169,60,.30),
     0 12px 24px rgba(15,23,42,.24) !important;
-  border-color: var(--c-gold);
+  border: 1px solid var(--c-gold);
 }
 
 /* ---------- 焦点圈：3D 下要跟着抬起来 ---------- */
@@ -121,6 +122,87 @@
  * 牌面本身 translateZ(0)，伪元素默认继承父级变换，
  * 因此色条会贴在牌面上，无需额外处理。
  * =========================================================== */
+
+/* ===========================================================
+ * 信息层平铺（content-layer-flat）—— PR-C 核心
+ * ===========================================================
+ * ================== 问题 ==================
+ * 牌体倾斜 45° 后，牌面内的文字会被透视压扁成平行四边形。
+ * 中文 + 数字读数压扁后基本不可读 —— 而这些正是玩法的核心信息。
+ *
+ * ================== 做法 ==================
+ * 把**信息层**（.mt-d2）从牌体的倾斜里「抽出来」：
+ *
+ *   .mt-cell   translateZ(6px)      ← 抬起 + 倾斜（牌体）
+ *     .mt-tile   rotateX 由父级继承   ← 牌体跟着倾斜
+ *       .mt-face                      ← 牌面底板：浮雕 / 底色 / 落影
+ *         .mt-d2  ← 信息层：反向补偿，正对屏幕
+ *
+ * ⚠ 补偿量 = 倾斜角（45°）。因为 .mt-d2 在 .mt-face 之内，
+ *   它继承的旋转正是 +45°，反向 -45° 后净旋转为 0 → 文字正立。
+ *
+ * ⚠ 关键取舍：牌面不再与信息层共面 —— 视觉上信息层「浮」在牌体上方。
+ *   这是本方案相对「牌面反向补偿」的优点：牌体保持**完整矩形**，
+ *   没有「一边翘起」的错位，麻将牌的规整感不被破坏。
+ *
+ * ⚠ 为什么不能只补偿文字节点（给文字加 -45°）：
+ *   那样牌面边框、组色条、等级刻度条仍然是斜的，
+ *   整张牌看起来就是「歪的」—— 可读性提高了，牌体质感却塌了。
+ *   整层平铺是唯一能同时保住两者的做法。
+ * =========================================================== */
+#board-stage.is-3d .mt-d2 {
+  /* 反向补偿 —— 抵消继承来的 +45° 倾斜 */
+  transform: rotateX(-45deg);
+  /* 补偿后需要一点额外的上浮，让信息层浮在牌体之上而非嵌进去 */
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  /* 信息层不参与牌体的厚度计算 */
+  backface-visibility: visible;
+  /* ⚠ 边框与外发光已交给 .mt-face —— 这里必须清掉，
+     否则会与牌面层画两遍（描边变粗、阴影翻倍）。 */
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* 信息层在 3D 下需要一点额外的空间（补偿后视觉高度会变化） */
+#board-stage.is-3d .mt-face {
+  /* 牌面底色 / 浮雕 / 落影 —— 从 .mt-d2 接过来了 */
+  background: #fff;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.95),
+    inset 0 -1px 0 rgba(15,23,42,.10),
+    0 2px 6px rgba(15,23,42,.22),
+    0 8px 18px rgba(15,23,42,.16);
+}
+
+/* 未收购态的底色移到牌面层 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-vacant) {
+  background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
+}
+/* 已持有态的描边移到牌面层 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-held) {
+  box-shadow:
+    inset 0 0 0 1px var(--acc),
+    inset 0 1px 0 rgba(255,255,255,.95),
+    0 2px 6px rgba(15,23,42,.22),
+    0 8px 18px rgba(15,23,42,.16);
+}
+/* 可收购态的绿色微光移到牌面层 */
+#board-stage.is-3d .mt-face:has(.mt-d2.is-afford) {
+  box-shadow:
+    inset 0 0 0 1px rgba(79,157,85,.55),
+    inset 0 1px 0 rgba(255,255,255,.95),
+    0 0 14px rgba(79,157,85,.22),
+    0 2px 6px rgba(15,23,42,.22),
+    0 8px 18px rgba(15,23,42,.16);
+}
+
+/* 牌体本身在 3D 下不再需要白底（底色已交给 .mt-face） */
+#board-stage.is-3d .mt-tile {
+  background: transparent;
+  border-color: transparent;
+}
 
 /* ===========================================================
  * 特殊格 / 监管格的徽章 —— 抬到牌面之上

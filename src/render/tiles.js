@@ -532,11 +532,26 @@ function tileInstitution(cell, st) {
     </div>`;
 }
 
-/** 统一入口 —— 监管格 / 特殊格 / 机构格 */
+/**
+ * 统一入口 —— 监管格 / 特殊格 / 机构格。
+ *
+ * ================== 三层结构（3D 关键）==================
+ *   .mt-tile      牌体 —— 承担 3D 倾斜、厚度、落影
+ *     .mt-face    牌面底板 —— 承担浮雕与底色
+ *       .mt-content  信息层 —— **不参与倾斜**，文字始终正立
+ *
+ * ⚠ 为什么信息层要「抽出来」而不是在牌面上做反向 rotateX：
+ *   反向补偿（billboard）的固有代价是牌面不再保持平行四边形，
+ *   有一边会「翘起」—— 麻将牌是矩形的，翘起会破坏牌体质感。
+ *   把信息层整体平铺在牌体之上，牌体保持完整矩形，
+ *   文字正立，代价只是信息层与牌面不共面（视觉上像悬浮信息屏）。
+ */
 export function tileHTML(cell, st) {
-  if (cell.regulator) return tileRegulator(cell, st);
-  if (cell.type !== 'institution') return tileSpecial(cell, st);
-  return tileInstitution(cell, st);
+  let inner;
+  if (cell.regulator) inner = tileRegulator(cell, st);
+  else if (cell.type !== 'institution') inner = tileSpecial(cell, st);
+  else inner = tileInstitution(cell, st);
+  return `<div class="mt-tile"><div class="mt-face">${inner}</div></div>`;
 }
 
 /* ===========================================================
