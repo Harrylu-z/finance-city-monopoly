@@ -162,6 +162,38 @@ def main():
             result["pass"] += billboard["pass"]
             result["rows"] = result["rows"] + billboard["rows"]
 
+            # ---- 跑 hover 立体建筑自检（PR-D）----
+            hoverBuilding = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-hover-building.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += hoverBuilding["total"]
+            result["pass"] += hoverBuilding["pass"]
+            result["rows"] = result["rows"] + hoverBuilding["rows"]
+
+            # ---- 跑角色立体化 + 落地特效自检（PR-E）----
+            charFx = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-char-fx.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += charFx["total"]
+            result["pass"] += charFx["pass"]
+            result["rows"] = result["rows"] + charFx["rows"]
+
             total = result["total"]
             passed = result["pass"]
             print("=" * 78)

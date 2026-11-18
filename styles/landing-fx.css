@@ -1,0 +1,131 @@
+/* ===========================================================
+ * 落地特效 —— PR-E
+ * ===========================================================
+ *
+ * ================== 为什么是 DOM 而不是 Canvas ==================
+ * 地块是 DOM 卡片且**完全不透明**，Canvas 在最底层 ——
+ * 画在 Canvas 上的地面特效会被牌面完全遮住。
+ * 落地冲击波必须盖在牌面之上才能看见 → 只能走 DOM 层。
+ *
+ * ================== 定位方式 ==================
+ * 与地块层同一套坐标系：**百分比**（相对 #fx-layer，与 #board-tiles 同尺寸）。
+ * 因此 canvas 缩放时特效自动跟随，无需 JS 重排。
+ *
+ * ================== 3D 表现 ==================
+ * #fx-layer 在 #board-pan 之内 → 继承 rotateX(45deg)。
+ * 所以冲击波会被 CSS 透视**自动压扁** —— 这正是「地面的圆在俯视时该有的样子」，
+ * **不需要**额外的椭圆压扁补偿。
+ *
+ * ⚠ 关键：不要再手动加 scaleY。
+ *   CSS 透视（45° 俯视 ≈ 0.707）已经压过一次，
+ *   再叠一层 scaleY 会把环压成一条线（实测只剩 6px 高，完全看不见）。
+ *   平面模式下没有透视，环就是正圆 —— 也对（平视地面本来就是圆的）。
+ *
+ * ⚠ 与 PR-D 的 hover 建筑不同：建筑**不**补偿（要立体感），
+ *   落地冲击波**随**棋盘倾斜（要「贴在地面上」）。
+ * =========================================================== */
+
+.landing-fx {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  /* 冲击波锚在格子底部 —— 与角色脚底同一水平线 */
+  transform-origin: 50% 92%;
+  z-index: 1;
+}
+
+/* ---------- 入场 ---------- */
+.landing-fx.is-in {
+  animation: landing-fx-in .62s cubic-bezier(.16,.84,.44,1) forwards;
+}
+
+@keyframes landing-fx-in {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---------- 扩散环 ---------- */
+.landing-fx-ring {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  /* 初始很小 —— 动画把它撑开。
+     52% 是为了让环明显大过棋子底座（棋子约占格子宽度 1/4），
+     冲击感才够强；又不能太大，否则会漫到相邻格子上。 */
+  width: 52%;
+  height: 52%;
+  margin-left: -26%;
+  margin-bottom: -26%;
+  border: 2.5px solid currentColor;
+  border-radius: 50%;
+  /* ⚠ 不做 scaleY 压扁 —— CSS 透视负责这件事（见文件头说明） */
+  animation: landing-fx-ring .62s cubic-bezier(.16,.84,.44,1) forwards;
+  /* 发光让环在浅色牌面上也能看清 */
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+@keyframes landing-fx-ring {
+  0% {
+    transform: scale(.28);
+    opacity: 1;
+  }
+  55% {
+    opacity: .8;
+  }
+  100% {
+    transform: scale(1.08);
+    opacity: 0;
+  }
+}
+
+/* ---------- 上浮柔光 ---------- */
+.landing-fx-glow {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  width: 66%;
+  height: 66%;
+  margin-left: -33%;
+  margin-bottom: -33%;
+  border-radius: 50%;
+  opacity: .40;
+  filter: blur(8px);
+  animation: landing-fx-glow .62s cubic-bezier(.16,.84,.44,1) forwards;
+}
+
+@keyframes landing-fx-glow {
+  0% {
+    transform: scale(.42) translateY(0);
+    opacity: .22;
+  }
+  32% {
+    opacity: .46;
+  }
+  100% {
+    transform: scale(1.0) translateY(-18%);
+    opacity: 0;
+  }
+}
+
+/* ===========================================================
+ * 降低动效偏好 —— 只保留一次柔和淡出
+ * =========================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .landing-fx-ring {
+    animation: landing-fx-fade .4s linear forwards;
+  }
+  .landing-fx-glow {
+    animation: landing-fx-fade .4s linear forwards;
+  }
+  @keyframes landing-fx-fade {
+    0% { opacity: .6; }
+    100% { opacity: 0; }
+  }
+}

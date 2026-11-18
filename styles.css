@@ -472,7 +472,7 @@ canvas, .pixel-panel, .pixel-btn, img {
   width: 100%; height: 100%;
   display: block;
 }
-.fx-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; }
+.fx-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: visible; }
 
 /* 浮动飘字 —— 现代柔和投影 */
 .pixel-float {
