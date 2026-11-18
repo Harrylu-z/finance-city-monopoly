@@ -162,6 +162,22 @@ def main():
             result["pass"] += billboard["pass"]
             result["rows"] = result["rows"] + billboard["rows"]
 
+            # ---- 跑 hover 立体建筑自检（PR-D）----
+            hoverBuilding = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-hover-building.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += hoverBuilding["total"]
+            result["pass"] += hoverBuilding["pass"]
+            result["rows"] = result["rows"] + hoverBuilding["rows"]
+
             total = result["total"]
             passed = result["pass"]
             print("=" * 78)

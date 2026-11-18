@@ -1,0 +1,199 @@
+/* ===========================================================
+ * hover 立体建筑浮现层 —— PR-D
+ * ===========================================================
+ *
+ * ================== 目标 ==================
+ * 鼠标悬停某格时，该格上方浮起一座立体建筑：
+ *   · 高度 / 形制匹配格子等级（网点 → 地标）
+ *   · 配色匹配格子信息（集团色 / 持有人色 / 监管紫）
+ *   · 带落地投影，随棋盘一起倾斜 45° —— 获得真正的透视感
+ *
+ * ================== 为什么不做 billboard 补偿 ==================
+ * 地块上的文字必须正立（PR-C），所以信息层反向 rotateX(-45deg)。
+ * 但建筑是**纯图形** —— 没有需要阅读的内容。
+ * 若也补偿，它会变成一张「贴纸」，立体的意义就没了。
+ * 让它随棋盘倾斜才是正确的物理表现：
+ * 俯视一栋楼，本来就该看到「顶 + 正面」而非完整立面。
+ *
+ * ⚠ 代价：45° 俯视下建筑被压扁。这是**正确**的透视，不是 bug。
+ *
+ * ================== 层级 ==================
+ * .hover-buildings  铺满 #board-tiles（与地块层平级）
+ *   └── .mt-hb       单座建筑（绝对定位在所属格中心）
+ *        ├── .mt-hb-shadow   地面椭圆投影（贴在地面上，不抬起）
+ *        └── .mt-hb-img      建筑立绘
+ *
+ * ⚠ 建筑**不放在 .mt-cell 里** —— 那样会被地块的 z-index
+ *   深度排序压制，且受 .mt-tile 的 overflow 裁剪。
+ * =========================================================== */
+
+/* ---------- 承载层：铺满棋盘，自身不拦截指针 ---------- */
+.hover-buildings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  transform-style: preserve-3d;
+  /* ⚠ z-index 必须高于所有地块（3D 下为 10 + row*10，最高 60）。
+   *   地块用 z-index 表达「行深度」（谁离观察者更近），
+   *   建筑必须**始终盖在所有地块之上** —— 它是前景浮层，
+   *   不参与棋盘的深度排序。
+   *   建筑自身的 translateZ(26px) 再叠加透视，让它有「浮起」的体积感。 */
+  z-index: 100;
+}
+
+/* ===========================================================
+ * 单座建筑
+ * =========================================================== */
+.mt-hb {
+  position: absolute;
+  /* 尺寸由 JS 按地块矩形写入 --hb-left / --hb-top / --hb-w / --hb-h */
+  left: var(--hb-left, 0);
+  top: var(--hb-top, 0);
+  width: var(--hb-w, 0px);
+  height: var(--hb-h, 0px);
+  pointer-events: none;
+  opacity: 0;
+  transform-style: preserve-3d;
+  /* 入场：自下而上「升起」 */
+  transform:
+    translateZ(0)
+    scale(var(--hb-scale, 1))
+    translateY(14px);
+  transition:
+    opacity .18s ease,
+    transform .26s cubic-bezier(.22,.61,.36,1);
+  will-change: transform, opacity;
+}
+
+/* ---------- 入场完成态 ---------- */
+.mt-hb.is-in {
+  opacity: 1;
+  transform:
+    translateZ(var(--hb-z, 26px))
+    scale(var(--hb-scale, 1))
+    translateY(0);
+}
+
+/* ===========================================================
+ * 建筑立绘
+ * =========================================================== */
+.mt-hb-img {
+  position: absolute;
+  /* 底部对齐 —— 建筑「立」在格子上，而不是浮在格子中间 */
+  left: 50%;
+  bottom: 0;
+  height: var(--hb-sprite-h, 100%);
+  width: auto;
+  max-width: none;
+  transform: translateX(-50%);
+  /* 立绘自带描边与暗部，用 drop-shadow 加一层柔和环境光 */
+  filter: drop-shadow(0 6px 10px rgba(15,23,42,.34));
+  /* 避免图片拖拽产生的幽灵图 */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ===========================================================
+ * 地面投影
+ * =========================================================== */
+.mt-hb-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: var(--hb-shadow-w, 80%);
+  height: var(--hb-shadow-h, 18%);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  /* 椭圆投影：径向渐变 + 模糊 */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(15,23,42,.42) 0%,
+    rgba(15,23,42,.24) 45%,
+    rgba(15,23,42,0) 72%
+  );
+  filter: blur(2.5px);
+}
+
+/* ===========================================================
+ * 3D 模式专属微调
+ * =========================================================== */
+/* 3D 下建筑需要明确的高度分层，否则会与地块牌面「粘」在一起 */
+#board-stage.is-3d .mt-hb {
+  /* 建筑底部要探出牌面一点 —— 视觉上「立在牌上」 */
+  --hb-z: 26px;
+}
+
+#board-stage.is-3d .mt-hb-img {
+  /* 3D 下给一点边缘辉光，强化「发光体」观感 */
+  filter:
+    drop-shadow(0 6px 10px rgba(15,23,42,.34))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--hb-acc, #e8a93c) 34%, transparent));
+}
+
+/* ---------- 底座色带 ---------- */
+/* 建筑底部一条强调色带 —— 与地块信息层的组色条呼应，
+   让「浮起来的楼」和「牌面」在视觉上属于同一套语义。 */
+#board-stage.is-3d .mt-hb::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: var(--hb-shadow-w, 80%);
+  height: 3px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--hb-acc-lt, #e8a93c) 20%, transparent),
+    var(--hb-acc, #e8a93c),
+    color-mix(in srgb, var(--hb-acc-lt, #e8a93c) 20%, transparent)
+  );
+  opacity: .85;
+  pointer-events: none;
+}
+
+/* 等级越高，投影越大越淡 —— 与体量感匹配 */
+#board-stage.is-3d .mt-hb[data-level="3"] .mt-hb-shadow,
+#board-stage.is-3d .mt-hb[data-level="4"] .mt-hb-shadow {
+  width: var(--hb-shadow-w, 92%);
+  height: var(--hb-shadow-h, 22%);
+  background: radial-gradient(
+    ellipse at center,
+    rgba(15,23,42,.50) 0%,
+    rgba(15,23,42,.28) 45%,
+    rgba(15,23,42,0) 72%
+  );
+}
+
+/* 已持有的建筑加一圈底座色 —— 与「产权条」呼应 */
+#board-stage.is-3d .mt-hb[data-held="1"] .mt-hb-shadow {
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--hb-acc, #e8a93c) 34%, rgba(15,23,42,.42)) 0%,
+    rgba(15,23,42,.22) 48%,
+    rgba(15,23,42,0) 74%
+  );
+}
+
+/* ===========================================================
+ * 平面模式 —— 建筑完全隐藏
+ * =========================================================== */
+/* ⚠ PR-D 的建筑只服务于 3D 透视；平面模式保持原有平面观感，
+ *   不引入任何额外视觉元素。 */
+#board-stage:not(.is-3d) .mt-hb {
+  display: none;
+}
+
+/* ===========================================================
+ * 降低动效偏好
+ * =========================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .mt-hb {
+    transition: opacity .12s ease;
+    transform: translateZ(var(--hb-z, 26px)) scale(var(--hb-scale, 1)) translateY(0);
+  }
+  .mt-hb-img {
+    filter: drop-shadow(0 4px 8px rgba(15,23,42,.3));
+  }
+}
