@@ -1,11 +1,15 @@
 /**
- * HUD 与日志面板 —— DOM 渲染（像素风硬边框样式）。
+ * HUD 与日志面板 —— DOM 渲染（现代扁平风 · 浅色卡片）。
  */
 
 import { PLAYER_COLORS, PALETTE } from '../core/palette.js';
 import { getAvatarIcon } from '../art/avatars.js';
-import { totalAssets, financialMetrics } from '../core/economy.js';
+import {
+  totalAssets, financialMetrics, levelLabel, allGroupBuffs,
+  groupBuffTier, outstandingLoan, bondRedeemValue,
+} from '../core/economy.js';
 import { institutionCount } from '../core/rules.js';
+import { GROUP_META } from '../core/board.js';
 
 /** 渲染玩家卡片 */
 export function renderPlayerCards(el, state, onClick) {
@@ -396,4 +400,334 @@ export function drawKline(canvas, state, elapsed) {
 
   ctx.fillStyle = PALETTE.glassDeep;
   ctx.fillRect(0, Math.floor(H / 2), W, 1);
+}
+
+/* ===================================================================
+ * 左侧 Tab 面板 —— 玩家关键信息
+ *
+ * 五个 tab：我的机构 / Buff / 贷款 / 债券 / 净值
+ * 数据全部取自 `state`（与 openPlayerDetail / 排行面板同一数据源）：
+ *   · 我的机构 —— state.board[cellIndex] + player.institutions
+ *   · Buff      —— player.buffs + allGroupBuffs(player)（集团牌照加成）
+ *   · 贷款      —— player.loans（央行贷款）
+ *   · 债券      —— player.bonds（发行）+ player.subscribedBonds（持有）
+ *   · 净值      —— financialMetrics(player, state)
+ * =================================================================== */
+
+/** 数字格式化（千分位） */
+function fmtNum(n) {
+  return (n == null ? 0 : Number(n)).toLocaleString('en-US');
+}
+
+/** 建一个「小节标题」 */
+function tabSection(title, valueText) {
+  const sec = document.createElement('div');
+  sec.className = 'tab-sec';
+  const t = document.createElement('span');
+  t.textContent = title;
+  sec.appendChild(t);
+  if (valueText != null) {
+    const v = document.createElement('span');
+    v.className = 'tab-sec-v';
+    v.textContent = valueText;
+    sec.appendChild(v);
+  }
+  return sec;
+}
+
+/** 建一个「键值行」 */
+function tabRow(key, value, cls) {
+  const row = document.createElement('div');
+  row.className = 'tab-row';
+  const k = document.createElement('span');
+  k.className = 'tab-row-k';
+  k.textContent = key;
+  row.appendChild(k);
+  const v = document.createElement('span');
+  v.className = 'tab-row-v' + (cls ? ' ' + cls : '');
+  v.textContent = value;
+  row.appendChild(v);
+  return row;
+}
+
+/** 空状态提示 */
+function tabEmpty(text) {
+  const d = document.createElement('div');
+  d.className = 'tab-empty';
+  d.textContent = text;
+  return d;
+}
+
+/**
+ * 渲染「我的机构」tab —— 名称 / 等级 / 租金 / 是否质押。
+ */
+export function renderTabInstitutions(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+
+  const insts = (player.institutions || []).slice()
+    .sort((a, b) => a.cellIndex - b.cellIndex);
+
+  if (!insts.length) {
+    el.appendChild(tabEmpty('尚未持有任何机构\n买下即成为网点级资产'));
+    return;
+  }
+
+  const totalRent = insts.reduce((s, i) => {
+    const cell = state.board[i.cellIndex];
+    if (!cell || i.mortgaged) return s;
+    const rent = Array.isArray(cell.rent) ? (cell.rent[i.level] ?? cell.rent[0] ?? 0) : (cell.rent || 0);
+    return s + rent;
+  }, 0);
+
+  el.appendChild(tabSection('持有机构', `${insts.length} 家`));
+
+  for (const inst of insts) {
+    const cell = state.board[inst.cellIndex];
+    if (!cell) continue;
+    const row = document.createElement('div');
+    row.className = 'tab-inst';
+
+    const pc = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
+    const dot = document.createElement('i');
+    dot.className = 'tab-inst-dot';
+    dot.style.background = pc.main;
+    row.appendChild(dot);
+
+    const name = document.createElement('span');
+    name.className = 'tab-inst-name';
+    name.textContent = cell.name;
+    name.title = cell.name;
+    row.appendChild(name);
+
+    const lv = document.createElement('span');
+    lv.className = 'tab-inst-lv';
+    lv.textContent = levelLabel(inst.level) || `L${inst.level}`;
+    row.appendChild(lv);
+
+    if (inst.mortgaged) {
+      const flag = document.createElement('span');
+      flag.className = 'tab-inst-flag';
+      flag.textContent = '质押';
+      flag.title = '已质押 —— 暂停产生管理费';
+      row.appendChild(flag);
+    } else {
+      const rent = Array.isArray(cell.rent)
+        ? (cell.rent[inst.level] ?? cell.rent[0] ?? 0)
+        : (cell.rent || 0);
+      const rv = document.createElement('span');
+      rv.className = 'tab-inst-rent';
+      rv.textContent = `￥${fmtNum(rent)}`;
+      rv.title = `每回合管理费 ￥${fmtNum(rent)}`;
+      row.appendChild(rv);
+    }
+
+    el.appendChild(row);
+  }
+
+  el.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
+}
+
+/**
+ * 渲染「Buff」tab —— 限时状态 + 集团牌照加成。
+ */
+export function renderTabBuffs(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+
+  const buffs = player.buffs || [];
+  el.appendChild(tabSection('限时状态', buffs.length ? `${buffs.length} 条` : '无'));
+
+  if (!buffs.length) {
+    el.appendChild(tabEmpty('当前没有生效中的增益 / 减益'));
+  } else {
+    for (const f of buffs) {
+      const row = document.createElement('div');
+      row.className = 'tab-buff ' + (f.kind === 'bad' ? 'is-bad' : 'is-good');
+
+      const tag = document.createElement('span');
+      tag.className = 'tab-buff-tag';
+      tag.textContent = f.kind === 'bad' ? '减益' : '增益';
+      row.appendChild(tag);
+
+      const body = document.createElement('div');
+      body.className = 'tab-buff-body';
+      const nm = document.createElement('div');
+      nm.className = 'tab-buff-name';
+      nm.textContent = f.name;
+      body.appendChild(nm);
+      if (f.desc) {
+        const ds = document.createElement('div');
+        ds.className = 'tab-buff-desc';
+        ds.textContent = f.desc;
+        body.appendChild(ds);
+      }
+      row.appendChild(body);
+
+      const left = document.createElement('span');
+      left.className = 'tab-buff-left';
+      left.textContent = `剩 ${f.remaining}`;
+      row.appendChild(left);
+
+      el.appendChild(row);
+    }
+  }
+
+  // ===== 集团牌照加成（持有同集团机构数越多，租金越高）=====
+  const gb = allGroupBuffs(player);
+  const keys = Object.keys(gb);
+  const anyTier = keys.some((k) => (gb[k].tier || 0) > 0);
+  el.appendChild(tabSection('集团牌照加成', anyTier ? '' : '未触发'));
+  if (!anyTier) {
+    el.appendChild(tabEmpty('持有同集团机构可提升该集团管理费'));
+  } else {
+    for (const k of keys) {
+      const g = gb[k];
+      if (!g || (g.tier || 0) <= 0) continue;
+      const meta = GROUP_META[k];
+      const label = (meta && meta.name) || k;
+      const mult = g.mult != null ? `×${g.mult}` : `T${g.tier}`;
+      el.appendChild(tabRow(`${label} · ${g.count || 0} 家`, mult, 'is-green'));
+    }
+  }}
+
+/**
+ * 渲染「贷款」tab —— 央行贷款状态（额度 / 利率 / 剩余期数）。
+ */
+export function renderTabLoans(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+
+  const loans = player.loans || [];
+  const total = (player.loans || []).reduce((s, l) => s + (l.amount || 0), 0);
+
+  el.appendChild(tabSection('央行贷款', loans.length ? `${loans.length} 笔` : '无'));
+
+  if (!loans.length) {
+    el.appendChild(tabEmpty('尚无央行贷款\n每圈经过起点后可申请一次'));
+    return;
+  }
+
+  for (const l of loans) {
+    el.appendChild(tabSection(l.name || '银行贷款'));
+    el.appendChild(tabRow('已贷额度', `￥${fmtNum(l.amount)}`, 'is-red'));
+    const rate = (l.rate || 0) * 100;
+    el.appendChild(tabRow('利率', `${Number(rate.toFixed(2))}% / 回合`));
+    const left = Math.max(0, (l.term || 0) - (l.turnsElapsed || 0));
+    el.appendChild(tabRow('剩余期数', left > 0 ? `${left} 期` : '本期到期',
+      left > 0 ? '' : 'is-red'));
+    const perTurn = l.interestPerTurn || 0;
+    el.appendChild(tabRow('每期利息', `￥${fmtNum(perTurn)}`));
+    if (l.accruedInterest) {
+      el.appendChild(tabRow('累计欠息', `￥${fmtNum(l.accruedInterest)}`, 'is-red'));
+    }
+  }
+
+  el.appendChild(tabSection('合计'));
+  el.appendChild(tabRow('未偿本金', `￥${fmtNum(total)}`, 'is-red'));
+  const owe = outstandingLoan(player);
+  if (owe) {
+    el.appendChild(tabRow('应还总额', `￥${fmtNum(owe)}`, 'is-red'));
+  }
+}
+
+/**
+ * 渲染「债券」tab —— 持有的债券（名称 / 面值 / 利息 / 到期）。
+ */
+export function renderTabBonds(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+
+  const issued = player.bonds || [];
+  const held = player.subscribedBonds || [];
+
+  // ===== 发行中 =====
+  el.appendChild(tabSection('我发行的债券', issued.length ? `${issued.length} 笔` : '无'));
+  if (!issued.length) {
+    el.appendChild(tabEmpty('尚未发行公司债券'));
+  } else {
+    for (const b of issued) {
+      const left = Math.max(0, (b.dueRound || 0) - (state.round || 1));
+      const subs = (b.subscribers || []).length;
+      const raised = (b.face || 0) * subs;
+      el.appendChild(tabSection(`公司债 · ${subs} 家认购`));
+      el.appendChild(tabRow('募资额', `￥${fmtNum(raised)}`, 'is-green'));
+      el.appendChild(tabRow('面值', `￥${fmtNum(b.face)}`));
+      const cp = (b.coupon || 0) * 100;
+      el.appendChild(tabRow('票息', `${Number(cp.toFixed(2))}% / 圈`));
+      el.appendChild(tabRow('到期', left > 0 ? `剩 ${left} 圈` : '本期到期',
+        left > 0 ? '' : 'is-red'));
+    }
+  }
+
+  // ===== 持有中 =====
+  el.appendChild(tabSection('我持有的债券', held.length ? `${held.length} 笔` : '无'));
+  if (!held.length) {
+    el.appendChild(tabEmpty('未认购他人债券'));
+  } else {
+    for (const b of held) {
+      const issuer = state.players.find((p) => p.id === b.issuerId);
+      const left = Math.max(0, (b.dueRound || 0) - (state.round || 1));
+      el.appendChild(tabSection(issuer ? issuer.name : '未知发行人'));
+      el.appendChild(tabRow('面值', `￥${fmtNum(b.face)}`));
+      const cp = (b.coupon || 0) * 100;
+      el.appendChild(tabRow('利息', `${Number(cp.toFixed(2))}% / 圈`));
+      el.appendChild(tabRow('到期', left > 0 ? `剩 ${left} 圈` : '本期到期',
+        left > 0 ? '' : 'is-red'));
+      const rv = bondRedeemValue(b);
+      if (rv) {
+        el.appendChild(tabRow('到期可得', `￥${fmtNum(rv)}`, 'is-green'));
+      }
+    }
+  }
+}
+
+/**
+ * 渲染「净值」tab —— 资产净值 / 融资额度 / 负债结构。
+ */
+export function renderTabNetWorth(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+
+  const m = financialMetrics(player, state);
+
+  el.appendChild(tabSection('资产净值'));
+  el.appendChild(tabRow('总资产', `￥${fmtNum(Math.max(0, m.assets))}`, 'is-gold'));
+  el.appendChild(tabRow('净资产', `￥${fmtNum(m.netWorth)}`,
+    m.netWorth < 0 ? 'is-red' : 'is-gold'));
+  el.appendChild(tabRow('现金', `￥${fmtNum(m.cash)}`, m.cash < 0 ? 'is-red' : ''));
+  el.appendChild(tabRow('机构市值', `￥${fmtNum(m.grossValue - m.mortgagedValue)}`));
+
+  el.appendChild(tabSection('负债与融资额度'));
+  el.appendChild(tabRow('总负债', `￥${fmtNum(m.debt)}`, m.debt > 0 ? 'is-red' : 'is-dim'));
+  el.appendChild(tabRow('未偿贷款', `￥${fmtNum(m.loanDebt)}`));
+  el.appendChild(tabRow('应付债券', `￥${fmtNum(m.bondPayable)}`));
+  el.appendChild(tabRow('负债率', `${m.debtRatio}%`,
+    m.debtRatio >= 100 ? 'is-red' : ''));
+  el.appendChild(tabRow('权益比率', `${m.equityRatio}%`, 'is-green'));
+
+  // 质押融资额度 —— 已质押机构还能再融多少
+  const pledged = m.mortgagedAmount || 0;
+  el.appendChild(tabSection('质押融资'));
+  el.appendChild(tabRow('已质押金额', `￥${fmtNum(pledged)}`));
+  const insts = (player.institutions || []).filter((i) => i.mortgaged);
+  el.appendChild(tabRow('质押机构数', `${insts.length} 家`));
+
+  el.appendChild(tabSection('经营'));
+  el.appendChild(tabRow('在营机构', `${m.activeCount} 家`));
+  el.appendChild(tabRow('每圈管理费', `￥${fmtNum(m.rentIncome)}`, 'is-green'));
+  el.appendChild(tabRow('监管牌照', `${m.regulatorCount} 张`));
+}
+
+/**
+ * 渲染全部 tab 面板。
+ * @param {object} els  {inst, buff, loan, bond, net} 各 tabpanel 元素
+ */
+export function renderTabPanels(els, player, state) {
+  if (!els || !player || !state) return;
+  renderTabInstitutions(els.inst, player, state);
+  renderTabBuffs(els.buff, player, state);
+  renderTabLoans(els.loan, player, state);
+  renderTabBonds(els.bond, player, state);
+  renderTabNetWorth(els.net, player, state);
 }

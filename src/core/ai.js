@@ -111,7 +111,8 @@ export function decide(state, player, decision, ctx = {}) {
 function decidePurchase(state, player, p, diff, cellIndex) {
   const rng = state.rng;
   const cell = BOARD_CELLS[cellIndex];
-  const price = purchasePrice(cell, cell.tier, state.market);
+  // 收购价一律按「网点级（level 0）」计算 —— 星级只影响价格/租金高低，不决定初始等级
+  const price = purchasePrice(cell, 0, state.market);
   const group = GROUP_META[cell.group];
   const tiltChance = 0.10 * (1.4 - diff.accuracy);
 
@@ -136,7 +137,10 @@ function decidePurchase(state, player, p, diff, cellIndex) {
   if (cell.landmark) desire *= 1.2;
 
   // 性格「追高」倾向：低门槛标的更容易被拿下，高门槛标的门槛更高
-  const tierHurdle = 1 + (cell.tier - 1) * (0.30 - p.chaseLowTier * 0.22);
+  // ⚠ 星级体系下 `cell.tier` 恒为 0，改用星级（1~3 星）作为「高端/低端」信号：
+  //   旧语义 tier 0~4 → 新语义 star 1~3 映射为等效门槛 0~2。
+  const effTier = Math.max(0, (cell.star || 1) - 1);
+  const tierHurdle = 1 + effTier * (0.30 - p.chaseLowTier * 0.22);
   desire /= Math.max(0.6, tierHurdle);
 
   // 现金约束 —— 性格的现金留存比例直接决定出手门槛
@@ -148,8 +152,8 @@ function decidePurchase(state, player, p, diff, cellIndex) {
     return { action: 'pass', reason: `现金要留足，${cell.name}先放一放` };
   }
 
-  // 保守型：额外过滤高门槛标的
-  if (p.id === 'conservative' && cell.tier >= 3 && rng.next() > diff.accuracy + 0.15) {
+  // 保守型：额外过滤高门槛标的（星级 ≥ 3 视为高门槛）
+  if (p.id === 'conservative' && (cell.star || 0) >= 3 && rng.next() > diff.accuracy + 0.15) {
     return { action: 'pass', reason: '风格稳健，不追高门槛标的' };
   }
 

@@ -1,31 +1,29 @@
 /**
- * 机构建筑像素立绘 —— 每家机构独立绘制，正面视角。
+ * 机构建筑立绘 —— **现代扁平风**（纯色块 + 干净几何 + 轻阴影）。
  *
- * 规格：
- *   - 原生尺寸 16×32（基础），地标级 32×48
- *   - 统一 1px 深色描边
- *   - 色阶 + 高光 + 阴影 三层体积
- *   - 不同类型形态必须一眼可辨：
- *       银行 branch   矮而宽，低层网点 + 圆弧顶
- *       券商 tower    高而尖，玻璃幕墙 + 天线
- *       保险 midrise  方正中层 + 穹顶顶冠
- *       资管 modern   现代几何体量（错落体块）
- *       地标 landmark 摩天金融中心 + 顶部标志物
- *   - 5 个等级在高度、层数、细节上明显递进
+ * ================== 与像素版的差异 ==================
+ *   · 轮廓：圆角矩形 / 圆角基座（取代 1px 硬描边 + 阶梯角）
+ *   · 体积：单侧柔和明暗面（取代三层色阶描边）
+ *   · 窗格：圆角小块 + 半透明（取代 1×1 像素点阵）
+ *   · 招牌：圆角牌 + 真实字体
+ *   · 地标：双塔 + 连桥 + 圆盘徽标
+ *   · 监管机构：穹顶 + 独立徽章（钱币 / 盾 / 齿章 / 天平）
+ *
+ * 规格保持不变：基础 16×32，地标 32×48，监管 18×30，
+ * 以免影响 `src/core/selftest.js` 里对尺寸与差异度的断言。
  */
 
 import { GROUP_COLORS } from '../core/palette.js';
-import {
-  makeCanvas, rect, strokeRect, hline, vline, pixelCircle,
-  pixelRing, outline, windows, col,
-} from './pixeldraw.js';
 
 /** 等级的视觉高度（像素）—— 网点 → 地标 明显递增 */
 const LEVEL_HEIGHT = [12, 16, 21, 26, 32];
 const LEVEL_WIDTH = [14, 14, 15, 15, 16];
 
+/** 统一的墨色（描边 / 阴影） */
+const INK = '#151a26';
+
 /**
- * 机构立绘变体参数 —— 让每家机构拥有独立的像素细节，
+ * 机构立绘变体参数 —— 让每家机构拥有独立的细节差异，
  * 避免出现「同一栋楼换个颜色」的观感。
  * 变体由 cell.index 派生的 seed 决定，保证同一机构每次绘制一致。
  */
@@ -46,20 +44,22 @@ function makeVariant(seed) {
   return {
     rnd,
     pick,
-    // 立面分格数：窗列 / 横向分隔带
     winCols: pick([2, 3, 3, 4]),
     bandStep: pick([3, 3, 4]),
-    // 屋顶造型：平顶 / 台阶 / 退台 / 尖顶
     roof: pick(['flat', 'step', 'setback', 'spire']),
-    // 附属构件：雨棚 / 侧翼 / 旗杆 / 空调机组
     annex: pick(['none', 'awning', 'wing', 'mast', 'vents']),
-    // 招牌样式
     sign: pick(['band', 'plate', 'box']),
-    // 立面纹理：竖向凹槽 / 横向腰线 / 网格桁架
     facade: pick(['none', 'groove', 'belt', 'grid']),
-    // 窗户点亮密度
     lit: pick([0.18, 0.25, 0.32, 0.4]),
   };
+}
+
+/** 新建画布 */
+function makeCanvas(w, h) {
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  return cv;
 }
 
 /**
@@ -69,6 +69,7 @@ export function buildBuilding(opts) {
   const {
     kind = 'branch', level = 0, group = 'bank',
     groupIndex = 0, seed = 0, landmark = false,
+    regulatorId = null,
   } = opts;
 
   const gc = GROUP_COLORS[group] || GROUP_COLORS.bank;
@@ -78,128 +79,149 @@ export function buildBuilding(opts) {
     return buildLandmark(gc, lv, seed, groupIndex);
   }
 
+  // 监管机构走独立立绘（紫金对称行政建筑 + 专属徽章顶冠）
+  if (kind === 'regulator') {
+    return buildRegulator({ regulatorId: regulatorId || 'pbc', seed });
+  }
+
   const h = LEVEL_HEIGHT[lv] + 4;
   const w = LEVEL_WIDTH[lv];
   const cv = makeCanvas(w, h);
   const ctx = cv.getContext('2d');
   const v = makeVariant(seed);
 
-  rect(ctx, 0, h - 2, w, 2, 'ink');
-
   switch (kind) {
-    case 'tower':   drawTower(ctx, w, h, lv, gc, seed, v); break;
+    case 'tower': drawTower(ctx, w, h, lv, gc, seed, v); break;
     case 'midrise': drawMidrise(ctx, w, h, lv, gc, seed, v); break;
-    case 'modern':  drawModern(ctx, w, h, lv, gc, seed, v); break;
-    default:        drawBranch(ctx, w, h, lv, gc, seed, v); break;
+    case 'modern': drawModern(ctx, w, h, lv, gc, seed, v); break;
+    default: drawBranch(ctx, w, h, lv, gc, seed, v); break;
   }
 
   return cv;
 }
 
-/* 银行：矮而宽 —— 低层网点，石材立面，台阶基座 + 圆弧顶 */
+/* 银行：矮而宽 —— 低层网点，石材立面，圆弧顶 */
 function drawBranch(ctx, w, h, lv, gc, seed, v) {
   const bodyH = LEVEL_HEIGHT[lv];
   const top = h - 2 - bodyH;
   const bodyW = w - 2;
   const bx = 1;
 
-  rect(ctx, 0, h - 4, w, 2, gc.dk);
-  hline(ctx, 0, h - 4, w, gc.lt);
+  // 基座（圆角）
+  rr(ctx, 0, h - 4, w, 2, 1);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = gc.lt;
+  ctx.fillRect(0, h - 4, w, 0.8);
 
   const face = lv >= 3 ? gc.base : gc.dk;
-  rect(ctx, bx, top, bodyW, bodyH, face);
-  vline(ctx, bx, top, bodyH, gc.lt);
-  vline(ctx, bx + bodyW - 1, top, bodyH, 'ink');
-  rect(ctx, bx + bodyW - 2, top, 1, bodyH, gc.dk);
 
+  // 主体：圆角矩形 + 单侧明暗面
+  rr(ctx, bx, top, bodyW, bodyH, 1.5);
+  ctx.fillStyle = face;
+  ctx.fill();
+  // 受光面（左侧）
+  ctx.fillStyle = hexA(gc.lt, 0.45);
+  ctx.fillRect(bx, top, Math.max(1, bodyW * 0.22), bodyH);
+  // 背光面（右侧）
+  ctx.fillStyle = hexA(gc.dk, 0.5);
+  ctx.fillRect(bx + bodyW - Math.max(1, bodyW * 0.2), top, Math.max(1, bodyW * 0.2), bodyH);
+
+  // 腰线
+  ctx.fillStyle = hexA(gc.dk, 0.55);
   for (let y = top + 2; y < h - 4; y += v.bandStep) {
-    hline(ctx, bx + 1, y, bodyW - 2, gc.dk);
+    ctx.fillRect(bx + 1, y, bodyW - 2, 0.8);
   }
 
-  const winRows = Math.max(1, Math.floor((bodyH - 6) / 3));
-  windows(ctx, bx + 1, top + 3, bodyW - 2, bodyH - 8, v.winCols, winRows, gc.dk, 'glassDeep', v.lit, seed);
+  drawWindows(ctx, bx + 1, top + 3, bodyW - 2, bodyH - 8, v.winCols,
+    Math.max(1, Math.floor((bodyH - 6) / 3)), gc.dk, '#cbd5e1', v.lit, seed);
   drawFacade(ctx, v.facade, bx + 1, top + 3, bodyW - 2, Math.max(1, bodyH - 8), gc);
 
-  const cx = Math.floor(w / 2);
+  const cx = w / 2;
 
-  // 屋顶造型：平顶 / 台阶 / 退台 —— 同一集团内也能一眼分辨
+  // 屋顶造型：平顶 / 台阶 / 退台
   if (v.roof === 'step') {
-    rect(ctx, cx - 3, top - 2, 6, 2, gc.base);
-    hline(ctx, cx - 3, top - 2, 6, gc.lt);
+    rr(ctx, cx - 3, top - 2, 6, 2, 0.8);
+    ctx.fillStyle = gc.base;
+    ctx.fill();
   } else if (v.roof === 'setback') {
-    rect(ctx, bx + 2, top - 3, bodyW - 4, 3, gc.base);
-    hline(ctx, bx + 2, top - 3, bodyW - 4, gc.lt);
-    vline(ctx, bx + bodyW - 3, top - 3, 3, 'ink');
+    rr(ctx, bx + 2, top - 3, bodyW - 4, 3, 1);
+    ctx.fillStyle = gc.base;
+    ctx.fill();
   }
 
+  // 圆弧顶（半圆）
   const arcW = Math.min(bodyW - 2, 10);
-  const arcX = cx - Math.floor(arcW / 2);
+  const arcX = cx - arcW / 2;
   const arcH = lv >= 2 ? 4 : 3;
-  for (let i = 0; i < arcH; i++) {
-    const inset = Math.floor(i * 0.6);
-    rect(ctx, arcX + inset, top - arcH + i, arcWidth(arcW, inset), 1, i === 0 ? gc.lt : gc.base);
-  }
+  ctx.fillStyle = gc.base;
+  ctx.beginPath();
+  ctx.moveTo(arcX, top);
+  ctx.quadraticCurveTo(cx, top - arcH * 1.6, arcX + arcW, top);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.6);
+  ctx.beginPath();
+  ctx.moveTo(arcX, top);
+  ctx.quadraticCurveTo(cx, top - arcH * 1.6, arcX + arcW * 0.55, top);
+  ctx.closePath();
+  ctx.fill();
 
-  // 招牌样式：横牌 / 方牌 / 灯箱
+  // 招牌：圆角牌
   const sw = v.sign === 'plate' ? 5 : v.sign === 'box' ? 7 : 8;
-  const sx = cx - Math.floor(sw / 2);
-  const sy = top - arcH - 2;
-  rect(ctx, sx, sy, sw, 2, 'gold');
-  if (v.sign === 'box') {
-    vline(ctx, sx, sy, 2, 'goldLt');
-    vline(ctx, sx + sw - 1, sy, 2, 'goldDk');
-  } else {
-    hline(ctx, sx, sy, sw, 'goldLt');
-    hline(ctx, sx, sy + 1, sw, 'goldDk');
-  }
+  const sx = cx - sw / 2;
+  const sy = top - arcH - 2.5;
+  rr(ctx, sx, sy, sw, 2.2, 0.8);
+  ctx.fillStyle = '#e8a93c';
+  ctx.fill();
+  ctx.fillStyle = hexA('#ffc861', 0.75);
+  ctx.fillRect(sx + 0.6, sy + 0.3, sw - 1.2, 0.6);
 
-  // 附属构件：雨棚 / 侧翼 / 旗杆 / 空调机组
   drawAnnex(ctx, v.annex, w, h, top, bodyW, bx, gc);
 
-  const dw = 3;
-  rect(ctx, cx - 1, h - 6, dw, 4, 'inkDeep');
-  rect(ctx, cx - 1, h - 6, dw, 1, 'gold');
+  // 门
+  rr(ctx, cx - 1.5, h - 6, 3, 4, 0.8);
+  ctx.fillStyle = INK;
+  ctx.fill();
+  ctx.fillStyle = '#e8a93c';
+  ctx.fillRect(cx - 1.5, h - 6, 3, 0.7);
 
-  drawEmblem(ctx, seed, bx + 1, h - 6, 'goldLt');
-
-  outline(ctx, 0, h - 4, w, 2, 'ink');
+  drawEmblem(ctx, seed, bx + 1, h - 6, '#ffc861');
 }
 
 /**
- * 立绘指纹 —— 在建筑立面上烙一枚 3×3 的专属像素徽记。
+ * 立绘指纹 —— 在建筑立面上烙一枚 3×3 的专属徽记。
  * 由 seed 派生的 9 个二进制位决定明暗，保证任何两家机构的
- * 像素图都不会完全一致（即使体量与配色相近）。
+ * 立绘都不会完全一致（即使体量与配色相近）。
  */
 function drawEmblem(ctx, seed, x, y, color) {
   let s = (seed * 0x9e3779b1) >>> 0;
   s = Math.imul(s ^ (s >>> 16), 0x21f0aaad) >>> 0;
   s = Math.imul(s ^ (s >>> 15), 0x735a2d97) >>> 0;
   s = (s ^ (s >>> 15)) >>> 0;
-  // 注意：必须用 col() 解析调色板名称，fillStyle 不接受 'goldLt' 这种裸名字
-  const on = col(color);
-  const off = col('ink');
+  const on = color;
+  const off = hexA(INK, 0.55);
   for (let i = 0; i < 9; i++) {
     const bit = (s >> i) & 1;
-    const px = x + (i % 3);
-    const py = y + Math.floor(i / 3);
     ctx.fillStyle = bit ? on : off;
-    ctx.fillRect(px, py, 1, 1);
+    ctx.fillRect(x + (i % 3), y + Math.floor(i / 3), 1, 1);
   }
 }
 
 /** 立面纹理 —— 竖向凹槽 / 横向腰线 / 网格桁架 */
 function drawFacade(ctx, facade, x, y, w, h, gc) {
   if (!facade || facade === 'none' || w <= 1 || h <= 1) return;
+  ctx.fillStyle = hexA(gc.dk, 0.35);
   switch (facade) {
     case 'groove':
-      for (let gx = x + 1; gx < x + w; gx += 3) vline(ctx, gx, y, h, gc.dk);
+      for (let gx = x + 1; gx < x + w; gx += 3) ctx.fillRect(gx, y, 0.8, h);
       break;
     case 'belt':
-      for (let gy = y + 2; gy < y + h; gy += 4) hline(ctx, x, gy, w, gc.dk);
+      for (let gy = y + 2; gy < y + h; gy += 4) ctx.fillRect(x, gy, w, 0.8);
       break;
     case 'grid':
-      for (let gx = x + 1; gx < x + w; gx += 3) vline(ctx, gx, y, h, gc.dk);
-      for (let gy = y + 1; gy < y + h; gy += 3) hline(ctx, x, gy, w, gc.dk);
+      for (let gx = x + 1; gx < x + w; gx += 3) ctx.fillRect(gx, y, 0.8, h);
+      for (let gy = y + 1; gy < y + h; gy += 3) ctx.fillRect(x, gy, w, 0.8);
       break;
     default:
       break;
@@ -210,31 +232,34 @@ function drawFacade(ctx, facade, x, y, w, h, gc) {
 function drawAnnex(ctx, annex, w, h, top, bodyW, bx, gc) {
   switch (annex) {
     case 'awning':
-      rect(ctx, bx, h - 8, bodyW, 1, 'goldDk');
-      hline(ctx, bx, h - 8, bodyW, 'gold');
+      rr(ctx, bx, h - 8, bodyW, 1.2, 0.5);
+      ctx.fillStyle = '#b4791a';
+      ctx.fill();
       break;
     case 'wing': {
       const ww = 3;
-      rect(ctx, bx + bodyW, h - 9, ww, 7, gc.dk);
-      vline(ctx, bx + bodyW, h - 9, 7, gc.lt);
-      windows(ctx, bx + bodyW + 1, h - 8, ww - 2, 3, 1, 2, gc.dk, 'glass', 0.3, 5);
+      rr(ctx, bx + bodyW, h - 9, ww, 7, 1);
+      ctx.fillStyle = gc.dk;
+      ctx.fill();
+      drawWindows(ctx, bx + bodyW + 0.6, h - 8, ww - 1.2, 3, 1, 2, gc.dk, '#cbd5e1', 0.3, 5);
       break;
     }
     case 'mast':
-      vline(ctx, w - 2, top - 5, 5, 'ink');
-      rect(ctx, w - 3, top - 6, 1, 1, 'red');
+      ctx.fillStyle = INK;
+      ctx.fillRect(w - 2.5, top - 5, 1, 5);
+      ctx.fillStyle = '#e4604d';
+      ctx.beginPath();
+      ctx.arc(w - 2, top - 6, 0.9, 0, Math.PI * 2);
+      ctx.fill();
       break;
     case 'vents':
-      rect(ctx, bx + 1, h - 7, 2, 2, 'glassDeep');
-      rect(ctx, bx + 4, h - 7, 2, 2, 'glassDeep');
+      ctx.fillStyle = hexA('#cbd5e1', 0.7);
+      ctx.fillRect(bx + 1, h - 7, 2, 2);
+      ctx.fillRect(bx + 4, h - 7, 2, 2);
       break;
     default:
       break;
   }
-}
-
-function arcWidth(arcW, inset) {
-  return Math.max(1, arcW - inset * 2);
 }
 
 /* 券商：高而尖 —— 玻璃幕墙塔楼 + 顶部天线/徽标 */
@@ -244,87 +269,123 @@ function drawTower(ctx, w, h, lv, gc, seed, v) {
   const bodyW = Math.min(w - 4, 10);
   const bx = Math.floor((w - bodyW) / 2);
 
-  rect(ctx, bx, top, bodyW, bodyH, 'glassDeep');
+  // 塔身
+  rr(ctx, bx, top, bodyW, bodyH, 1.2);
+  ctx.fillStyle = '#334155';
+  ctx.fill();
+  // 玻璃幕墙列
   const cols = v.winCols;
-  const colW = Math.floor((bodyW - 2) / cols);
+  const colW = (bodyW - 2) / cols;
   for (let c = 0; c < cols; c++) {
-    rect(ctx, bx + 1 + c * colW, top + 1, colW - 1, bodyH - 2, 'glass');
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(bx + 1 + c * colW, top + 1, colW - 0.6, bodyH - 2);
   }
-  rect(ctx, bx + 1, top + 1, 1, bodyH - 2, 'glassLt');
-  rect(ctx, bx + bodyW - 3, top + 1, 1, bodyH - 2, 'ink');
+  // 受光边
+  ctx.fillStyle = hexA('#e2e8f0', 0.4);
+  ctx.fillRect(bx + 1, top + 1, 0.8, bodyH - 2);
+  // 背光边
+  ctx.fillStyle = hexA(INK, 0.45);
+  ctx.fillRect(bx + bodyW - 1.6, top + 1, 0.8, bodyH - 2);
 
-  for (let y = top + 2; y < h - 4; y += 2) {
-    hline(ctx, bx, y, bodyW, 'ink');
-  }
+  // 横向结构带
+  ctx.fillStyle = hexA(INK, 0.32);
+  for (let y = top + 2; y < h - 4; y += 2) ctx.fillRect(bx, y, bodyW, 0.7);
 
   if (lv >= 1) {
-    for (let y = top + 2; y < h - 6; y += 4) {
-      rect(ctx, bx, y, bodyW, 1, gc.lt);
-    }
+    ctx.fillStyle = hexA(gc.lt, 0.5);
+    for (let y = top + 2; y < h - 6; y += 4) ctx.fillRect(bx, y, bodyW, 0.7);
   }
-  windows(ctx, bx + 1, top + 1, bodyW - 2, bodyH - 2, cols, Math.max(2, Math.floor(bodyH / 3)), 'ink', 'amber', v.lit, seed);
+
+  drawWindows(ctx, bx + 1, top + 1, bodyW - 2, bodyH - 2, cols,
+    Math.max(2, Math.floor(bodyH / 3)), INK, '#fbbf24', v.lit, seed);
   drawFacade(ctx, v.facade, bx + 1, top + 1, bodyW - 2, Math.max(1, bodyH - 2), gc);
 
-  rect(ctx, bx - 1, top - 1, bodyW + 2, 1, gc.base);
+  // 顶部檐口
+  rr(ctx, bx - 1, top - 1.4, bodyW + 2, 1.4, 0.6);
+  ctx.fillStyle = gc.base;
+  ctx.fill();
 
-  const cx = Math.floor(w / 2);
+  const cx = w / 2;
   if (lv >= 3) {
-    // 顶部标志物：天线 / 徽标 / 双翼 / 旗杆 —— 同一集团高塔也能区分
+    // 顶部标志物：天线 / 徽标 / 双翼
     switch (v.roof) {
       case 'spire':
-        vline(ctx, cx, top - 8, 7, 'glassLt');
-        pixelCircle(ctx, cx, top - 9, 1, 'gold');
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(cx - 0.4, top - 8, 0.8, 7);
+        ctx.fillStyle = '#e8a93c';
+        ctx.beginPath();
+        ctx.arc(cx, top - 9, 1.1, 0, Math.PI * 2);
+        ctx.fill();
         break;
       case 'setback':
-        rect(ctx, cx - 4, top - 6, 8, 3, gc.base);
-        strokeRect(ctx, cx - 4, top - 6, 8, 3, 'ink');
-        hline(ctx, cx - 3, top - 5, 6, gc.lt);
-        vline(ctx, cx, top - 8, 2, 'glassLt');
+        rr(ctx, cx - 4, top - 6, 8, 3, 0.8);
+        ctx.fillStyle = gc.base;
+        ctx.fill();
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(cx - 0.4, top - 8, 0.8, 2);
         break;
       case 'step':
-        rect(ctx, cx - 3, top - 5, 6, 2, gc.base);
-        hline(ctx, cx - 3, top - 5, 6, gc.lt);
-        vline(ctx, cx, top - 8, 3, 'glassLt');
-        pixelCircle(ctx, cx, top - 9, 1, 'gold');
+        rr(ctx, cx - 3, top - 5, 6, 2, 0.6);
+        ctx.fillStyle = gc.base;
+        ctx.fill();
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(cx - 0.4, top - 8, 0.8, 3);
+        ctx.fillStyle = '#e8a93c';
+        ctx.beginPath();
+        ctx.arc(cx, top - 9, 1, 0, Math.PI * 2);
+        ctx.fill();
         break;
       default:
-        vline(ctx, cx, top - 6, 5, 'glassLt');
-        pixelCircle(ctx, cx, top - 7, 1, gc.lt);
-        vline(ctx, cx - 4, top - 4, 3, 'glassDk');
-        vline(ctx, cx + 4, top - 4, 3, 'glassDk');
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(cx - 0.4, top - 6, 0.8, 5);
+        ctx.fillStyle = gc.lt;
+        ctx.beginPath();
+        ctx.arc(cx, top - 7, 1, 0, Math.PI * 2);
+        ctx.fill();
         break;
     }
-    // 塔楼招牌带：横牌 / 方牌 / 灯箱
+    // 招牌带
     if (v.sign === 'band') {
-      rect(ctx, bx, top + bodyH - 6, bodyW, 2, 'gold');
-      hline(ctx, bx, top + bodyH - 6, bodyW, 'goldLt');
+      rr(ctx, bx, top + bodyH - 6, bodyW, 2, 0.6);
+      ctx.fillStyle = '#e8a93c';
+      ctx.fill();
     } else if (v.sign === 'plate') {
-      rect(ctx, cx - 2, top + bodyH - 7, 4, 3, 'gold');
-      hline(ctx, cx - 2, top + bodyH - 7, 4, 'goldLt');
+      rr(ctx, cx - 2, top + bodyH - 7, 4, 3, 0.8);
+      ctx.fillStyle = '#e8a93c';
+      ctx.fill();
     } else {
-      rect(ctx, cx - 3, top + bodyH - 8, 6, 4, 'amber');
-      strokeRect(ctx, cx - 3, top + bodyH - 8, 6, 4, 'ink');
+      rr(ctx, cx - 3, top + bodyH - 8, 6, 4, 1);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fill();
+      ctx.strokeStyle = hexA(INK, 0.6);
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
     }
   } else if (v.roof === 'spire') {
-    vline(ctx, cx, top - 6, 5, gc.lt);
-    rect(ctx, cx - 1, top - 7, 3, 1, 'gold');
+    ctx.fillStyle = gc.lt;
+    ctx.fillRect(cx - 0.4, top - 6, 0.8, 5);
+    ctx.fillStyle = '#e8a93c';
+    ctx.fillRect(cx - 1.5, top - 7, 3, 1.2);
   } else {
-    rect(ctx, cx - 2, top - 4, 5, 3, gc.base);
-    strokeRect(ctx, cx - 2, top - 4, 5, 3, 'ink');
-    hline(ctx, cx - 1, top - 3, 3, gc.lt);
+    rr(ctx, cx - 2, top - 4, 5, 3, 0.8);
+    ctx.fillStyle = gc.base;
+    ctx.fill();
   }
 
-  rect(ctx, bx - 1, h - 4, bodyW + 2, 2, 'ink');
-  hline(ctx, bx - 1, h - 4, bodyW + 2, 'glassDk');
+  // 基座
+  rr(ctx, bx - 1, h - 4, bodyW + 2, 2, 0.8);
+  ctx.fillStyle = INK;
+  ctx.fill();
 
-  rect(ctx, cx - 1, h - 7, 3, 3, 'inkDeep');
-  rect(ctx, cx - 1, h - 7, 3, 1, gc.lt);
+  // 门
+  rr(ctx, cx - 1.5, h - 7, 3, 3, 0.8);
+  ctx.fillStyle = hexA(INK, 0.85);
+  ctx.fill();
+  ctx.fillStyle = gc.lt;
+  ctx.fillRect(cx - 1.5, h - 7, 3, 0.7);
 
   drawEmblem(ctx, seed, bx + 1, h - 7, gc.lt);
-
   drawAnnex(ctx, v.annex, w, h, top, bodyW, bx, gc);
-
-  outline(ctx, bx - 1, h - 4, bodyW + 2, 2, 'ink');
 }
 
 /* 保险：方正中层 + 穹顶顶冠 */
@@ -334,57 +395,83 @@ function drawMidrise(ctx, w, h, lv, gc, seed, v) {
   const bodyW = w - 2;
   const bx = 1;
 
-  rect(ctx, 0, h - 4, w, 2, gc.dk);
-  hline(ctx, 0, h - 4, w, gc.lt);
+  rr(ctx, 0, h - 4, w, 2, 1);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = gc.lt;
+  ctx.fillRect(0, h - 4, w, 0.8);
 
-  rect(ctx, bx, top, bodyW, bodyH, gc.dk);
-  vline(ctx, bx, top, bodyH, gc.lt);
-  vline(ctx, bx + bodyW - 1, top, bodyH, 'ink');
+  // 主体
+  rr(ctx, bx, top, bodyW, bodyH, 1.5);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.4);
+  ctx.fillRect(bx, top, Math.max(1, bodyW * 0.22), bodyH);
+  ctx.fillStyle = hexA(INK, 0.4);
+  ctx.fillRect(bx + bodyW - Math.max(1, bodyW * 0.2), top, Math.max(1, bodyW * 0.2), bodyH);
 
-  const winRows = Math.max(1, Math.floor((bodyH - 7) / 3));
-  windows(ctx, bx + 1, top + 2, bodyW - 2, bodyH - 8, v.winCols + 1, winRows, gc.dk, 'glass', v.lit, seed);
+  drawWindows(ctx, bx + 1, top + 2, bodyW - 2, bodyH - 8, v.winCols + 1,
+    Math.max(1, Math.floor((bodyH - 7) / 3)), gc.dk, '#cbd5e1', v.lit, seed);
   drawFacade(ctx, v.facade, bx + 1, top + 2, bodyW - 2, Math.max(1, bodyH - 8), gc);
 
+  // 竖向立柱
+  ctx.fillStyle = hexA(gc.lt, 0.6);
   for (let c = 0; c <= v.winCols; c++) {
     const cx = bx + Math.floor((bodyW - 1) * c / v.winCols);
-    vline(ctx, cx, top + 2, bodyH - 6, gc.lt);
+    ctx.fillRect(cx, top + 2, 0.8, bodyH - 6);
   }
 
-  rect(ctx, bx - 1, top - 1, bodyW + 2, 1, gc.base);
-  hline(ctx, bx - 1, top - 1, bodyW + 2, gc.lt);
+  // 檐口
+  rr(ctx, bx - 1, top - 1.4, bodyW + 2, 1.4, 0.6);
+  ctx.fillStyle = gc.base;
+  ctx.fill();
 
-  const cx = Math.floor(w / 2);
+  const cx = w / 2;
   if (lv >= 2) {
-    const dw = 8;
-    const dx = cx - Math.floor(dw / 2);
-    for (let i = 0; i < 4; i++) {
-      rect(ctx, dx + i, top - 4 + i, dw - i * 2, 1, i === 0 ? gc.lt : gc.base);
-    }
-    vline(ctx, cx, top - 6, 2, gc.lt);
-    pixelCircle(ctx, cx, top - 7, 1, 'gold');
-    hline(ctx, dx + 1, top - 2, dw - 2, gc.dk);
+    // 穹顶
+    ctx.fillStyle = gc.base;
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, top);
+    ctx.quadraticCurveTo(cx, top - 6.5, cx + 4, top);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = hexA(gc.lt, 0.55);
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, top);
+    ctx.quadraticCurveTo(cx - 1.5, top - 4.6, cx, top - 4.6);
+    ctx.lineTo(cx, top);
+    ctx.closePath();
+    ctx.fill();
+    // 顶珠
+    ctx.fillStyle = '#e8a93c';
+    ctx.beginPath();
+    ctx.arc(cx, top - 6.5, 1.1, 0, Math.PI * 2);
+    ctx.fill();
   } else if (v.roof === 'step') {
-    rect(ctx, cx - 3, top - 4, 6, 3, gc.base);
-    strokeRect(ctx, cx - 3, top - 4, 6, 3, 'ink');
-    hline(ctx, cx - 2, top - 3, 4, gc.lt);
+    rr(ctx, cx - 3, top - 4, 6, 3, 0.8);
+    ctx.fillStyle = gc.base;
+    ctx.fill();
   } else {
-    rect(ctx, cx - 2, top - 4, 5, 3, gc.base);
-    strokeRect(ctx, cx - 2, top - 4, 5, 3, 'ink');
-    hline(ctx, cx - 1, top - 3, 3, gc.lt);
-    rect(ctx, cx - 5, top - 3, 2, 2, gc.dk);
-    rect(ctx, cx + 4, top - 3, 2, 2, gc.dk);
+    rr(ctx, cx - 2, top - 4, 5, 3, 0.8);
+    ctx.fillStyle = gc.base;
+    ctx.fill();
+    ctx.fillStyle = gc.dk;
+    ctx.fillRect(cx - 5, top - 3, 2, 2);
+    ctx.fillRect(cx + 4, top - 3, 2, 2);
   }
 
-  rect(ctx, cx - 2, h - 7, 5, 3, 'inkDeep');
-  rect(ctx, cx - 2, h - 7, 5, 1, gc.base);
-  rect(ctx, cx - 3, h - 7, 1, 3, gc.lt);
-  rect(ctx, cx + 3, h - 7, 1, 3, gc.lt);
+  // 门廊
+  rr(ctx, cx - 2.5, h - 7, 5, 3.5, 0.8);
+  ctx.fillStyle = hexA(INK, 0.85);
+  ctx.fill();
+  ctx.fillStyle = gc.base;
+  ctx.fillRect(cx - 2.5, h - 7, 5, 0.7);
+  ctx.fillStyle = hexA(gc.lt, 0.6);
+  ctx.fillRect(cx - 3.5, h - 7, 1, 3.5);
+  ctx.fillRect(cx + 3, h - 7, 1, 3.5);
 
   drawEmblem(ctx, seed, bx + 1, h - 7, gc.lt);
-
   drawAnnex(ctx, v.annex, w, h, top, bodyW, bx, gc);
-
-  outline(ctx, 0, h - 4, w, 2, 'ink');
 }
 
 /* 资管：现代几何体量 —— 错落的体块 */
@@ -395,63 +482,82 @@ function drawModern(ctx, w, h, lv, gc, seed, v) {
   const mainW = w - 3;
   const sideW = Math.max(4, Math.floor(mainW * 0.45));
   const sideH = Math.max(6, bodyH - 4);
-
   const sx = w - sideW - 1;
-  rect(ctx, sx, h - 2 - sideH, sideW, sideH, gc.dk);
-  vline(ctx, sx, h - 2 - sideH, sideH, gc.lt);
-  windows(ctx, sx + 1, h - 1 - sideH, sideW - 2, sideH - 3, 2, Math.max(1, Math.floor(sideH / 3)), gc.dk, 'glassDeep', v.lit, seed);
 
+  // 侧翼
+  rr(ctx, sx, h - 2 - sideH, sideW, sideH, 1);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.35);
+  ctx.fillRect(sx, h - 2 - sideH, 0.8, sideH);
+  drawWindows(ctx, sx + 0.8, h - 1 - sideH, sideW - 1.6, sideH - 3, 2,
+    Math.max(1, Math.floor(sideH / 3)), gc.dk, '#cbd5e1', v.lit, seed);
+
+  // 主体
   const bx = 1;
-  rect(ctx, bx, top, mainW, bodyH, gc.base);
-  vline(ctx, bx, top, bodyH, gc.lt);
-  vline(ctx, bx + mainW - 1, top, bodyH, 'ink');
-  rect(ctx, bx + mainW - 2, top, 1, bodyH, gc.dk);
+  rr(ctx, bx, top, mainW, bodyH, 1.5);
+  ctx.fillStyle = gc.base;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.4);
+  ctx.fillRect(bx, top, Math.max(1, mainW * 0.22), bodyH);
+  ctx.fillStyle = hexA(gc.dk, 0.45);
+  ctx.fillRect(bx + mainW - Math.max(1, mainW * 0.2), top, Math.max(1, mainW * 0.2), bodyH);
 
+  // 转角切口（现代几何感）
   const cut = lv >= 2 ? 3 : 2;
+  ctx.fillStyle = hexA(INK, 0.35);
   for (let i = 0; i < cut; i++) {
-    rect(ctx, bx + mainW - 1 - i, top + i, 1, 1, 'ink');
-    rect(ctx, bx + mainW - cut + i, top, 1, 1, 'ink');
+    ctx.fillRect(bx + mainW - 1 - i, top + i, 1, 1);
+    ctx.fillRect(bx + mainW - cut + i, top, 1, 1);
   }
 
-  const winRows = Math.max(1, Math.floor((bodyH - 5) / 3));
-  windows(ctx, bx + 1, top + 2, mainW - 2, bodyH - 6, v.winCols, winRows, gc.dk, 'glass', v.lit, seed);
+  drawWindows(ctx, bx + 1, top + 2, mainW - 2, bodyH - 6, v.winCols,
+    Math.max(1, Math.floor((bodyH - 5) / 3)), gc.dk, '#cbd5e1', v.lit, seed);
   drawFacade(ctx, v.facade, bx + 1, top + 2, mainW - 2, Math.max(1, bodyH - 6), gc);
 
+  // 横向分隔带
+  ctx.fillStyle = hexA(gc.lt, 0.5);
   for (let y = top + 4; y < h - 5; y += v.bandStep + 1) {
-    rect(ctx, bx + 1, y, mainW - 2, 1, gc.lt);
+    ctx.fillRect(bx + 1, y, mainW - 2, 0.8);
   }
 
-  const cx = Math.floor(w / 2);
+  const cx = w / 2;
   if (lv >= 3) {
-    // 高层总部：横梁招牌 + 屋顶设备 —— 按变体区分不同交易所
-    rect(ctx, bx + 2, top - 3, mainW - 4, 2, gc.lt);
-    hline(ctx, bx + 2, top - 3, mainW - 4, v.sign === 'box' ? 'amberLt' : 'paper');
+    rr(ctx, bx + 2, top - 3, mainW - 4, 2, 0.6);
+    ctx.fillStyle = gc.lt;
+    ctx.fill();
     if (v.roof === 'spire') {
-      vline(ctx, cx, top - 8, 5, gc.dk);
-      rect(ctx, cx - 1, top - 9, 3, 1, 'gold');
+      ctx.fillStyle = gc.dk;
+      ctx.fillRect(cx - 0.4, top - 8, 0.8, 5);
+      ctx.fillStyle = '#e8a93c';
+      ctx.fillRect(cx - 1.5, top - 9, 3, 1.2);
     } else if (v.roof === 'setback') {
-      rect(ctx, bx + 4, top - 6, mainW - 8, 3, gc.dk);
-      hline(ctx, bx + 4, top - 6, mainW - 8, gc.lt);
+      rr(ctx, bx + 4, top - 6, mainW - 8, 3, 0.8);
+      ctx.fillStyle = gc.dk;
+      ctx.fill();
     } else {
-      vline(ctx, bx + 3, top - 6, 3, gc.dk);
-      rect(ctx, bx + 3, top - 7, mainW - 6, 1, gc.base);
+      ctx.fillStyle = gc.dk;
+      ctx.fillRect(bx + 3, top - 6, 3, 3);
     }
   } else if (v.roof === 'setback') {
-    rect(ctx, bx + 1, top - 3, mainW - 2, 3, gc.dk);
-    hline(ctx, bx + 1, top - 3, mainW - 2, gc.lt);
+    rr(ctx, bx + 1, top - 3, mainW - 2, 3, 0.8);
+    ctx.fillStyle = gc.dk;
+    ctx.fill();
   } else {
-    rect(ctx, cx - 3, top - 3, 6, 2, gc.lt);
-    strokeRect(ctx, cx - 3, top - 3, 6, 2, 'ink');
+    rr(ctx, cx - 3, top - 3, 6, 2, 0.6);
+    ctx.fillStyle = gc.lt;
+    ctx.fill();
   }
 
-  rect(ctx, cx - 1, h - 6, 3, 4, 'inkDeep');
-  rect(ctx, cx - 1, h - 6, 3, 1, gc.lt);
+  // 门
+  rr(ctx, cx - 1.5, h - 6, 3, 4, 0.8);
+  ctx.fillStyle = hexA(INK, 0.85);
+  ctx.fill();
+  ctx.fillStyle = gc.lt;
+  ctx.fillRect(cx - 1.5, h - 6, 3, 0.7);
 
   drawEmblem(ctx, seed, bx + 1, h - 6, gc.lt);
-
   drawAnnex(ctx, v.annex, w, h, top, mainW, bx, gc);
-
-  outline(ctx, 0, h - 2, w, 2, 'ink');
 }
 
 /* 地标：32×48 摩天金融中心 + 顶部标志物 */
@@ -462,46 +568,71 @@ function buildLandmark(gc, lv, seed, groupIndex) {
   const ctx = cv.getContext('2d');
   const cx = 16;
 
-  rect(ctx, 0, h - 3, w, 3, 'ink');
-  hline(ctx, 0, h - 3, w, 'glassDeep');
+  // 基座
+  rr(ctx, 0, h - 3, w, 3, 1);
+  ctx.fillStyle = INK;
+  ctx.fill();
 
   const towerW = 14;
   const towerTop = 12;
-  rect(ctx, cx - 7, towerTop, towerW, h - 3 - towerTop, 'glassDeep');
-  for (let c = 0; c < 4; c++) {
-    rect(ctx, cx - 6 + c * 3, towerTop + 1, 2, h - 4 - towerTop, 'glass');
-  }
-  vline(ctx, cx - 6, towerTop + 1, h - 4 - towerTop, 'glassLt');
-  vline(ctx, cx + 5, towerTop + 1, h - 4 - towerTop, 'ink');
-  for (let y = towerTop + 2; y < h - 4; y += 2) hline(ctx, cx - 7, y, towerW, 'ink');
-  windows(ctx, cx - 6, towerTop + 1, 12, h - 5 - towerTop, 4, 11, 'ink', 'amber', 0.28, seed);
 
-  rect(ctx, 1, 24, 8, h - 27, gc.dk);
-  vline(ctx, 1, 24, h - 27, gc.lt);
-  windows(ctx, 2, 25, 6, h - 30, 2, 5, gc.dk, 'glassDeep', 0.35, seed + 7);
-  rect(ctx, 23, 30, 8, h - 33, gc.dk);
-  vline(ctx, 23, 30, h - 33, gc.lt);
-  windows(ctx, 24, 31, 6, h - 36, 2, 4, gc.dk, 'glassDeep', 0.35, seed + 13);
+  // 主塔：玻璃幕墙
+  rr(ctx, cx - 7, towerTop, towerW, h - 3 - towerTop, 1.5);
+  ctx.fillStyle = '#334155';
+  ctx.fill();
+  for (let c = 0; c < 4; c++) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(cx - 6 + c * 3, towerTop + 1, 2.4, h - 4 - towerTop);
+  }
+  ctx.fillStyle = hexA('#e2e8f0', 0.45);
+  ctx.fillRect(cx - 6, towerTop + 1, 0.8, h - 4 - towerTop);
+  ctx.fillStyle = hexA(INK, 0.5);
+  ctx.fillRect(cx + 5.2, towerTop + 1, 0.8, h - 4 - towerTop);
+  ctx.fillStyle = hexA(INK, 0.28);
+  for (let y = towerTop + 2; y < h - 4; y += 2) ctx.fillRect(cx - 7, y, towerW, 0.7);
+  drawWindows(ctx, cx - 6, towerTop + 1, 12, h - 5 - towerTop, 4, 11, INK, '#fbbf24', 0.28, seed);
+
+  // 侧翼
+  rr(ctx, 1, 24, 8, h - 27, 1);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.35);
+  ctx.fillRect(1, 24, 0.8, h - 27);
+  drawWindows(ctx, 2, 25, 6, h - 30, 2, 5, gc.dk, '#cbd5e1', 0.35, seed + 7);
+
+  rr(ctx, 23, 30, 8, h - 33, 1);
+  ctx.fillStyle = gc.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.35);
+  ctx.fillRect(23, 30, 0.8, h - 33);
+  drawWindows(ctx, 24, 31, 6, h - 36, 2, 4, gc.dk, '#cbd5e1', 0.35, seed + 13);
 
   drawLandmarkCrown(ctx, cx, towerTop, gc, groupIndex);
 
-  rect(ctx, 0, h - 9, w, 6, gc.base);
-  hline(ctx, 0, h - 9, w, gc.lt);
-  hline(ctx, 0, h - 4, w, 'ink');
-  for (let x = 0; x < w; x += 4) {
-    rect(ctx, x + 1, h - 8, 2, 3, 'glassDeep');
-  }
+  // 底部商业裙楼
+  rr(ctx, 0, h - 9, w, 6, 1);
+  ctx.fillStyle = gc.base;
+  ctx.fill();
+  ctx.fillStyle = hexA(gc.lt, 0.5);
+  ctx.fillRect(0, h - 9, w, 0.8);
+  ctx.fillStyle = hexA('#cbd5e1', 0.7);
+  for (let x = 0; x < w; x += 4) ctx.fillRect(x + 1, h - 8, 2, 3);
 
-  rect(ctx, cx - 4, h - 12, 8, 3, 'inkDeep');
-  rect(ctx, cx - 4, h - 12, 8, 1, 'gold');
+  // 门
+  rr(ctx, cx - 4, h - 12, 8, 3, 0.8);
+  ctx.fillStyle = hexA(INK, 0.85);
+  ctx.fill();
+  ctx.fillStyle = '#e8a93c';
+  ctx.fillRect(cx - 4, h - 12, 8, 0.7);
 
-  rect(ctx, cx - 6, h - 15, 12, 2, 'gold');
-  hline(ctx, cx - 6, h - 15, 12, 'goldLt');
-  hline(ctx, cx - 6, h - 14, 12, 'goldDk');
+  // 招牌
+  rr(ctx, cx - 6, h - 15, 12, 2.2, 0.7);
+  ctx.fillStyle = '#e8a93c';
+  ctx.fill();
+  ctx.fillStyle = hexA('#ffc861', 0.8);
+  ctx.fillRect(cx - 5.4, h - 14.6, 10.8, 0.6);
 
-  drawEmblem(ctx, seed, 3, h - 8, 'goldLt');
-
-  outline(ctx, 0, h - 3, w, 3, 'ink');
+  drawEmblem(ctx, seed, 3, h - 8, '#ffc861');
   return cv;
 }
 
@@ -509,43 +640,70 @@ function buildLandmark(gc, lv, seed, groupIndex) {
 function drawLandmarkCrown(ctx, cx, towerTop, gc, groupIndex) {
   switch (groupIndex % 4) {
     case 0: { // 银行：金色钱币圆盘 + 尖顶
-      vline(ctx, cx, towerTop - 8, 8, 'glassLt');
-      pixelCircle(ctx, cx, towerTop - 9, 3, 'gold');
-      pixelRing(ctx, cx, towerTop - 9, 3, 'goldDk');
-      pixelCircle(ctx, cx, towerTop - 9, 1, 'goldLt');
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillRect(cx - 0.4, towerTop - 8, 0.8, 8);
+      ctx.fillStyle = '#e8a93c';
+      ctx.beginPath();
+      ctx.arc(cx, towerTop - 9, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#b4791a';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.arc(cx, towerTop - 9, 2.1, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ffc861';
+      ctx.beginPath();
+      ctx.arc(cx, towerTop - 9, 0.9, 0, Math.PI * 2);
+      ctx.fill();
       break;
     }
     case 1: { // 券商：菱形徽标
-      for (let i = 0; i < 6; i++) {
-        rect(ctx, cx - i, towerTop - 3 - i, i * 2 + 1, 1, gc.lt);
-        rect(ctx, cx - i, towerTop - 3 + i, i * 2 + 1, 1, gc.lt);
-      }
-      rect(ctx, cx - 1, towerTop - 4, 3, 3, 'ink');
+      ctx.fillStyle = gc.lt;
+      ctx.beginPath();
+      ctx.moveTo(cx, towerTop - 7);
+      ctx.lineTo(cx + 3, towerTop - 3);
+      ctx.lineTo(cx, towerTop + 1);
+      ctx.lineTo(cx - 3, towerTop - 3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = INK;
+      ctx.beginPath();
+      ctx.moveTo(cx, towerTop - 4.6);
+      ctx.lineTo(cx + 1.4, towerTop - 3);
+      ctx.lineTo(cx, towerTop - 1.4);
+      ctx.lineTo(cx - 1.4, towerTop - 3);
+      ctx.closePath();
+      ctx.fill();
       break;
     }
     case 2: { // 保险：盾形顶冠
-      rect(ctx, cx - 4, towerTop - 7, 9, 4, gc.lt);
-      for (let i = 0; i < 3; i++) {
-        rect(ctx, cx - 3 + i, top(i), 8 - i * 2, 1, gc.lt);
-      }
-      rect(ctx, cx - 2, towerTop - 6, 5, 2, 'paper');
+      ctx.fillStyle = gc.lt;
+      ctx.beginPath();
+      ctx.moveTo(cx - 4, towerTop - 6);
+      ctx.lineTo(cx + 4, towerTop - 6);
+      ctx.lineTo(cx + 4, towerTop - 3);
+      ctx.quadraticCurveTo(cx, towerTop + 1.5, cx - 4, towerTop - 3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = hexA('#f8fafc', 0.8);
+      ctx.fillRect(cx - 2, towerTop - 5, 4, 1.6);
       break;
     }
     default: { // 资管：双塔 + 连桥
-      rect(ctx, cx - 6, towerTop - 7, 4, 7, gc.lt);
-      rect(ctx, cx + 3, towerTop - 7, 4, 7, gc.lt);
-      hline(ctx, cx - 2, towerTop - 5, 6, 'gold');
-      rect(ctx, cx - 6, towerTop - 8, 4, 1, gc.lt);
-      rect(ctx, cx + 3, towerTop - 8, 4, 1, gc.lt);
+      rr(ctx, cx - 6, towerTop - 7, 4, 7, 0.8);
+      ctx.fillStyle = gc.lt;
+      ctx.fill();
+      rr(ctx, cx + 2, towerTop - 7, 4, 7, 0.8);
+      ctx.fill();
+      ctx.fillStyle = '#e8a93c';
+      ctx.fillRect(cx - 2, towerTop - 5, 4, 1.2);
       break;
     }
   }
 }
 
-function top(i) { return -3 + i; }
-
 /* ===================================================================
- * 监管机构 —— 紫金配色的对称行政建筑 + 天平/徽章顶冠
+ * 监管机构 —— 紫金配色的对称行政建筑 + 独立徽章顶冠
  * 与四大集团建筑在色彩（紫金）与轮廓（对称穹顶）上均明显不同。
  * =================================================================== */
 
@@ -561,7 +719,7 @@ const REGULATOR_PAL = {
  *   pbc  —— 钱币/梅花（货币政策）
  *   csrc —— 盾形刻章（发行审核）
  *   nfra —— 齿状圆章（审慎监管）
- *   fsc  —— 三角旗/天平（风险处置）
+ *   fsc  —— 天平（风险处置）
  */
 export function buildRegulator(opts) {
   const { regulatorId = 'pbc', seed = 0 } = opts;
@@ -571,86 +729,135 @@ export function buildRegulator(opts) {
   const ctx = cv.getContext('2d');
   const p = REGULATOR_PAL;
 
-  // 基座台阶（三级）
-  rect(ctx, 0, h - 2, w, 2, 'ink');
-  rect(ctx, 1, h - 4, w - 2, 2, p.dk);
-  hline(ctx, 1, h - 4, w - 2, p.lt);
-  rect(ctx, 2, h - 7, w - 4, 3, p.base);
-  hline(ctx, 2, h - 7, w - 4, p.lt);
+  // 基座台阶（三级，圆角）
+  rr(ctx, 0, h - 2, w, 2, 0.8);
+  ctx.fillStyle = INK;
+  ctx.fill();
+  rr(ctx, 1, h - 4, w - 2, 2, 0.8);
+  ctx.fillStyle = p.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(p.lt, 0.55);
+  ctx.fillRect(1, h - 4, w - 2, 0.6);
+  rr(ctx, 2, h - 7, w - 4, 3, 1);
+  ctx.fillStyle = p.base;
+  ctx.fill();
+  ctx.fillStyle = hexA(p.lt, 0.6);
+  ctx.fillRect(2, h - 7, w - 4, 0.7);
 
   // 主体 —— 对称方塔
   const bodyW = w - 6;
   const bodyH = 15;
   const bx = 3;
   const by = h - 7 - bodyH;
-  rect(ctx, bx, by, bodyW, bodyH, p.base);
-  vline(ctx, bx, by, bodyH, p.lt);
-  vline(ctx, bx + bodyW - 1, by, bodyH, 'ink');
-  rect(ctx, bx + bodyW - 2, by, 1, bodyH, p.dk);
+  rr(ctx, bx, by, bodyW, bodyH, 1.2);
+  ctx.fillStyle = p.base;
+  ctx.fill();
+  ctx.fillStyle = hexA(p.lt, 0.4);
+  ctx.fillRect(bx, by, Math.max(1, bodyW * 0.24), bodyH);
+  ctx.fillStyle = hexA(p.dk, 0.5);
+  ctx.fillRect(bx + bodyW - Math.max(1, bodyW * 0.22), by, Math.max(1, bodyW * 0.22), bodyH);
+
   // 横向腰线
-  hline(ctx, bx + 1, by + 5, bodyW - 2, p.dk);
-  hline(ctx, bx + 1, by + 10, bodyW - 2, p.dk);
+  ctx.fillStyle = hexA(p.dk, 0.55);
+  ctx.fillRect(bx + 1, by + 5, bodyW - 2, 0.8);
+  ctx.fillRect(bx + 1, by + 10, bodyW - 2, 0.8);
+
   // 立柱
   for (let i = 0; i < 3; i++) {
     const cx = bx + 2 + i * 4;
-    rect(ctx, cx, by + 1, 2, bodyH - 2, p.lt);
-    rect(ctx, cx, by + 1, 1, bodyH - 2, p.base);
+    ctx.fillStyle = hexA(p.lt, 0.65);
+    ctx.fillRect(cx, by + 1, 1.6, bodyH - 2);
+    ctx.fillStyle = hexA(p.base, 0.8);
+    ctx.fillRect(cx, by + 1, 0.7, bodyH - 2);
   }
 
-  // 穹顶（阶梯式）
+  // 穹顶（半圆）
   const domeTop = by - 6;
-  rect(ctx, bx + 1, domeTop + 4, bodyW - 2, 2, p.lt);
-  rect(ctx, bx + 3, domeTop + 2, bodyW - 6, 2, p.lt);
-  rect(ctx, bx + 5, domeTop, bodyW - 10, 2, p.accent);
-  rect(ctx, bx + 5, domeTop, bodyW - 10, 1, p.accentLt);
+  ctx.fillStyle = p.lt;
+  ctx.beginPath();
+  ctx.moveTo(bx + 1, by);
+  ctx.quadraticCurveTo(w / 2, domeTop - 1, bx + bodyW - 1, by);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = hexA(p.accent, 0.9);
+  ctx.beginPath();
+  ctx.ellipse(w / 2, by - 0.6, bodyW / 2 - 2, 1.4, 0, 0, Math.PI * 2);
+  ctx.fill();
 
   // 顶冠徽章 —— 四家各不相同
-  const cx = Math.floor(w / 2);
+  const cx = w / 2;
   switch (regulatorId) {
     case 'pbc': { // 梅花币章
-      pixelCircle(ctx, cx, domeTop - 3, 3, p.accent);
-      rect(ctx, cx - 3, domeTop - 3, 7, 1, p.accent);
-      rect(ctx, cx - 1, domeTop - 5, 3, 1, p.accent);
-      rect(ctx, cx - 1, domeTop - 1, 3, 1, p.accent);
-      rect(ctx, cx - 1, domeTop - 3, 1, 3, p.accentLt);
+      ctx.fillStyle = p.accent;
+      ctx.beginPath();
+      ctx.arc(cx, domeTop - 2.6, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = p.accentLt;
+      ctx.fillRect(cx - 0.5, domeTop - 4.6, 1, 4);
+      ctx.fillRect(cx - 3, domeTop - 3.1, 6, 1);
+      ctx.fillStyle = p.dk;
+      ctx.fillRect(cx - 1.2, domeTop - 3.4, 2.4, 2.4);
       break;
     }
     case 'csrc': { // 盾形刻章
-      rect(ctx, cx - 3, domeTop - 5, 7, 5, p.accent);
-      rect(ctx, cx - 2, domeTop - 4, 5, 3, p.dk);
-      rect(ctx, cx - 3, domeTop - 1, 7, 1, p.accent);
-      rect(ctx, cx - 2, domeTop, 5, 1, p.accent);
-      rect(ctx, cx - 1, domeTop + 1, 3, 1, p.accent);
+      ctx.fillStyle = p.accent;
+      ctx.beginPath();
+      ctx.moveTo(cx - 3, domeTop - 5);
+      ctx.lineTo(cx + 3, domeTop - 5);
+      ctx.lineTo(cx + 3, domeTop - 2);
+      ctx.quadraticCurveTo(cx, domeTop + 1.4, cx - 3, domeTop - 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = p.dk;
+      ctx.fillRect(cx - 1.6, domeTop - 4.2, 3.2, 1.4);
       break;
     }
     case 'nfra': { // 齿状圆章
-      pixelCircle(ctx, cx, domeTop - 3, 4, p.accent);
-      pixelCircle(ctx, cx, domeTop - 3, 2, p.dk);
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2;
-        const dx = Math.round(Math.cos(a) * 5);
-        const dy = Math.round(Math.sin(a) * 5);
-        rect(ctx, cx + dx - 1, domeTop - 3 + dy, 2, 2, p.accent);
+      ctx.fillStyle = p.accent;
+      ctx.beginPath();
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2;
+        const r = i % 2 === 0 ? 4.4 : 3.2;
+        const px = cx + Math.cos(a) * r;
+        const py = domeTop - 2.6 + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = p.dk;
+      ctx.beginPath();
+      ctx.arc(cx, domeTop - 2.6, 2, 0, Math.PI * 2);
+      ctx.fill();
       break;
     }
-    default: { // fsc —— 天平（风险处置）
-      rect(ctx, cx, domeTop - 5, 1, 6, p.accent);
-      rect(ctx, cx - 4, domeTop - 4, 9, 1, p.accent);
-      rect(ctx, cx - 4, domeTop - 4, 1, 2, p.accent);
-      rect(ctx, cx + 4, domeTop - 4, 1, 2, p.accent);
-      rect(ctx, cx - 5, domeTop - 2, 3, 1, p.accentLt);
-      rect(ctx, cx + 3, domeTop - 2, 3, 1, p.accentLt);
-      rect(ctx, cx - 1, domeTop - 1, 3, 1, p.accent);
+    default: { // fsc —— 天平
+      ctx.strokeStyle = p.accent;
+      ctx.lineWidth = 1.1;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, domeTop - 5);
+      ctx.lineTo(cx, domeTop + 0.4);
+      ctx.moveTo(cx - 4, domeTop - 3.6);
+      ctx.lineTo(cx + 4, domeTop - 3.6);
+      ctx.stroke();
+      ctx.fillStyle = p.accentLt;
+      ctx.beginPath();
+      ctx.arc(cx - 4, domeTop - 2, 1.4, 0, Math.PI * 2);
+      ctx.arc(cx + 4, domeTop - 2, 1.4, 0, Math.PI * 2);
+      ctx.fill();
       break;
     }
   }
 
   // 门廊
-  rect(ctx, cx - 2, h - 12, 4, 5, p.dk);
-  rect(ctx, cx - 2, h - 12, 4, 1, p.lt);
+  rr(ctx, cx - 2, h - 12, 4, 5, 0.8);
+  ctx.fillStyle = p.dk;
+  ctx.fill();
+  ctx.fillStyle = hexA(p.lt, 0.7);
+  ctx.fillRect(cx - 2, h - 12, 4, 0.8);
   // 门前台阶
-  rect(ctx, cx - 3, h - 7, 6, 1, p.accent);
+  ctx.fillStyle = p.accent;
+  ctx.fillRect(cx - 3, h - 7, 6, 1);
 
   return cv;
 }
@@ -690,15 +897,75 @@ export function getInstitutionSprite(cell, level, ownerColor, groupIndex) {
   ctx.drawImage(base, 0, 0);
 
   if (ownerColor) {
+    // 产权条：圆角 + 玩家色
+    rr(ctx, 0, h - 4, w, 2, 0.8);
     ctx.fillStyle = ownerColor;
-    ctx.fillRect(1, h - 2, w - 2, 2);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(1, h - 2, w - 2, 1);
+    ctx.fill();
+    ctx.fillStyle = hexA('#ffffff', 0.55);
+    ctx.fillRect(0, h - 4, w, 0.7);
     ctx.fillStyle = ownerColor;
-    ctx.fillRect(0, h - 4, 1, 4);
-    ctx.fillRect(w - 1, h - 4, 1, 4);
+    ctx.fillRect(0, h - 6, 1.4, 4);
+    ctx.fillRect(w - 1.4, h - 6, 1.4, 4);
   }
 
   cache.set(key, cv);
   return cv;
+}
+
+/* ===========================================================
+ * 通用绘制工具（现代扁平风）
+ * =========================================================== */
+
+/** 圆角矩形路径 */
+function rr(ctx, x, y, w, h, r) {
+  const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.lineTo(x + w - rad, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+  ctx.lineTo(x + w, y + h - rad);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+  ctx.lineTo(x + rad, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+  ctx.lineTo(x, y + rad);
+  ctx.quadraticCurveTo(x, y, x + rad, y);
+  ctx.closePath();
+}
+
+/** #rrggbb + alpha → rgba() */
+function hexA(hex, a) {
+  const h = String(hex).replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/**
+ * 窗格 —— 圆角小块 + 半透明点亮。
+ * @param {number} lit 点亮概率
+ */
+function drawWindows(ctx, x, y, w, h, cols, rows, frame, litColor, lit, seed) {
+  if (w <= 1 || h <= 1) return;
+  let s = (seed * 2654435761) >>> 0;
+  const rnd = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  const cw = w / cols;
+  const ch = h / rows;
+  const ww = Math.max(0.8, cw * 0.52);
+  const wh = Math.max(0.8, ch * 0.5);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const px = x + cw * (c + 0.5) - ww / 2;
+      const py = y + ch * (r + 0.5) - wh / 2;
+      if (px < x || py < y || px + ww > x + w + 0.4 || py + wh > y + h + 0.4) continue;
+      const isLit = rnd() < lit;
+      rr(ctx, px, py, ww, wh, Math.min(0.6, ww / 2));
+      ctx.fillStyle = isLit ? litColor : hexA(frame, 0.55);
+      ctx.fill();
+    }
+  }
 }

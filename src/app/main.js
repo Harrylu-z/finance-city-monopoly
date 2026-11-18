@@ -2,7 +2,7 @@
  * 主控制器 —— 串联规则引擎、渲染、AI、UI。
  */
 
-import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META } from '../core/board.js';
+import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META, WHEEL_BY_ID } from '../core/board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects,
@@ -22,13 +22,15 @@ import {
 } from '../core/ai.js';
 import { makeRng, randomSeed, hashSeed } from '../core/rng.js';
 import { BoardRenderer } from '../render/canvas.js';
+import { TileLayer } from '../render/tiles.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
+import { Stage3D } from '../render/stage3d.js';
 import { Sfx } from '../audio/sfx.js';
-import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog } from './hud.js';
+import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog, renderTabPanels } from './hud.js';
 import {
   showPurchaseDialog, showInstitutionDialog, showMetroDialog,
-  showEventCardDialog, showGameOverDialog, showMenuDialog,
+  showEventCardDialog, showGameOverDialog,
   showLoanDialog, showBondDialog, showBondResultDialog, showTrapDialog, showBuffPanel,
   showPlayerDetailDialog, showRentDialog, openModal, closeModal,
   showMarginCallDialog,
@@ -38,11 +40,34 @@ import { openShareDialog, parseShareUrl } from './share.js';
 import { saveRecord, saveSettings, loadSettings } from './persist.js';
 import { getAvatarIcon } from '../art/avatars.js';
 import { showPokerTable, showPokerResult, closePokerTable } from './poker-ui.js';
+import { showWheelDialog } from '../ui/wheel.js';
 import { abortPokerGame } from '../core/poker.js';
 import { getCareerPieceIcon, ensurePortraitsReady } from '../art/career-pieces.js';
 import { CAREERS, CAREER_BY_ID, getCareer, assignAiCareers } from '../core/careers.js';
 import { getInstitutionSprite } from '../art/buildings.js';
 import { PALETTE, PLAYER_COLORS } from '../core/palette.js';
+
+/**
+ * 特效 / 飘字用的调色板别名。
+ *
+ * ⚠ `PALETTE` 里只有精简后的 16 色（ink / panel / dim / board /
+ *   boardDk / gold / goldLt / goldDk / paper / red / redLt / green / greenLt）。
+ *   旧代码引用了 `amberLt` / `neon` / `jadeLt` / `glass` / `paperDeep`
+ *   等**并不存在**的键 —— 值是 undefined，
+ *   传到 `effects.hexA()` 就变成 `rgba(NaN,...)`，
+ *   `addColorStop` 直接抛异常、整个渲染循环中断。
+ *   这里显式映射到真实存在的色值。
+ */
+const FX = {
+  amber: PALETTE.gold,
+  amberLt: PALETTE.goldLt,
+  amberDk: PALETTE.goldDk,
+  neon: '#3fc6c6',
+  jade: PALETTE.green,
+  jadeLt: PALETTE.greenLt,
+  glass: PALETTE.dim,
+  paperDeep: '#b3aa96',
+};
 import { delay, interval } from '../core/scheduler.js';
 
 /** 集团 → 建筑造型索引（与 render/canvas.js 保持一致） */
@@ -52,6 +77,7 @@ class Game {
   constructor() {
     this.state = null;
     this.renderer = null;
+    this.tileLayer = null;
     this.background = null;
     this.effects = new Effects();
     this.mover = new MoveAnimator();
@@ -112,14 +138,22 @@ class Game {
       'input-nickname', 'career-picker', 'difficulty-picker', 'aicount-picker',
       'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
-      'board-canvas', 'board-wrap', 'stage-bg', 'fx-layer',
+      'board-canvas', 'board-wrap', 'board-tiles', 'stage-bg', 'fx-layer',
+      // 3D 舞台骨架（视角切换 + 拖拽平移）
+      'board-stage', 'board-pan', 'btn-3d',
       // HUD 容器（四角定位，用于测量与避让计算）
-      'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
+      'hud-left', 'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
       // 左上：当前玩家紧凑单条
       'active-player-card', 'active-avatar', 'active-player-name',
       'active-player-cash', 'active-player-sub', 'active-status',
+      // 左侧：Tab 面板（我的机构 / Buff / 贷款 / 债券 / 净值）
+      'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-loan',
+      'tab-panel-bond', 'tab-panel-net',
       // 右上：回合徽章 + 按钮
-      'hud-round', 'hud-market', 'btn-rank', 'btn-menu',
+      'hud-round', 'hud-market', 'btn-rank',
+      // 资产排行弹窗底部的「菜单」分组（承接原 #btn-menu 的功能）
+      'btn-menu-share', 'btn-menu-assets', 'btn-menu-metrics', 'btn-menu-sound',
+      'btn-menu-anim', 'btn-menu-theme', 'btn-menu-selftest', 'btn-menu-setup',
       // 左侧：可折叠播报
       'feed-toggle', 'feed-latest', 'log-panel', 'log-list',
       // 底部：主行动 + 常用操作按钮
@@ -315,7 +349,8 @@ class Game {
       this.setupBg.resize(w, h);
     }
     const ctx = cv.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
+    // 背景为矢量绘制 —— 开启平滑缩放（去像素风）
+    ctx.imageSmoothingEnabled = true;
     this.setupBg.setPhase(3);
     this.setupBg.draw(ctx, performance.now());
   }
@@ -392,7 +427,32 @@ class Game {
     this.el['selftest-screen'].hidden = true;
 
     this.renderer = new BoardRenderer(this.el['board-canvas']);
+
+    // ===== 地块 DOM 层（34 个现代数据卡）=====
+    // 与 canvas 共享同一套几何：cellRect(index) → 百分比定位。
+    this.tileLayer = new TileLayer(this.el['board-tiles'], this.renderer);
+    this.tileLayer.build();
+    this.bindTileEvents();
+
     this.background = new Background(window.innerWidth, window.innerHeight);
+
+    // ===== 3D 舞台（视角切换 + 拖拽平移）=====
+    // 必须在 renderer 建好之后创建 —— 它要读写 #board-stage / #board-pan，
+    // 且平移只改 transform，不碰 Canvas 的 backing store。
+    //
+    // ⚠ 切换视角后必须让地块层重排深度 —— 3D 模式下靠 z-index 表达
+    //   「离观察者更近」，平面模式不需要。
+    this.stage3d = new Stage3D(
+      this.el['board-stage'],
+      this.el['board-pan'],
+      this.el['btn-3d'],
+      {
+        onChange: ({ is3D }) => {
+          if (this.tileLayer) this.tileLayer.set3D(is3D);
+        },
+      },
+    );
+
     this.onResize();
     // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
     requestAnimationFrame(() => this.onResize());
@@ -442,7 +502,48 @@ class Game {
     this.el['btn-mortgage'].addEventListener('click', () => { this.el['btn-mortgage'].blur(); this.handleShowAssets(); });
     this.el['btn-endturn'].addEventListener('click', () => { this.el['btn-endturn'].blur(); this.handleEndTurn(); });
 
-    this.el['btn-menu'].addEventListener('click', () => this.handleMenu());
+    this.el['btn-menu-share'].addEventListener('click', () => {
+      this.closeRankModal();
+      this.handleShare();
+    });
+    this.el['btn-menu-assets'].addEventListener('click', () => {
+      this.closeRankModal();
+      this.handleShowAssets();
+    });
+    this.el['btn-menu-metrics'].addEventListener('click', () => {
+      this.closeRankModal();
+      const me = this.humanPlayer();
+      if (me) this.openPlayerDetail(me, null);
+    });
+    this.el['btn-menu-sound'].addEventListener('click', (e) => {
+      this.sfx.setEnabled(!this.sfx.enabled);
+      e.currentTarget.textContent = `音效：${this.sfx.enabled ? '开' : '关'}`;
+      this.toast(this.sfx.enabled ? '音效开启' : '音效关闭');
+    });
+    this.el['btn-menu-anim'].addEventListener('click', (e) => {
+      this.effectsEnabled = !this.effectsEnabled;
+      this.effects.enabled = this.effectsEnabled;
+      document.body.classList.toggle('no-anim', !this.effectsEnabled);
+      e.currentTarget.textContent = `特效：${this.effectsEnabled ? '开' : '关'}`;
+      this.toast(this.effectsEnabled ? '特效开启' : '特效关闭（保帧率）');
+    });
+    this.el['btn-menu-theme'].addEventListener('click', (e) => {
+      document.body.classList.toggle('theme-light');
+      const light = document.body.classList.contains('theme-light');
+      e.currentTarget.textContent = `主题：${light ? '亮色' : '暗色'}`;
+      this.toast(light ? '亮色主题' : '暗色主题');
+    });
+    this.el['btn-menu-selftest'].addEventListener('click', () => {
+      this.closeRankModal();
+      this.runSelfTest();
+    });
+    this.el['btn-menu-setup'].addEventListener('click', () => {
+      this.closeRankModal();
+      this.backToSetup();
+    });
+
+    // ===== 左侧 Tab 面板切换 =====
+    this.setupTabPanel();
 
     // ===== 回合播报折叠 =====
     this.el['feed-toggle'].addEventListener('click', () => {
@@ -498,6 +599,8 @@ class Game {
       const rect = this.el['board-canvas'].getBoundingClientRect();
       const index = this.renderer.cellAt(e.clientX - rect.left, e.clientY - rect.top);
       if (index < 0) return;
+      // 转盘格：只有**轮到人类玩家**时才允许触发；AI 回合点击无效
+      if (this.triggerWheelCell(index)) return;
       this.showCellDetail(index, e.clientX - rect.left, e.clientY - rect.top);
     });
 
@@ -510,6 +613,78 @@ class Game {
 
     const unlock = () => { this.sfx.unlock(); document.removeEventListener('pointerdown', unlock); };
     document.addEventListener('pointerdown', unlock);
+  }
+
+  /**
+   * 地块 DOM 事件绑定 —— 34 个数据卡直接响应点击 / 悬停 / 键盘。
+   *
+   * 地块层盖在 canvas 之上（pointer-events: auto），
+   * 因此命中判定由浏览器直接完成，无需 `cellAt(px,py)` 反算。
+   */
+  bindTileEvents() {
+    const root = this.el['board-tiles'];
+    if (!root) return;
+
+    const findIndex = (target) => {
+      const cell = target && target.closest ? target.closest('.mt-cell') : null;
+      return cell ? Number(cell.dataset.index) : -1;
+    };
+
+    root.addEventListener('click', (e) => {
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      // 转盘格：只有**轮到人类玩家**时才允许触发；AI 回合点击无效
+      if (this.triggerWheelCell(index)) return;
+      const rect = this.el['board-wrap'].getBoundingClientRect();
+      // 详情卡定位：用地块自身的中心（DOM 坐标系）
+      const node = this.tileLayer && this.tileLayer.nodes[index];
+      let px = 0;
+      let py = 0;
+      if (node) {
+        const r = node.getBoundingClientRect();
+        px = r.left - rect.left + r.width / 2;
+        py = r.top - rect.top + r.height / 2;
+      } else {
+        px = e.clientX - rect.left;
+        py = e.clientY - rect.top;
+      }
+      this.showCellDetail(index, px, py);
+    });
+
+    root.addEventListener('dblclick', (e) => {
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      this.focusTile(index);
+    });
+
+    // 悬停高亮（沿用 canvas 的 hoverCell 状态，供棋子绘制等使用）
+    root.addEventListener('mousemove', (e) => {
+      if (!this.renderer) return;
+      const index = findIndex(e.target);
+      this.renderer.hoverCell = index;
+    });
+    root.addEventListener('mouseleave', () => {
+      if (this.renderer) this.renderer.hoverCell = -1;
+    });
+
+    // 键盘可达性：Enter / Space = 选中该格
+    root.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const index = findIndex(e.target);
+      if (index < 0) return;
+      e.preventDefault();
+      this.focusTile(index);
+    });
+  }
+
+  /** 选中并高亮某个地块（键盘 / 双击路径） */
+  focusTile(index) {
+    if (!this.tileLayer) return;
+    this.tileLayer.nodes.forEach((n, i) => {
+      if (n) n.classList.toggle('is-selected', i === index);
+    });
+    const node = this.tileLayer.nodes[index];
+    if (node) node.classList.add('is-active');
   }
 
   /**
@@ -655,37 +830,53 @@ class Game {
     if (el) el.hidden = true;
   }
 
-  handleMenu() {
-    showMenuDialog([
-      { text: '分享战绩', primary: true, onClick: () => this.handleShare() },
-      { text: '我的机构', onClick: () => this.handleShowAssets() },
-      { text: '财务指标总览', onClick: () => this.openPlayerDetail(currentPlayer(this.state), null) },
-      {
-        text: `音效：${this.sfx.enabled ? '开' : '关'}`,
-        onClick: () => {
-          this.sfx.setEnabled(!this.sfx.enabled);
-          this.toast(this.sfx.enabled ? '音效开启' : '音效关闭');
-        },
-      },
-      {
-        text: `特效：${this.effectsEnabled ? '开' : '关'}`,
-        onClick: () => {
-          this.effectsEnabled = !this.effectsEnabled;
-          this.effects.enabled = this.effectsEnabled;
-          document.body.classList.toggle('no-anim', !this.effectsEnabled);
-          this.toast(this.effectsEnabled ? '特效开启' : '特效关闭（保帧率）');
-        },
-      },
-      {
-        text: `主题：${document.body.classList.contains('theme-light') ? '亮色' : '暗色'}`,
-        onClick: () => {
-          document.body.classList.toggle('theme-light');
-          this.toast(document.body.classList.contains('theme-light') ? '亮色主题' : '暗色主题');
-        },
-      },
-      { text: '规则引擎自检', onClick: () => this.runSelfTest() },
-      { text: '返回开局界面', onClick: () => this.backToSetup() },
-    ]);
+  /**
+   * 取人类玩家（`!isAI`）—— HUD 的「当前玩家卡」永远显示他，
+   * 不随 AI 回合切换。
+   */
+  humanPlayer() {
+    if (!this.state) return null;
+    return this.state.players.find((p) => !p.isAI) || null;
+  }
+
+  /**
+   * 左侧 Tab 面板 —— 真实 tab 语义（role=tablist / tab / tabpanel）。
+   * 支持鼠标点击 + 键盘（←/→ 切换、Home/End 跳首尾）。
+   */
+  setupTabPanel() {
+    const list = this.el['tab-list'];
+    if (!list) return;
+    this.tabButtons = [...list.querySelectorAll('[role="tab"]')];
+
+    this.tabButtons.forEach((btn) => {
+      btn.addEventListener('click', () => this.switchTab(btn.dataset.tab, false));
+      btn.addEventListener('keydown', (e) => {
+        const i = this.tabButtons.indexOf(btn);
+        let next = -1;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % this.tabButtons.length;
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (i - 1 + this.tabButtons.length) % this.tabButtons.length;
+        else if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = this.tabButtons.length - 1;
+        if (next < 0) return;
+        e.preventDefault();
+        this.switchTab(this.tabButtons[next].dataset.tab, true);
+      });
+    });
+    this.switchTab('inst', false);
+  }
+
+  /** 切换 tab —— 更新 aria-selected / hidden，并聚焦（键盘操作时） */
+  switchTab(key, focus) {
+    if (!this.tabButtons || !this.tabButtons.length) return;
+    for (const btn of this.tabButtons) {
+      const on = btn.dataset.tab === key;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.setAttribute('tabindex', on ? '0' : '-1');
+      const panel = this.el[`tab-panel-${btn.dataset.tab}`];
+      if (panel) panel.hidden = !on;
+      if (on && focus) btn.focus();
+    }
+    this.activeTab = key;
   }
 
   backToSetup() {
@@ -773,14 +964,14 @@ class Game {
         cv.style.width = '44px';
         cv.style.height = '44px';
         const ctx = cv.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
+        ctx.imageSmoothingEnabled = true;
         tray.appendChild(cv);
 
         const frames = m.getDieRollFrames();
         let i = 0;
         const timer = interval(90, () => {
           ctx.clearRect(0, 0, 16, 16);
-          ctx.imageSmoothingEnabled = false;
+          ctx.imageSmoothingEnabled = true;
           ctx.drawImage(frames[i % frames.length], 0, 0, 16, 16);
           i++;
           if (i > 6) {
@@ -884,13 +1075,127 @@ class Game {
         log(state, player.isAI ? 'ai' : 'good',
           `${player.name} ${passedOverStart ? '经过' : '抵达'}陆家嘴金融中心，获得货币发行补贴 ￥${CONFIG.startBonus}`, '补贴');
         this.sfx.buy();
-        this.effects.floatUp(c.x, c.y, { count: 6, colors: [PALETTE.gold, PALETTE.amberLt] });
+        this.effects.floatUp(c.x, c.y, { count: 6, colors: [PALETTE.gold, FX.amberLt] });
       }
+      return;
+    }
+
+    // ===== 转盘格：先转盘，抽出效果后再结算 =====
+    // 落点若为转盘格（kind = 'wheel'），必须先让玩家「转」一次，
+    // 拿到抽中的效果 id，再交给规则层走该效果原有的结算逻辑。
+    const landed = state.board[player.position];
+    if (landed && landed.type === 'special' && landed.special?.kind === 'wheel') {
+      this.spinWheelThenSettle(player, landed);
       return;
     }
 
     const results = settleOnCell(state, player, player.position);
     this.handleSettlement(player, results);
+  }
+
+  /**
+   * 转盘格点击入口 —— **只有轮到人类玩家**时才能触发转盘。
+   *
+   * ⚠ 需求：AI 触发转盘时，玩家不能触发任何转盘。
+   *   · 弹窗是模态的（遮罩拦截棋盘点击），AI 转盘期间玩家点不到棋盘；
+   *   · 即使遮罩被绕过（比如直接调 API），本守卫也会拦下：
+   *     当前回合不是人类玩家 → 拒绝。
+   *
+   * @returns {boolean} true = 已触发转盘（调用方应中止后续处理）
+   */
+  triggerWheelCell(index) {
+    const state = this.state;
+    if (!state) return false;
+    const cell = state.board[index];
+    if (!cell || cell.type !== 'special' || cell.special?.kind !== 'wheel') return false;
+
+    // 守卫 ①：当前回合必须是人类玩家
+    const cur = currentPlayer(state);
+    if (!cur || cur.isAI || cur.bankrupt) return false;
+
+    // 守卫 ②：游戏必须处于「等待玩家行动」阶段，且没有别的弹窗在跑
+    if (this.busy) return false;
+    if (!document.getElementById('modal-root').hidden) return false;
+    if (!document.getElementById('rank-root').hidden) return false;
+
+    // 触发：把玩家「移动」到该格并走转盘结算
+    cur.position = index;
+    this.spinWheelThenSettle(cur, cell);
+    return true;
+  }
+
+  /**
+   * 转盘格结算 —— 弹大转盘 → 玩家转 → 抽出效果 → 按该效果结算。
+   *
+   * ================== 新语义（v2）==================
+   * · **玩家可连续转多次**：每转一次 → 抽效果 → **立即真实结算**
+   *   → 转盘重置回可转状态 → 玩家可继续转（上限 5 次，UI 显示剩余次数）。
+   *   玩家点「完成并离开」才退出并继续回合。
+   * · **AI 触发时玩家只读**：`readonly: true` → 「转」按钮不渲染，
+   *   玩家只看 AI 的抽中结果与结算。
+   * · **模态拦截**：弹窗打开期间遮罩挡住棋盘点击，
+   *   玩家无法在 AI 转盘期间触发自己的转盘格。
+   *
+   * 抽中的效果 id 通过 `state.pending.wheelPick` 传给规则层，
+   * 规则层据此走该效果**原有**的 case 分支（不复制粘贴逻辑）。
+   */
+  spinWheelThenSettle(player, cell) {
+    const state = this.state;
+    const wheel = WHEEL_BY_ID[cell.special.wheelId];
+    if (!wheel) {
+      // 转盘定义缺失（数据异常）—— 降级为普通结算，不阻断回合
+      const results = settleOnCell(state, player, player.position);
+      this.handleSettlement(player, results);
+      return;
+    }
+
+    const isAI = !!player.isAI;
+    // 本次转盘是否已经结算过（供 onClose 判断要不要兜底随机）
+    let settled = false;
+
+    // ===== AI 触发转盘：玩家不能操作任何转盘 =====
+    // ① 转盘格只允许「当前回合玩家」触发 —— AI 回合期间玩家点自己的转盘格
+    //    不会再次开转盘（见下方 triggerWheelCell 守卫）。
+    // ② 弹窗期间模态遮罩拦截棋盘点击。
+    // ③ readonly 让玩家的「转」按钮不渲染。
+    this.busy = true;
+
+    const doSettle = (outcomeId, outcomeName) => {
+      settled = true;
+      // 记录抽中的效果 → 规则层据此结算
+      state.pending = { kind: 'wheel', wheelPick: outcomeId, playerId: player.id };
+      log(state, player.isAI ? 'ai' : 'self',
+        `${player.name} 转动${wheel.label}，抽中「${outcomeName}」`, '转盘');
+      const results = settleOnCell(state, player, player.position);
+      state.pending = null;
+      this.handleSettlement(player, results);
+    };
+
+    showWheelDialog(wheel, {
+      autoSpin: isAI,
+      readonly: isAI,
+      playerName: player.name,
+      onSpin: (r) => {
+        // 每次转动都**立即真实结算** —— 玩家可以接着再转
+        doSettle(r.outcomeId, r.outcome.name);
+      },
+      onClose: () => {
+        // 玩家点「完成并离开」—— 若一次都没转过，兜底随机一个效果，保证回合能继续
+        if (settled) {
+          this.busy = true;
+          this.continueAfterSettlement(player);
+          return;
+        }
+        const outs = cell.special.outcomes || [];
+        if (!outs.length) {
+          this.busy = true;
+          this.continueAfterSettlement(player);
+          return;
+        }
+        const picked = outs[state.rng.int(0, outs.length - 1)];
+        doSettle(picked, picked);
+      },
+    });
   }
 
   handleSettlement(player, results) {
@@ -925,7 +1230,7 @@ class Game {
           this.sfx.payRent();
           const c = this.cellCenter(r.cellIndex);
           this.effects.burst(c.x, c.y, {
-            count: 12, colors: [PALETTE.gold, PALETTE.amberLt, PALETTE.paper], speed: 2.6,
+            count: 12, colors: [PALETTE.gold, FX.amberLt, PALETTE.paper], speed: 2.6,
           });
           this.effects.triggerShake();
           this.shakeScreen();
@@ -958,7 +1263,7 @@ class Game {
           log(state, 'bad', `${player.name} 缴纳${r.reason} ￥${r.amount}`, '成本');
           this.sfx.deny();
           const c = this.cellCenter(player.position);
-          this.effects.burst(c.x, c.y, { count: 8, colors: [PALETTE.glass, PALETTE.paperDeep], speed: 1.6 });
+          this.effects.burst(c.x, c.y, { count: 8, colors: [FX.glass, FX.paperDeep], speed: 1.6 });
           this.floatText(`-￥${r.amount}`, c, PALETTE.redLt);
           break;
         }
@@ -1028,6 +1333,16 @@ class Game {
           this.toast(`行情切换：${label}`, r.market === 'bull' ? 't-bad' : 't-good');
           break;
         }
+        case 'wheel-result': {
+          // 转盘抽中的效果 —— 播报 + 特效（具体效果由后续结果条目结算）
+          log(state, player.isAI ? 'ai' : 'good',
+            `${player.name} 的${r.wheelName}抽出「${r.outcomeName}」${r.big ? `（${r.big}）` : ''}`,
+            '转盘');
+          const c = this.cellCenter(player.position);
+          this.effects.confetti(c.x, c.y);
+          this.floatText(r.outcomeName, c, r.trap ? PALETTE.redLt : PALETTE.gold);
+          break;
+        }
         case 'casino-open': {
           // 私人赌场 · 德州扑克 —— 全体玩家同桌
           this.openCasino(player);
@@ -1049,7 +1364,7 @@ class Game {
         }
         case 'pbc-bonus': {
           log(state, 'good', `中国人民银行流动性投放 +￥${r.amount}`, '央行');
-          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), PALETTE.jadeLt);
+          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), FX.jadeLt);
           break;
         }
         case 'loan-offer': {
@@ -1114,7 +1429,7 @@ class Game {
           log(state, 'bad', `${player.name} 触发监管陷阱「${r.card.title}」`, '监管');
           this.sfx.deny();
           const c = this.cellCenter(player.position);
-          this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.red, PALETTE.redLt, PALETTE.amber], speed: 2.4 });
+          this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.red, PALETTE.redLt, FX.amber], speed: 2.4 });
           this.effects.triggerShake();
           this.shakeScreen();
           this.floatText('监管!', c, PALETTE.redLt);
@@ -1237,18 +1552,18 @@ class Game {
       `${player.name} 抽到「${card.title}」：${card.text}`, '事件');
     if (res.cash) {
       this.floatText(`${res.cash > 0 ? '+' : ''}￥${res.cash}`, this.cellCenter(player.position),
-        res.cash > 0 ? PALETTE.jadeLt : PALETTE.redLt);
+        res.cash > 0 ? FX.jadeLt : PALETTE.redLt);
     }
     const c = this.cellCenter(player.position);
-    this.effects.floatUp(c.x, c.y, { count: 8, colors: [PALETTE.gold, PALETTE.neon] });
+    this.effects.floatUp(c.x, c.y, { count: 8, colors: [PALETTE.gold, FX.neon] });
   }
 
   onPurchased(player, r) {
     this.sfx.buy();
     const c = this.cellCenter(r.cellIndex);
-    this.effects.floatUp(c.x, c.y, { count: 10, colors: [PALETTE.gold, PALETTE.amberLt, PALETTE.paper] });
-    this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.gold, PALETTE.amberLt], speed: 2.8 });
-    this.floatText(`-￥${r.price}`, c, PALETTE.amber);
+    this.effects.floatUp(c.x, c.y, { count: 10, colors: [PALETTE.gold, FX.amberLt, PALETTE.paper] });
+    this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.gold, FX.amberLt], speed: 2.8 });
+    this.floatText(`-￥${r.price}`, c, FX.amber);
     log(this.state, player.isAI ? 'ai' : 'good',
       `${player.name} 收购了 ${r.cell.name}（￥${r.price}）`, '收购');
   }
@@ -1549,8 +1864,9 @@ class Game {
 
   /* ==================== 玩家操作 ==================== */
   handleShowAssets() {
-    const p = currentPlayer(this.state);
-    if (!p || p.isAI) return;
+    // 「我的机构」永远针对**人类玩家**（AI 回合也能查看自己的资产）
+    const p = this.humanPlayer();
+    if (!p || p.bankrupt) return;
     this.openAssetsDialog(p);
   }
 
@@ -1682,7 +1998,8 @@ class Game {
       const bctx = bgCanvas.getContext('2d');
       const shake = this.effects.shakeOffset();
       bctx.save();
-      bctx.imageSmoothingEnabled = false;
+      // 背景是矢量绘制 —— 开启平滑，避免位图缩放出现锯齿（去像素风）
+      bctx.imageSmoothingEnabled = true;
       bctx.translate(shake.x, shake.y);
       this.background.draw(bctx, now);
       bctx.restore();
@@ -1702,6 +2019,9 @@ class Game {
       : null;
 
     this.renderer.draw(state, { elapsed: now, time: now, moveAnim, effects: this.effects });
+
+    // 地块 DOM 状态同步（内部做 key 比对，状态没变就不碰 DOM）
+    if (this.tileLayer) this.tileLayer.sync(state);
   }
 
   /**
@@ -1764,6 +2084,8 @@ class Game {
     this.renderer.resize(bw, bh, dpr);
     // resize 之后再设预留：setBottomReserve 会重算布局，需要正确的 w/h
     this.renderer.setBottomReserve(reserve);
+    // 地块 DOM 层同步布局：cellRect → 百分比（canvas 尺寸已定，cellRect 才是最终值）
+    if (this.tileLayer) this.tileLayer.layout();
     this.background.resize(Math.max(1, sw), Math.max(1, sh));
     this.resizeStageBg(sw, sh);
   }
@@ -1796,7 +2118,8 @@ class Game {
       cv.height = ph;
     }
     const ctx = cv.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
+    // 背景层为矢量绘制 —— 开启平滑缩放（去像素风）
+    ctx.imageSmoothingEnabled = true;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
@@ -1806,29 +2129,29 @@ class Game {
     if (!state) return;
 
     const p = currentPlayer(state);
+    // ===== 当前玩家卡：永远显示**人类玩家**，不随 AI 回合切换 =====
+    const me = this.humanPlayer() || p;
 
     // ===== 左上角：当前玩家紧凑单条 =====
     const card = this.el['active-player-card'];
-    if (p) {
-      const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
+    if (me) {
+      const pc = PLAYER_COLORS[me.colorIndex % PLAYER_COLORS.length];
       card.style.borderLeft = `4px solid ${pc.main}`;
-      this.el['active-player-name'].textContent = p.name;
-      this.el['active-player-cash'].textContent = `￥${p.cash}`;
-      const cnt = p.institutions.length;
-      // 副标题：AI 显示「职业 · 性格」，真人显示「职业」
-      const career = getCareer(p.careerId);
-      const roleText = career
-        ? (p.personality ? `${career.name} · ${p.personality.tag}` : career.name)
-        : '';
-      this.el['active-player-sub'].textContent = p.bankrupt
+      this.el['active-player-name'].textContent = me.name;
+      this.el['active-player-cash'].textContent = `￥${me.cash}`;
+      const cnt = me.institutions.length;
+      // 副标题：真人显示「职业 · 控股 N 家 · 资产」
+      const career = getCareer(me.careerId);
+      const roleText = career ? career.name : '';
+      this.el['active-player-sub'].textContent = me.bankrupt
         ? '已退市'
         : (roleText
-          ? `${roleText} · 控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`
-          : `控股 ${cnt} 家 · 资产 ￥${totalAssets(p, state)}`);
+          ? `${roleText} · 控股 ${cnt} 家 · 资产 ￥${totalAssets(me, state)}`
+          : `控股 ${cnt} 家 · 资产 ￥${totalAssets(me, state)}`);
 
       // 头像（职业立绘 32×40，居中适配到 HUD 画布）
       const avatarCanvas = this.el['active-avatar'];
-      const icon = getAvatarIcon(p.avatar, p.colorIndex);
+      const icon = getAvatarIcon(me.avatar, me.colorIndex);
       const actx = avatarCanvas.getContext('2d');
       actx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
       const isVector = icon.width >= 32;
@@ -1844,15 +2167,16 @@ class Game {
       );
 
       // 贷款 / 债券 / 限时状态提示（无内容时自动隐藏）
-      renderActiveStatus(this.el['active-status'], p, state);
+      renderActiveStatus(this.el['active-status'], me, state);
 
-      // 播报栏跟随左上卡片高度下移，避免被状态芯片遮挡
-      const hud = this.el['hud-player'];
-      const feedTop = hud.offsetTop + hud.offsetHeight + 8;
-      if (feedTop !== this._feedTop) {
-        this._feedTop = feedTop;
-        this.el['hud-feed'].style.setProperty('--feed-top', `${feedTop}px`);
-      }
+      // ===== 左侧 Tab 面板内容（数据源与排行 / 财务下钻一致）=====
+      renderTabPanels({
+        inst: this.el['tab-panel-inst'],
+        buff: this.el['tab-panel-buff'],
+        loan: this.el['tab-panel-loan'],
+        bond: this.el['tab-panel-bond'],
+        net: this.el['tab-panel-net'],
+      }, me, state);
     }
 
     // ===== 右上角：回合数 + 市场 =====

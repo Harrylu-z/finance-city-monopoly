@@ -24,3 +24,10 @@ _*.png
 _*.cjs
 _patch_*.py
 tools/_*
+
+# 设计阶段产物（方案预览、生成脚本、截图）——仅本地留存，不入库
+design-proposals/maps/
+design-proposals/tiles-modern/
+
+# 其他编辑器/工具的本地产物
+.trae-html-share-packages/
