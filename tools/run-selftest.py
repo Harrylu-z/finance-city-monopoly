@@ -92,6 +92,15 @@ def main():
             page.goto(url, wait_until="load")
             page.wait_for_timeout(400)
 
+            # ---- 开一局，让棋盘地块 DOM 真实存在 ----
+            # billboard / 深度排序等**渲染层**自检需要活的棋盘，
+            # 规则层自检不需要，但共用同一次开局最省事。
+            page.evaluate("""() => {
+                const btn = document.getElementById('btn-start');
+                if (btn) btn.click();
+            }""")
+            page.wait_for_timeout(600)
+
             # ---- 跑规则自检 ----
             result = page.evaluate(
                 """async () => {
@@ -136,6 +145,22 @@ def main():
             result["total"] += depth["total"]
             result["pass"] += depth["pass"]
             result["rows"] = result["rows"] + depth["rows"]
+
+            # ---- 跑 billboard 文字补偿自检（需要活的棋盘 DOM）----
+            billboard = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-billboard.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += billboard["total"]
+            result["pass"] += billboard["pass"]
+            result["rows"] = result["rows"] + billboard["rows"]
 
             total = result["total"]
             passed = result["pass"]
