@@ -556,8 +556,10 @@ canvas, .pixel-panel, .pixel-btn, img {
   pointer-events: none;
   /* 回合播报是绝对定位钉在竖栏底边的，
      所以这里给竖栏留出播报的高度，Tab 面板不会压到它下面。
-     --feed-h 默认 245px（播报展开时的高度），窄屏由媒体查询收窄。 */
-  --feed-h: 245px;
+     --feed-h 默认 215px（播报展开时的高度），窄屏由媒体查询收窄。
+     原先播报区顶部还有一个 30px 高的折叠按钮，删除后这 30px 已让给列表，
+     因此 --feed-h 相应收窄，避免竖栏底部留下空白。 */
+  --feed-h: 215px;
   padding-bottom: calc(var(--feed-h) + var(--sp-2));
 }
 .hud-left > * { pointer-events: auto; }
@@ -691,36 +693,14 @@ canvas, .pixel-panel, .pixel-btn, img {
   gap: 6px;
   flex: none;
 }
-.feed-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px var(--sp-2);
-  background: rgba(255,255,255,.92);
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
-  min-height: 30px;
-}
-.feed-toggle-icon {
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--c-gold-dk);
-  transition: transform 180ms cubic-bezier(.22,.61,.36,1);
-  flex: none;
-}
-.feed-toggle[aria-expanded="true"] .feed-toggle-icon { transform: rotate(90deg); }
-.feed-latest {
-  font-size: var(--fs-xs);
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* 播报列表常驻展开：原先的折叠切换按钮（.feed-toggle / .feed-latest）
+   已删除，#log-panel 不再需要 hidden 状态。
+   按钮原本占掉 30px，这部分高度让给列表 —— 上限从 340px 提到 370px，
+   让播报多显示几条、也不留空白。 */
 .log-panel {
   display: flex;
   flex-direction: column;
-  max-height: min(46vh, 340px);
+  max-height: min(46vh, 370px);
   background: rgba(255,255,255,.94);
 }
 .log-list {
@@ -1789,8 +1769,8 @@ canvas, .pixel-panel, .pixel-btn, img {
    ============================================================ */
 @media (max-width: 1280px) {
   :root { --hud-corner-w: 220px; --right-panel-w: 252px; --left-panel-w: 236px; }
-  /* 1280×720 实测竖栏高 696px，播报最多占 265px —— 留 265px 即可 */
-  .hud-left { --feed-h: 265px; }
+  /* 1280×720 实测竖栏高 696px，播报最多占 235px —— 留 235px 即可 */
+  .hud-left { --feed-h: 235px; }
 }
 
 /* 中窄屏：右侧面板收起（排行退回弹窗入口 ≡），棋盘恢复满宽 */
@@ -1814,7 +1794,7 @@ canvas, .pixel-panel, .pixel-btn, img {
     left: var(--sp-2);
     bottom: var(--sp-2);
     gap: var(--sp-1);
-    --feed-h: 168px;
+    --feed-h: 138px;
   }
   .hud-top-right { top: var(--sp-2); right: var(--sp-2); }
   .active-sub { display: none; }
@@ -1875,7 +1855,6 @@ body.theme-light .pixel-btn-primary { color: #3b2a06; }
 body.theme-light .panel-title { color: var(--c-gold-dk); }
 body.theme-light .active-card,
 body.theme-light .turn-badge,
-body.theme-light .feed-toggle,
 body.theme-light .bottom-bar,
 body.theme-light .side-panel { background: rgba(242,230,207,.94); }
 body.theme-light .active-cash,

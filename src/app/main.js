@@ -161,8 +161,8 @@ class Game {
       // 资产排行弹窗底部的「菜单」分组（承接原 #btn-menu 的功能）
       'btn-menu-share', 'btn-menu-assets', 'btn-menu-metrics', 'btn-menu-sound',
       'btn-menu-anim', 'btn-menu-theme', 'btn-menu-selftest', 'btn-menu-setup',
-      // 左侧：可折叠播报
-      'feed-toggle', 'feed-latest', 'log-panel', 'log-list',
+      // 左侧：回合播报（常驻展开，无折叠按钮）
+      'log-panel', 'log-list',
       // 底部：主行动 + 常用操作按钮
       'btn-roll', 'btn-assets', 'btn-mortgage', 'btn-endturn',
       // 右侧：资产排行 + 财务对比常驻面板
@@ -572,17 +572,13 @@ class Game {
     // ===== 左侧 Tab 面板切换 =====
     this.setupTabPanel();
 
-    // ===== 回合播报折叠 =====
-    this.el['feed-toggle'].addEventListener('click', () => {
-      const panel = this.el['log-panel'];
-      const open = panel.hidden;
-      panel.hidden = !open;
-      this.el['feed-toggle'].setAttribute('aria-expanded', String(open));
-      if (open) {
-        const list = this.el['log-list'];
-        list.scrollTop = list.scrollHeight;
-      }
-    });
+    // ===== 回合播报 =====
+    // 播报列表常驻显示（原先的折叠切换按钮 #feed-toggle 已删除），
+    // 这里只保证列表始终滚动到最新一条。
+    {
+      const list = this.el['log-list'];
+      list.scrollTop = list.scrollHeight;
+    }
 
     // ===== 资产排行弹窗（不常驻）=====
     this.el['btn-rank'].addEventListener('click', () => this.openRankModal());
@@ -1702,6 +1698,10 @@ class Game {
   continueAfterSettlement(player) {
     if (!player.isAI) {
       this.state.phase = 'await-decision';
+      // 玩家这一回合的播报要立刻落到列表里 ——
+      // 例如「放弃收购机构格」这类只走 resolvePurchase() 的分支
+      // 不会经过 syncLog()，不补这一句列表就会漏掉这条播报。
+      this.syncLog();
       this.updateHUD();
       this.busy = false;
       return;
@@ -2284,9 +2284,6 @@ class Game {
     if (!state) return;
     clearLog(el);
     for (const entry of state.log.slice(-60)) appendLog(el, entry);
-    // 折叠条显示最新 1 条
-    const latest = state.log[state.log.length - 1];
-    this.el['feed-latest'].textContent = latest ? `${latest.tag} ${latest.text}` : '等待开局…';
   }
 
   /* ==================== 特效辅助 ==================== */
