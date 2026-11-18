@@ -139,13 +139,11 @@
           </div>
         </div>
 
-        <!-- ③ 回合播报 —— 贴左下角（margin-top:auto 顶到竖栏底部） -->
+        <!-- ③ 回合播报 —— 贴左下角（margin-top:auto 顶到竖栏底部）
+             常驻显示：原先这里有一个折叠切换按钮（#feed-toggle），
+             现已删除，播报列表直接铺开、始终可见。 -->
         <div id="hud-feed" class="hud-feed">
-          <button id="feed-toggle" class="feed-toggle pixel-panel" aria-expanded="false" aria-controls="log-list">
-            <span class="feed-toggle-icon">▸</span>
-            <span id="feed-latest" class="feed-latest">等待开局…</span>
-          </button>
-          <div id="log-panel" class="log-panel pixel-panel" hidden>
+          <div id="log-panel" class="log-panel pixel-panel">
             <h3 class="panel-title">回合播报</h3>
             <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
           </div>
