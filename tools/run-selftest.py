@@ -121,6 +121,22 @@ def main():
             result["pass"] += stage3d["pass"]
             result["rows"] = result["rows"] + stage3d["rows"]
 
+            # ---- 跑地块深度排序自检 ----
+            depth = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-tile-depth.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += depth["total"]
+            result["pass"] += depth["pass"]
+            result["rows"] = result["rows"] + depth["rows"]
+
             total = result["total"]
             passed = result["pass"]
             print("=" * 78)

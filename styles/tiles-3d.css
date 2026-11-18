@@ -1,0 +1,146 @@
+/* ===========================================================
+ * 立体麻将牌 —— 3D 视角下的牌体外观
+ * ===========================================================
+ *
+ * ================== 目标 ==================
+ * 把 D+ 数据卡做成「麻将牌」的实体感：
+ *   · 牌有**厚度**（底面侧边可见）
+ *   · 牌面**微浮雕**（顶面高光 + 底面阴影）
+ *   · 牌有**落影**（投影到桌面上）
+ *   · 牌的**边光**随视角变化
+ *
+ * ================== 与平面模式的关系 ==================
+ * ⚠ 默认（平面模式）**完全不受影响** —— 本节所有规则都挂在
+ *   `#board-stage.is-3d` 之下。平面模式走原有的扁平数据卡外观。
+ *
+ * ⚠ 牌体厚度用 `translateZ` 实现，需要父层 `transform-style: preserve-3d`。
+ *   `.mt-cell` 已在 PR-A 的 `#board-pan` 内，preserve-3d 可继承。
+ *
+ * ================== 厚度与内容的平衡 ==================
+ * 牌厚 = translateZ 值。太大 → 透视下牌面错位严重、遮住相邻格；
+ * 太小 → 看不出厚度。取 **6px** —— 在 1400px 透视下约 0.4% 的视深，
+ * 视觉上刚好能看出是「有厚度的牌」，又不影响可读性。
+ * =========================================================== */
+
+/* ---------- 牌体厚度 + 浮雕 + 落影 ---------- */
+#board-stage.is-3d .mt-cell {
+  /* 牌体沿 Z 轴抬起来 —— 这就是「厚度」的来源 */
+  transform: translateZ(6px);
+  /* 让牌的 6 个面能正确互相遮挡 */
+  transform-style: preserve-3d;
+  /* 抬起后投影要更柔（离桌面更高 = 投影更大更虚） */
+  transition: transform .2s ease, filter .16s ease;
+}
+
+/* 牌面本体 —— 顶面 */
+#board-stage.is-3d .mt-tile {
+  /* 浮雕感：内阴影（顶部暗、底部亮）模拟凸起 */
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.95),
+    inset 0 -1px 0 rgba(15,23,42,.10),
+    0 2px 6px rgba(15,23,42,.22),
+    0 8px 18px rgba(15,23,42,.16);
+  border-color: rgba(15,23,42,.16);
+  /* 顶面略微内缩，让侧边露出来 —— 这是麻将牌「有厚度」的观感来源 */
+  transform: translateZ(0);
+}
+
+/* 牌的底面 / 侧边 —— 用伪元素画厚度面 */
+#board-stage.is-3d .mt-cell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  /* 底面比顶面「矮」一截，形成可见的侧边 */
+  transform: translateZ(-6px);
+  background: linear-gradient(180deg, rgba(15,23,42,.20), rgba(15,23,42,.34));
+  /* 底面在顶面之下，靠 z-index 与 3D 变换共同压住 */
+  pointer-events: none;
+  z-index: -1;
+  box-shadow: 0 10px 22px rgba(15,23,42,.22);
+}
+
+/* ---------- 边光：沿牌面顶部的一道亮边 ---------- */
+#board-stage.is-3d .mt-tile::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 2px;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(90deg,
+    rgba(255,255,255,.85),
+    rgba(255,255,255,.25) 55%,
+    rgba(255,255,255,0));
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ===========================================================
+ * 深度排序下的 hover / active 行为
+ * ===========================================================
+ * ⚠ 平面模式用 `z-index: 3` 让 hover 的格子浮到最前。
+ *   3D 模式下**不能**这样写 —— 会打乱按行排好的深度序列，
+ *   让 hover 的格子突然跳到最前，破坏立体感。
+ *
+ *   3D 模式改用「抬起」表达 hover：
+ *     沿 Z 轴再抬 10px + 阴影加深 —— 视觉上「浮起来」，但不改 z-index。
+ * =========================================================== */
+#board-stage.is-3d .mt-cell:hover {
+  z-index: auto;
+  transform: translateZ(16px);
+  filter: drop-shadow(0 8px 14px rgba(15,23,42,.30));
+}
+
+#board-stage.is-3d .mt-cell.is-active {
+  z-index: auto;
+  transform: translateZ(18px);
+  filter: drop-shadow(0 10px 16px rgba(232,169,60,.34));
+}
+
+#board-stage.is-3d .mt-cell.is-active .mt-tile {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.95),
+    inset 0 -1px 0 rgba(15,23,42,.10),
+    0 0 0 2px var(--c-gold),
+    0 3px 8px rgba(232,169,60,.30),
+    0 12px 24px rgba(15,23,42,.24) !important;
+  border-color: var(--c-gold);
+}
+
+/* ---------- 焦点圈：3D 下要跟着抬起来 ---------- */
+#board-stage.is-3d .mt-cell:focus-visible {
+  outline: 2px solid var(--c-gold);
+  outline-offset: 1px;
+}
+
+/* ===========================================================
+ * 顶面色条在 3D 下的处理
+ * ===========================================================
+ * `.mt-d2::before` 是顶部的组色条。它是牌面的一部分，
+ * 但**不能**跟着 translateZ —— 否则会脱离牌面变成浮空彩条。
+ * 牌面本身 translateZ(0)，伪元素默认继承父级变换，
+ * 因此色条会贴在牌面上，无需额外处理。
+ * =========================================================== */
+
+/* ===========================================================
+ * 特殊格 / 监管格的徽章 —— 抬到牌面之上
+ * ===========================================================
+ * 徽章是牌面上的浮层元素。在 preserve-3d 下，
+ * 若不给 Z 值，它们会与牌面共面，可能被伪元素侧边盖住。
+ * 抬 1px 让它们明确在牌面之上。
+ *
+ * ⚠ 徽章原有的 transform 必须**原样保留**（居中 / 旋转偏移），
+ *   只在其前面追加 translateZ —— 否则会把徽章挪错位置。
+ * =========================================================== */
+#board-stage.is-3d .mt-d2-afford {
+  transform: translateZ(1px);
+}
+#board-stage.is-3d .mt-d2-trap {
+  transform: translateZ(1px);
+}
+#board-stage.is-3d .mt-mort-stamp {
+  transform: translateZ(1px) translate(-50%, -50%) rotate(-14deg);
+}
+#board-stage.is-3d .mt-reg-badge {
+  transform: translateZ(1px);
+}

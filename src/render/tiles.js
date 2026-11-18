@@ -22,7 +22,7 @@
  * 因此 canvas 尺寸变化时**不需要任何 JS 重排**，CSS 自动跟随。
  */
 
-import { BOARD_CELLS, BOARD_SIZE, LEVELS } from '../core/board.js';
+import { BOARD_CELLS, BOARD_SIZE, LEVELS, TRACK_POINTS, BOARD_GRID } from '../core/board.js';
 import { PLAYER_COLORS, GROUP_COLORS } from '../core/palette.js';
 
 /* ===========================================================
@@ -552,6 +552,7 @@ export class TileLayer {
     this.renderer = renderer;
     this.nodes = [];
     this._lastKey = '';
+    this._is3D = false;
   }
 
   /**
@@ -593,6 +594,62 @@ export class TileLayer {
       this.nodes.push(node);
     }
     this.layout();
+    this.applyDepth();
+  }
+
+  /* ===========================================================
+   * 深度排序 —— 3D 视角下的正确遮挡关系
+   * ===========================================================
+   * ⚠ 为什么必须显式排序：
+   *   DOM 没有深度缓冲。倾斜后「离屏幕近」的格子可能排在 DOM 后���，
+   *   视觉上会被前面的格子盖住 —— 但实际应该是它盖住别人。
+   *
+   * ⚠ 排序依据 = **格子的行号**（不是回合顺序）：
+   *   俯视 45° 时，越靠下（row 越大）的格子离观察者越近。
+   *   回合顺序（沿轨道走）与远近无关，用它排序会得到乱七八糟的结果。
+   *
+   * ⚠ 只在 3D 模式下排序：
+   *   平面模式下 z-index 越少越好 —— 减少重排、避免 hover 抢占的意外。
+   *   所以本方法在平面模式只写 `z-index: auto`（清掉 3D 的残留）。
+   */
+  applyDepth() {
+    const is3D = this.is3D();
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const node = this.nodes[i];
+      if (!node) continue;
+      if (!is3D) {
+        // 平面模式：交回给 hover 规则（CSS 里 .mt-cell:hover { z-index: 3 }）
+        node.style.zIndex = '';
+        continue;
+      }
+      // row 越大越近 → z-index 越大越靠上
+      const row = this._rowOf(i);
+      node.style.zIndex = String(10 + row * 10);
+    }
+  }
+
+  /** 格子索引 → 所在行号（用于深度排序） */
+  _rowOf(index) {
+    const p = TRACK_POINTS[index];
+    if (!p) return 0;
+    // TRACK_POINTS 的 y 已归一化到 0..1000（= (row + 0.5) / rows * 1000）
+    const rows = BOARD_GRID.rows || 1;
+    return Math.floor((p[1] / 1000) * rows);
+  }
+
+  /**
+   * 切换 3D 模式 —— 切换后必须重排深度。
+   *
+   * @param {boolean} on
+   */
+  set3D(on) {
+    this._is3D = !!on;
+    this.applyDepth();
+  }
+
+  /** 当前是否 3D 模式 */
+  is3D() {
+    return !!this._is3D;
   }
 
   /**
