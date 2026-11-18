@@ -113,6 +113,12 @@ def upload_tree(path, tree_sha, store):
     return res["sha"]
 
 
+def remote_ref_sha(branch):
+    """取远端分支的当前 SHA（不存在返回 None）"""
+    res = api("GET", f"repos/{REPO}/git/ref/heads/{branch}", allow_404=True)
+    return res["object"]["sha"] if res else None
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -121,16 +127,26 @@ def main():
     remote = sys.argv[2]
     base = sys.argv[3] if len(sys.argv) > 3 else "main"
 
-    base_sha = git("rev-parse", base).strip()
     head_sha = git("rev-parse", local).strip()
+    local_base_sha = git("rev-parse", base).strip()
+
+    # ⚠ base SHA 必须用**远端**的那个。
+    #   API 通道重建 commit 时 SHA 会变（作者/时间戳/树对象都可能不同），
+    #   所以本地 base 与远端 base 常常不是同一个 commit。
+    #   若拿本地 SHA 当 parent，GitHub 会报
+    #   "Parent SHA does not exist or is not a commit object"（422）。
+    base_sha = remote_ref_sha(base) or local_base_sha
+
     print(f"推送 {local} -> {remote}")
-    print(f"  base {base_sha[:8]} -> head {head_sha[:8]}")
+    print(f"  base {base_sha[:8]}（远端 {base}）-> head {head_sha[:8]}")
 
     # base commit 在远端必须已存在
     api("GET", f"repos/{REPO}/git/commits/{base_sha}", allow_404=True)
     print(f"  base commit 已在远端")
 
-    commits = git("rev-list", "--reverse", f"{base_sha}..{head_sha}").split()
+    # 待上传的 commit = 本地 head 相对**本地 base**的增量
+    # （远端 base 与本地 base 的树内容应等价 —— 增量只需覆盖这些 commit）
+    commits = git("rev-list", "--reverse", f"{local_base_sha}..{head_sha}").split()
     print(f"  {len(commits)} 个 commit 待上传")
 
     store = {}
