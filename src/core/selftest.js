@@ -34,6 +34,7 @@ import { getCardFace, getCardBack } from '../art/cards.js';
 import { CAREERS, CAREER_BY_ID } from './careers.js';
 import { runAll as runCareerCasinoChecks } from './selftest-career-casino.js';
 import { runAll as runPersonalityChecks } from './selftest-personality.js';
+import { runAll as runCashflowChecks } from './selftest-cashflow.js';
 
 /** 断言工具 */
 function check(results, name, fn) {
@@ -1702,6 +1703,12 @@ export function runAll() {
   /* ============ AI 性格系统（专项模块） ============ */
   const personalityChecks = runPersonalityChecks();
   for (const r of personalityChecks) {
+    results.push(r);
+  }
+
+  /* ============ 资金流水账本（专项模块） ============ */
+  const cashflowChecks = runCashflowChecks();
+  for (const r of cashflowChecks) {
     results.push(r);
   }
 

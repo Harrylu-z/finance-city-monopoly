@@ -556,8 +556,10 @@ canvas, .pixel-panel, .pixel-btn, img {
   pointer-events: none;
   /* 回合播报是绝对定位钉在竖栏底边的，
      所以这里给竖栏留出播报的高度，Tab 面板不会压到它下面。
-     --feed-h 默认 245px（播报展开时的高度），窄屏由媒体查询收窄。 */
-  --feed-h: 245px;
+     --feed-h 默认 215px（播报展开时的高度），窄屏由媒体查询收窄。
+     原先播报区顶部还有一个 30px 高的折叠按钮，删除后这 30px 已让给列表，
+     因此 --feed-h 相应收窄，避免竖栏底部留下空白。 */
+  --feed-h: 215px;
   padding-bottom: calc(var(--feed-h) + var(--sp-2));
 }
 .hud-left > * { pointer-events: auto; }
@@ -691,36 +693,14 @@ canvas, .pixel-panel, .pixel-btn, img {
   gap: 6px;
   flex: none;
 }
-.feed-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px var(--sp-2);
-  background: rgba(255,255,255,.92);
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
-  min-height: 30px;
-}
-.feed-toggle-icon {
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--c-gold-dk);
-  transition: transform 180ms cubic-bezier(.22,.61,.36,1);
-  flex: none;
-}
-.feed-toggle[aria-expanded="true"] .feed-toggle-icon { transform: rotate(90deg); }
-.feed-latest {
-  font-size: var(--fs-xs);
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* 播报列表常驻展开：原先的折叠切换按钮（.feed-toggle / .feed-latest）
+   已删除，#log-panel 不再需要 hidden 状态。
+   按钮原本占掉 30px，这部分高度让给列表 —— 上限从 340px 提到 370px，
+   让播报多显示几条、也不留空白。 */
 .log-panel {
   display: flex;
   flex-direction: column;
-  max-height: min(46vh, 340px);
+  max-height: min(46vh, 370px);
   background: rgba(255,255,255,.94);
 }
 .log-list {
@@ -833,11 +813,25 @@ canvas, .pixel-panel, .pixel-btn, img {
 .tab-panels {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  /* 面板自己负责滚动（见 .tab-panel）——
+     「我的机构」tab 需要把高度精确分配给上下两段，
+     若这里滚动则下半段的高度算不出来。 */
+  overflow: hidden;
   padding: var(--sp-2);
 }
 .tab-panels::-webkit-scrollbar { width: 6px; }
 .tab-panels::-webkit-scrollbar-thumb { background: var(--c-dim); border-radius: 3px; }
+
+/* 各面板自行滚动 —— 高度由 .tab-panels 分配，而不是撑破容器 */
+.tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.tab-panel::-webkit-scrollbar { width: 6px; }
+.tab-panel::-webkit-scrollbar-thumb { background: var(--c-dim); border-radius: 3px; }
 
 .tab-panel[hidden] { display: none; }
 
@@ -991,6 +985,94 @@ canvas, .pixel-panel, .pixel-btn, img {
   padding: var(--sp-4) var(--sp-2);
   line-height: 1.7;
 }
+
+/* ============================================================
+   「我的机构」tab —— 上下拆分（持有机构 / 资金流水）
+   ------------------------------------------------------------
+   为什么要拆而不是加第 6 个 tab？
+     · 横向 tab 位已经 5 个（机构 / Buff / 贷款 / 债券 / 净值），
+       再加一个会把 tab 挤到 236px 窄栏里读不清；
+     · 「持有机构」与「资金流水」本来就是同一条主线（资产 ↔ 现金流），
+       上下对照看更顺手。
+
+   高度策略：
+     · 上半段（机构列表）按内容自然高度，机构多了会自身滚动；
+     · 下半段（流水列表）**独立滚动**，新的流水永远可见，
+       不会因为机构变多把流水挤出视口。
+   ============================================================ */
+#tab-panel-inst {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tab-split-top {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: var(--sp-1);
+}
+.tab-split-bottom {
+  flex: 1 1 auto;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* 上下两段之间的分隔 —— 用实线而非虚线，暗示「另一块内容」 */
+  border-top: var(--border-w) solid var(--line);
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-1);
+}
+
+/* ---------- 资金流水条目 ---------- */
+.cf-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 流水是「近期动态」，视觉上要比机构列表更轻 */
+  padding-right: 2px;
+}
+.cf-list::-webkit-scrollbar { width: 5px; }
+.cf-list::-webkit-scrollbar-thumb { background: var(--c-dim); border-radius: 3px; }
+
+.cf-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  padding: 3px 0;
+  border-bottom: 1px dotted var(--line);
+}
+.cf-row:last-child { border-bottom: none; }
+
+/* 回合/圈标记 —— 弱化显示，只用于定位时间点 */
+.cf-turn {
+  font-family: var(--font-num);
+  font-size: 10px;
+  color: var(--ink-3);
+  flex: none;
+  min-width: 22px;
+}
+.cf-reason {
+  color: var(--ink-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cf-amt {
+  font-family: var(--font-num);
+  font-weight: 700;
+  flex: none;
+  white-space: nowrap;
+}
+/* 收支语义色 —— 沿用全站的「绿=收入 / 红=支出」约定 */
+.cf-row.is-in  .cf-amt { color: var(--c-green-dk); }
+.cf-row.is-out .cf-amt { color: var(--c-red-dk); }
 
 /* ---------- 底部中央：主行动 + 常用操作（常驻） ----------
    水平范围与 .board-wrap 完全一致 → 操作栏永远与棋盘居中对齐 */
@@ -1687,8 +1769,8 @@ canvas, .pixel-panel, .pixel-btn, img {
    ============================================================ */
 @media (max-width: 1280px) {
   :root { --hud-corner-w: 220px; --right-panel-w: 252px; --left-panel-w: 236px; }
-  /* 1280×720 实测竖栏高 696px，播报最多占 265px —— 留 265px 即可 */
-  .hud-left { --feed-h: 265px; }
+  /* 1280×720 实测竖栏高 696px，播报最多占 235px —— 留 235px 即可 */
+  .hud-left { --feed-h: 235px; }
 }
 
 /* 中窄屏：右侧面板收起（排行退回弹窗入口 ≡），棋盘恢复满宽 */
@@ -1712,7 +1794,7 @@ canvas, .pixel-panel, .pixel-btn, img {
     left: var(--sp-2);
     bottom: var(--sp-2);
     gap: var(--sp-1);
-    --feed-h: 168px;
+    --feed-h: 138px;
   }
   .hud-top-right { top: var(--sp-2); right: var(--sp-2); }
   .active-sub { display: none; }
@@ -1773,7 +1855,6 @@ body.theme-light .pixel-btn-primary { color: #3b2a06; }
 body.theme-light .panel-title { color: var(--c-gold-dk); }
 body.theme-light .active-card,
 body.theme-light .turn-badge,
-body.theme-light .feed-toggle,
 body.theme-light .bottom-bar,
 body.theme-light .side-panel { background: rgba(242,230,207,.94); }
 body.theme-light .active-cash,

@@ -121,6 +121,12 @@ export function createState(options = {}) {
         acquisitionSpend: 0, upgradeSpend: 0, mortgageSpend: 0, redeemSpend: 0,
       },
       lastAction: null,
+      // ===== 资金流水账本 =====
+      // 只记自己的现金增减（收入为正 / 支出为负），供 HUD「我的机构」tab 下半部分展示。
+      // 所有现金变动都必须走 rules.recordCash()，否则账本会与实际现金对不上。
+      cashFlow: [],
+      // 累计净额（独立累加）—— 条目列表会被截断，不能从列表反推净额
+      cashFlowNet: 0,
       // ===== 新增金融状态 =====
       loans: [],          // 央行贷款：{id, tier, name, amount, rate, term, interestPerTurn, accruedInterest, interestPaid, turnsElapsed, takenTurn}
       bonds: [],          // 作为发行方持有的债券：{id, face, coupon, couponPer, subscribers:[playerId], couponsPaid, issuedRound, dueRound}
@@ -235,6 +241,93 @@ function defaultTag(kind) {
     case 'sys': return '系统';
     default: return '系统';
   }
+}
+
+/* ===================================================================
+ * 资金流水（玩家账本）
+ *
+ * 为什么要单独记一份账，而不是复用 `state.log`？
+ *   · `state.log` 是**全桌广播**（AI 的播报也在里面），而账本只服务「我的」；
+ *   · `state.log` 的文案是为播报写的（含玩家名、句式），不适合直接当条目展示；
+ *   · 账本需要**金额**这一结构化字段，才能算收支、做配色（+/-）。
+ *
+ * 因此所有**现金增减**都必须经由 `recordCash()`，这样才不会漏记 ——
+ * 只要改了 `player.cash` 而没走这里，账本就会与实际现金对不上。
+ *
+ * 条目结构：{ id, turn, round, amount, reason, tag }
+ *   amount > 0 → 收入；amount < 0 → 支出。
+ *
+ * ⚠️ 关于「累计净额」：
+ *   账本只保留最近 CASHFLOW_LIMIT 条（更早的会被丢弃），
+ *   所以「所有条目求和」≠ 「现金总变化」——
+ *   早期条目一旦被丢弃，净额就会偏小。
+ *   因此净额**单独累加**在 player.cashFlowNet 上，不从条目反推。
+ * =================================================================== */
+
+/** 单个玩家保留的流水条数上限（超出后丢弃最旧的） */
+export const CASHFLOW_LIMIT = 40;
+
+/**
+ * 记一笔现金流水并同步修改玩家现金。
+ *
+ * ⚠️ 这是**唯一**允许改动 `player.cash` 的入口（破产清算等极端路径除外，
+ * 那里走的是 `liquidate()`，会自己补一条清算流水）。
+ *
+ * @param {object} state 游戏状态
+ * @param {object} player 玩家
+ * @param {number} amount 金额（正=收入，负=支出）
+ * @param {string} reason 事由简述（展示用，尽量短）
+ * @param {string} [tag] 分类标签（展示用，可省略）
+ * @returns {object|null} 写入的流水条目；amount 为 0 时返回 null
+ */
+export function recordCash(state, player, amount, reason, tag) {
+  if (!player || !amount) return null;
+  player.cash += amount;
+  return noteCash(state, player, amount, reason, tag);
+}
+
+/**
+ * 只写账本、**不改现金**。
+ *
+ * 用于「现金已被别处改过、但这里需要补一条流水」的场景
+ * （例如赌场：poker.js 直接结算了 `ref.cash`，规则层只补流水）。
+ * ⚠️ 误用会导致账本与实际现金对不上 —— 常规路径请用 recordCash()。
+ *
+ * @param {object} state 游戏状态
+ * @param {object} player 玩家
+ * @param {number} amount 金额（正=收入，负=支出）
+ * @param {string} reason 事由简述（展示用，尽量短）
+ * @param {string} [tag] 分类标签（展示用，可省略）
+ * @returns {object|null} 写入的流水条目；amount 为 0 时返回 null
+ */
+export function noteCash(state, player, amount, reason, tag) {
+  if (!player || !amount) return null;
+
+  if (!player.cashFlow) player.cashFlow = [];
+  const entry = {
+    id: ++eventSeq,
+    turn: state ? state.turnNumber : 0,
+    round: state ? state.round : 0,
+    amount,
+    reason: reason || '',
+    tag: tag || (amount > 0 ? '收入' : '支出'),
+  };
+  player.cashFlow.push(entry);
+  // 净额单独累加 —— 不能从（会被截断的）条目列表反推
+  player.cashFlowNet = (player.cashFlowNet || 0) + amount;
+  // 只保留最近的若干条 —— 账本是「近期资金动态」，不是完整历史档案
+  while (player.cashFlow.length > CASHFLOW_LIMIT) player.cashFlow.shift();
+  return entry;
+}
+
+/**
+ * 取玩家最近 N 条资金流水（新的在前）。
+ * @param {object} player
+ * @param {number} [limit]
+ */
+export function recentCashFlow(player, limit = 25) {
+  if (!player || !player.cashFlow || !player.cashFlow.length) return [];
+  return player.cashFlow.slice(-limit).reverse();
 }
 
 /** 当前玩家 */
@@ -357,8 +450,9 @@ export function settleOnCell(state, player, cellIndex) {
         const rent = Math.round(calculateRent(cell, inst.level, {
           market: state.market, eventMult: state.eventMult, buffMult,
         }) * selfMult * careerMult);
-        player.cash -= rent;
-        owner.cash += rent;
+        // 交租 / 收租 —— 两端都记账，账本才能对得上现金
+        recordCash(state, player, -rent, `交租 ${cell.name}`, '交租');
+        recordCash(state, owner, rent, `收租 ${cell.name}`, '管理费');
         player.stats.rentsPaid += rent;
         owner.stats.rentsCollected += rent;
         if (rent > owner.stats.largestRent) owner.stats.largestRent = rent;
@@ -406,7 +500,7 @@ export function marketNoteFor(market) {
  */
 export function grantStartPass(state, player, cell) {
   if (player._startBonusGranted) return [];
-  player.cash += CONFIG.startBonus;
+  recordCash(state, player, CONFIG.startBonus, '货币发行补贴', '补贴');
   player._startBonusGranted = true;
   return [{ kind: 'start-bonus', amount: CONFIG.startBonus, cell: cell || null }];
 }
@@ -519,7 +613,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       // 持有中国人民银行 —— 每圈开始获得额外流动性投放
       const regBonus = globalRegulatorEffects(state).roundBonus || 0;
       if (regBonus > 0) {
-        player.cash += regBonus;
+        recordCash(state, player, regBonus, '央行流动性投放', '央行');
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell });
       }
       // 经过起点后可申请央行贷款（每圈限一次）
@@ -532,7 +626,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       // 「合规成本」格：按机构持有规模计征 —— 每份机构 ￥40，最低 ￥120、封顶 ￥360
       const holdings = (player.institutions || []).length;
       const amount = Math.min(360, Math.max(120, holdings * 40));
-      player.cash -= amount;
+      recordCash(state, player, -amount, '印花税', '成本');
       results.push({
         kind: 'charge', amount, cell,
         reason: `按机构持有规模（${holdings} 份）计征印花税`,
@@ -540,14 +634,14 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       break;
     }
     case 'fine': {
-      player.cash -= sp.amount;
+      recordCash(state, player, -sp.amount, sp.name, '成本');
       results.push({ kind: 'charge', amount: sp.amount, cell, reason: sp.name });
       break;
     }
     case 'charity': {
       // 慈善公益捐赠：捐出善款换来「公益声誉」——3 回合管理费 +12%
       const amount = sp.amount || 120;
-      player.cash -= amount;
+      recordCash(state, player, -amount, '公益捐赠', '成本');
       const buff = addBuff(state, player, {
         id: 'public-good', name: '公益声誉', turns: 3,
         desc: '机构管理费 +12%',
@@ -594,7 +688,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       const marketBonus = careerEffectValue(player, 'marketBonus');
       if (marketBonus > 0 && !player._marketBonusRound) {
         player._marketBonusRound = state.round;
-        player.cash += marketBonus;
+        recordCash(state, player, marketBonus, '择时价差收益', '收益');
         results.push({
           kind: 'bonus', amount: marketBonus, cell,
           reason: '交易员择时价差收益',
@@ -636,7 +730,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       }
       if (maxCount >= 4) {
         const fee = (maxCount - 3) * 80;
-        player.cash -= fee;
+        recordCash(state, player, -fee, '集中度整改费', '成本');
         const buff = addBuff(state, player, {
           id: 'deleverage', name: '去杠杆整改', turns: 2, kind: 'bad',
           desc: '集中度超限，机构管理费 -15%',
@@ -692,7 +786,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
         amount = 90;
         reason = '震荡市套利成交';
       }
-      player.cash += amount;
+      recordCash(state, player, amount, reason, amount >= 0 ? '收益' : '成本');
       const buff = addBuff(state, player, {
         id: 'hedge', name: '套期保值', turns: 2,
         desc: '机构管理费 +5%',
@@ -706,7 +800,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
     }
     case 'roadshow': {
       // 投资者路演 —— 3 回合内收购与扩表成本降低 15%，另获 ￥80 意向金
-      player.cash += 80;
+      recordCash(state, player, 80, '路演意向金', '收益');
       const buff = addBuff(state, player, {
         id: 'roadshow', name: '路演热度', turns: 3,
         desc: '收购与升级成本 -15%',
@@ -732,7 +826,7 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
 export function applyEventCard(state, player, card) {
   const e = card.effect;
   if (e.cash) {
-    player.cash += e.cash;
+    recordCash(state, player, e.cash, `事件卡「${card.title}」`, e.cash > 0 ? '收益' : '成本');
   }
   if (e.rentMult && e.scope === 'all') {
     state.eventMult = e.rentMult;
@@ -758,7 +852,7 @@ export function applyTrapCard(state, player, card) {
   if (cash < 0 && relief > 0) {
     cash = Math.round(cash * (1 - relief));
   }
-  if (cash) player.cash += cash;
+  if (cash) recordCash(state, player, cash, `监管卡「${card.title}」`, cash > 0 ? '收益' : '成本');
   if (e.rentMult && e.scope === 'self') {
     player.selfRentMult = (player.selfRentMult ?? 1) * e.rentMult;
   }
@@ -850,6 +944,13 @@ export function finishCasinoGame(state, game) {
     // 双保险：现金永不为负
     if (p.cash < 0) p.cash = 0;
     const net = d.net || 0;
+    // 现金净额入账 —— poker.js 已经结算过 cash，这里**只写账本**（noteCash 不改现金）
+    const cashDelta = d.cashDelta || 0;
+    if (cashDelta) {
+      noteCash(state, p, cashDelta,
+        cashDelta > 0 ? '德州扑克赢得' : '德州扑克投注',
+        '赌场');
+    }
     const netText = net > 0 ? `赢得 ￥${d.gain}` : (net < 0 ? `净亏 ￥${-net}` : '持平');
     log(state, p.isAI ? 'ai' : 'self',
       `${p.name} 在德州扑克中${netText}`
@@ -895,7 +996,7 @@ export function takeCentralLoan(state, player, tierId) {
     takenTurn: state.turnNumber,
     turnsElapsed: 0,      // 已经历的「自己的回合」数
   };
-  player.cash += tier.amount;
+  recordCash(state, player, tier.amount, `央行贷款「${tier.name}」`, '融资');
   player.loans.push(loan);
   player.loanCountThisRound += 1;
   emit(state, 'loan-taken', { playerId: player.id, loan });
@@ -914,7 +1015,7 @@ export function repayLoan(state, player, loanId) {
   if (player.cash < owed) {
     return { ok: false, reason: `偿还需 ￥${owed}，现金不足` };
   }
-  player.cash -= owed;
+  recordCash(state, player, -owed, `结清贷款「${loan.name}」`, '还款');
   player.loans = player.loans.filter((l) => l.id !== loanId);
   emit(state, 'loan-repaid', { playerId: player.id, amount: owed });
   log(state, player.isAI ? 'ai' : 'self',
@@ -973,13 +1074,13 @@ export function issueBond(state, issuer, decisions) {
   for (const s of subs) {
     const buyer = state.players.find((p) => p.id === s.playerId);
     if (!buyer) continue;
-    buyer.cash -= CONFIG.bondFace;
+    recordCash(state, buyer, -CONFIG.bondFace, '认购公司债券', '债券');
     buyer.subscribedBonds.push({
       id: bond.id, issuerId: issuer.id, face: CONFIG.bondFace,
       coupon, couponPer, couponsPaid: 0, dueRound: bond.dueRound,
     });
   }
-  issuer.cash += CONFIG.bondFace * subs.length;
+  recordCash(state, issuer, CONFIG.bondFace * subs.length, `发行债券募资（${subs.length} 家认购）`, '债券');
   emit(state, 'bond-issued', { playerId: issuer.id, bondId: bond.id, subscribers: subs.length });
   log(state, issuer.isAI ? 'ai' : 'self',
     `${issuer.name} 成功发行债券，获 ${subs.length} 家认购，募资 ￥${CONFIG.bondFace * subs.length}，票息 ${Math.round(coupon * 1000) / 10}%`,
@@ -1021,11 +1122,11 @@ export function processBonds(state) {
   for (const p of state.players) {
     for (const b of (p.bonds || [])) {
       const due = Math.round(b.couponPer * b.subscribers.length);
-      p.cash -= due;
+      recordCash(state, p, -due, `债券票息（${b.subscribers.length} 家）`, '付息');
       for (const sid of b.subscribers) {
         const buyer = state.players.find((x) => x.id === sid);
         if (!buyer) continue;
-        buyer.cash += b.couponPer;
+        recordCash(state, buyer, b.couponPer, '债券票息收入', '收益');
         const held = buyer.subscribedBonds.find((x) => x.id === b.id);
         if (held) held.couponsPaid += 1;
       }
@@ -1036,11 +1137,11 @@ export function processBonds(state) {
     const matured = (p.bonds || []).filter((b) => state.round >= b.dueRound);
     for (const b of matured) {
       const total = b.face * b.subscribers.length;
-      p.cash -= total;
+      recordCash(state, p, -total, `债券到期兑付（${b.subscribers.length} 家）`, '还款');
       for (const sid of b.subscribers) {
         const buyer = state.players.find((x) => x.id === sid);
         if (!buyer) continue;
-        buyer.cash += b.face;
+        recordCash(state, buyer, b.face, '债券本金回款', '收益');
         buyer.subscribedBonds = buyer.subscribedBonds.filter((x) => x.id !== b.id);
       }
       p.bonds = p.bonds.filter((x) => x.id !== b.id);
@@ -1072,7 +1173,7 @@ export function resolvePurchase(state, player, accept) {
     return false;
   }
 
-  player.cash -= price;
+  recordCash(state, player, -price, `买入 ${cell.name}`, '收购');
   player.institutions.push({
     cellIndex: pend.cellIndex,
     level: pend.level,
@@ -1120,7 +1221,7 @@ export function upgradeInstitution(state, player, cellIndex, opts = {}) {
   const cost = Math.round(baseCost * playerCostMult(player, 'upgradeCostMult'));
   if (player.cash < cost) return { ok: false, reason: '现金不足', cost };
 
-  player.cash -= cost;
+  recordCash(state, player, -cost, `升级 ${cell.name}`, '升级');
   inst.level += 1;
   player.stats.upgrades += 1;
   player.stats.upgradeSpend += cost;
@@ -1143,7 +1244,7 @@ export function mortgageInstitution(state, player, cellIndex) {
 
   const cell = BOARD_CELLS[cellIndex];
   const amount = mortgageValue(cell, inst.level);
-  player.cash += amount;
+  recordCash(state, player, amount, `质押 ${cell.name}`, '质押');
   inst.mortgaged = true;
   inst.mortgageAmount = amount;
   emit(state, 'mortgage', { playerId: player.id, cellIndex, amount });
@@ -1176,7 +1277,7 @@ export function redeemInstitution(state, player, cellIndex) {
   }
 
   const cell = BOARD_CELLS[cellIndex];
-  player.cash -= total;
+  recordCash(state, player, -total, `赎回 ${cell.name}`, '赎回');
   player.stats.redeemSpend += total;
   inst.mortgaged = false;
   inst.mortgageAmount = 0;
@@ -1289,7 +1390,7 @@ function serviceLoans(state, player) {
 
     const interest = l.interestPerTurn ?? Math.round(l.amount * l.rate);
     if (player.cash >= interest) {
-      player.cash -= interest;
+      recordCash(state, player, -interest, `贷款「${l.name}」第 ${l.turnsElapsed}/${l.term} 期利息`, '付息');
       l.interestPaid = (l.interestPaid || 0) + interest;
       log(state, player.isAI ? 'ai' : 'self',
         `${player.name} 支付「${l.name}」第 ${l.turnsElapsed}/${l.term} 期利息 ￥${interest}`, '付息');
@@ -1304,7 +1405,7 @@ function serviceLoans(state, player) {
       const accrued = l.accruedInterest || 0;
       const owed = l.amount + accrued;
       const shortfall = owed - player.cash;
-      player.cash -= owed;
+      recordCash(state, player, -owed, `贷款「${l.name}」到期还本`, '还款');
       player.loans = player.loans.filter((x) => x.id !== l.id);
       if (shortfall <= 0) {
         log(state, 'sys',
@@ -1362,6 +1463,13 @@ export function checkBankruptcy(state, player) {
   if (player.bankrupt) return false;
   if (!isBankrupt(player, state)) return false;
 
+  // 清算前先记一笔 —— liquidate() 会把现金清零，账本要留下「被清零」这一笔。
+  // ⚠️ 用 noteCash（只写账本）而不是 recordCash（会同时改现金）：
+  //    现金的清零由 liquidate() 负责，这里再改一次会把现金变成负数。
+  const before = player.cash;
+  if (before) {
+    noteCash(state, player, -before, '破产清算', '破产');
+  }
   const res = liquidate(player);
   log(state, 'bad',
     `${player.name} 爆仓清算！${res.actions.join('；')}，最终清算金额 ￥${res.settlement}`,

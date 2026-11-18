@@ -55,7 +55,7 @@ CHECK_JS = r"""() => {
 
   // 所有 HUD 元素（左侧竖栏 + 右上 + 右侧 + 底部）
   const ids = ['hud-left','hud-player','active-player-card','active-status',
-               'hud-tabs','tab-list','hud-feed','feed-toggle','log-panel',
+               'hud-tabs','tab-list','hud-feed','log-panel',
                'hud-top-right','hud-right','hud-bottom'];
   const els = [];
   for (const id of ids) {
