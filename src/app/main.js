@@ -26,6 +26,8 @@ import { TileLayer } from '../render/tiles.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Stage3D } from '../render/stage3d.js';
+import { HoverBuildingLayer } from '../render/hoverBuilding.js';
+import { LandingFxLayer } from '../render/landingFx.js';
 import { Sfx } from '../audio/sfx.js';
 import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog, renderTabPanels } from './hud.js';
 import {
@@ -78,6 +80,8 @@ class Game {
     this.state = null;
     this.renderer = null;
     this.tileLayer = null;
+    this.hoverBuildings = null;
+    this.landingFx = null;
     this.background = null;
     this.effects = new Effects();
     this.mover = new MoveAnimator();
@@ -141,6 +145,8 @@ class Game {
       'board-canvas', 'board-wrap', 'board-tiles', 'stage-bg', 'fx-layer',
       // 3D 舞台骨架（视角切换 + 拖拽平移）
       'board-stage', 'board-pan', 'btn-3d',
+      // hover 立体建筑层（PR-D）
+      'hover-buildings',
       // HUD 容器（四角定位，用于测量与避让计算）
       'hud-left', 'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
       // 左上：当前玩家紧凑单条
@@ -434,6 +440,21 @@ class Game {
     this.tileLayer.build();
     this.bindTileEvents();
 
+    // ===== hover 立体建筑层（PR-D）=====
+    // 与地块层平级 —— 不挂在 .mt-cell 里，这样建筑可以自由地
+    // 抬到棋盘之上，且不受地块的 z-index 深度排序干扰。
+    this.hoverBuildings = new HoverBuildingLayer(
+      this.el['board-tiles'],
+      this.el['hover-buildings'],
+      this.renderer,
+    );
+
+    // ===== 落地特效层（PR-E）=====
+    // ⚠ 必须走 **DOM**（#fx-layer）而不是 Canvas ——
+    //   地块是 DOM 卡片且完全不透明，Canvas 在最底层，
+    //   画在 Canvas 上的地面冲击波会被牌面完全遮住。
+    this.landingFx = new LandingFxLayer(this.el['fx-layer'], this.renderer);
+
     this.background = new Background(window.innerWidth, window.innerHeight);
 
     // ===== 3D 舞台（视角切换 + 拖拽平移）=====
@@ -449,6 +470,11 @@ class Game {
       {
         onChange: ({ is3D }) => {
           if (this.tileLayer) this.tileLayer.set3D(is3D);
+          if (this.renderer) this.renderer.set3D(is3D);
+          if (this.hoverBuildings) {
+            this.hoverBuildings.set3D(is3D);
+            if (is3D && this.state) this.hoverBuildings.sync(this.state);
+          }
         },
       },
     );
@@ -662,9 +688,15 @@ class Game {
       if (!this.renderer) return;
       const index = findIndex(e.target);
       this.renderer.hoverCell = index;
+      // PR-D：3D 模式下在悬停格上方浮起建筑
+      if (this.hoverBuildings) {
+        if (index < 0) this.hoverBuildings.leave(-1);
+        else this.hoverBuildings.enter(index);
+      }
     });
     root.addEventListener('mouseleave', () => {
       if (this.renderer) this.renderer.hoverCell = -1;
+      if (this.hoverBuildings) this.hoverBuildings.leave(-1);
     });
 
     // 键盘可达性：Enter / Space = 选中该格
@@ -1014,6 +1046,10 @@ class Game {
       to: path[path.length - 1],
       steps,
       path,
+      // PR-E：每踩上一格触发一次落地特效（椭圆冲击波 + 轻微上浮）
+      onLand: (stepIdx) => {
+        this.spawnLandingFx(player, path, stepIdx);
+      },
       onDone: () => {
         stepTimer.cancel();
         const passedStart = computeMove(from, steps, BOARD_SIZE).passedStart;
@@ -1022,6 +1058,28 @@ class Game {
         this.afterMove(player, passedStart);
       },
     });
+  }
+
+  /**
+   * 落地特效 —— 角色每踩上一格，脚下浮起一圈椭圆冲击波 + 轻微上浮的柔光。
+   *
+   * ⚠ 特效画在 **DOM 层**（#fx-layer）而非 Canvas：
+   *   地块是 DOM 卡片且**完全不透明**（白色渐变底），
+   *   Canvas 又在最底层 —— 画在 Canvas 上的地面冲击波会被牌面完全遮住。
+   *   DOM 层在牌面之上，冲击波才能真正「印」在格子上。
+   *
+   * @param {object} player 移动中的玩家
+   * @param {number[]} path 本次移动路径
+   * @param {number} stepIdx 刚刚踩上的第几步（1 起）
+   */
+  spawnLandingFx(player, path, stepIdx) {
+    if (!this.effectsEnabled || !this.landingFx) return;
+    const cellIndex = path[Math.min(path.length - 1, Math.max(0, stepIdx - 1))];
+    if (cellIndex == null) return;
+
+    // 颜色取玩家色 —— 与棋子底座呼应
+    const pc = PLAYER_COLORS[(player.colorIndex || 0) % PLAYER_COLORS.length];
+    this.landingFx.spawn(cellIndex, pc.lt);
   }
 
   afterMove(player, passedStart) {
@@ -2022,6 +2080,10 @@ class Game {
 
     // 地块 DOM 状态同步（内部做 key 比对，状态没变就不碰 DOM）
     if (this.tileLayer) this.tileLayer.sync(state);
+    // PR-D：建筑的等级 / 持有人配色依赖状态 —— 同步刷新
+    if (this.hoverBuildings) this.hoverBuildings.sync(state);
+    // PR-E：清理已播完的落地特效 DOM
+    if (this.landingFx) this.landingFx.update();
   }
 
   /**
@@ -2086,6 +2148,8 @@ class Game {
     this.renderer.setBottomReserve(reserve);
     // 地块 DOM 层同步布局：cellRect → 百分比（canvas 尺寸已定，cellRect 才是最终值）
     if (this.tileLayer) this.tileLayer.layout();
+    // PR-D：建筑位置是像素写死的 —— 必须跟着重排
+    if (this.hoverBuildings) this.hoverBuildings.relayout();
     this.background.resize(Math.max(1, sw), Math.max(1, sh));
     this.resizeStageBg(sw, sh);
   }
