@@ -439,10 +439,18 @@ class Game {
     // ===== 3D 舞台（视角切换 + 拖拽平移）=====
     // 必须在 renderer 建好之后创建 —— 它要读写 #board-stage / #board-pan，
     // 且平移只改 transform，不碰 Canvas 的 backing store。
+    //
+    // ⚠ 切换视角后必须让地块层重排深度 —— 3D 模式下靠 z-index 表达
+    //   「离观察者更近」，平面模式不需要。
     this.stage3d = new Stage3D(
       this.el['board-stage'],
       this.el['board-pan'],
       this.el['btn-3d'],
+      {
+        onChange: ({ is3D }) => {
+          if (this.tileLayer) this.tileLayer.set3D(is3D);
+        },
+      },
     );
 
     this.onResize();
