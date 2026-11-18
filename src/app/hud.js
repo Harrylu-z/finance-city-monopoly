@@ -459,73 +459,142 @@ function tabEmpty(text) {
 }
 
 /**
- * 渲染「我的机构」tab —— 名称 / 等级 / 租金 / 是否质押。
+ * 渲染「我的机构」tab —— 上半段：持有机构 / 等级 / 管理费。
+ *
+ * ⚠️ 本函数**只负责上半段**。下半段的「资金流水」由 renderTabCashFlow()
+ * 单独渲染 —— 两者共用同一个 tabpanel 容器，靠上下两段结构分隔
+ * （见 .tab-split-top / .tab-split-bottom）。
+ *
+ * @param {HTMLElement} top  上半段容器（由调用方创建，避免与下半段互相清空）
  */
-export function renderTabInstitutions(el, player, state) {
-  el.replaceChildren();
-  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
+export function renderTabInstitutions(top, player, state) {
+  top.replaceChildren();
+  if (!player) { top.appendChild(tabEmpty('暂无数据')); return; }
 
   const insts = (player.institutions || []).slice()
     .sort((a, b) => a.cellIndex - b.cellIndex);
 
   if (!insts.length) {
-    el.appendChild(tabEmpty('尚未持有任何机构\n买下即成为网点级资产'));
+    top.appendChild(tabEmpty('尚未持有任何机构\n买下即成为网点级资产'));
+  } else {
+    const totalRent = insts.reduce((s, i) => {
+      const cell = state.board[i.cellIndex];
+      if (!cell || i.mortgaged) return s;
+      const rent = Array.isArray(cell.rent) ? (cell.rent[i.level] ?? cell.rent[0] ?? 0) : (cell.rent || 0);
+      return s + rent;
+    }, 0);
+
+    top.appendChild(tabSection('持有机构', `${insts.length} 家`));
+
+    for (const inst of insts) {
+      const cell = state.board[inst.cellIndex];
+      if (!cell) continue;
+      const row = document.createElement('div');
+      row.className = 'tab-inst';
+
+      const pc = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
+      const dot = document.createElement('i');
+      dot.className = 'tab-inst-dot';
+      dot.style.background = pc.main;
+      row.appendChild(dot);
+
+      const name = document.createElement('span');
+      name.className = 'tab-inst-name';
+      name.textContent = cell.name;
+      name.title = cell.name;
+      row.appendChild(name);
+
+      const lv = document.createElement('span');
+      lv.className = 'tab-inst-lv';
+      lv.textContent = levelLabel(inst.level) || `L${inst.level}`;
+      row.appendChild(lv);
+
+      if (inst.mortgaged) {
+        const flag = document.createElement('span');
+        flag.className = 'tab-inst-flag';
+        flag.textContent = '质押';
+        flag.title = '已质押 —— 暂停产生管理费';
+        row.appendChild(flag);
+      } else {
+        const rent = Array.isArray(cell.rent)
+          ? (cell.rent[inst.level] ?? cell.rent[0] ?? 0)
+          : (cell.rent || 0);
+        const rv = document.createElement('span');
+        rv.className = 'tab-inst-rent';
+        rv.textContent = `￥${fmtNum(rent)}`;
+        rv.title = `每回合管理费 ￥${fmtNum(rent)}`;
+        row.appendChild(rv);
+      }
+
+      top.appendChild(row);
+    }
+
+    top.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
+  }
+}
+
+/**
+ * 渲染「我的机构」tab 下半段 —— **本玩家**的资金流水。
+ *
+ * 只展示玩家自己的账本（player.cashFlow），不含 AI 的流水。
+ * 条目包含：回合数 / 金额（+ 收入 − 支出）/ 事由 / 分类标签。
+ * 新的在最上面，最多展示 CASHFLOW_SHOW_MAX 条，超出部分可滚动查看。
+ *
+ * @param {HTMLElement} bottom 下半段容器（由调用方创建）
+ */
+const CASHFLOW_SHOW_MAX = 30;
+
+export function renderTabCashFlow(bottom, player, state) {
+  bottom.replaceChildren();
+  if (!player) return;
+
+  const flows = (player.cashFlow || []).slice(-CASHFLOW_SHOW_MAX).reverse();
+
+  // 净额小结 —— 让玩家一眼看到这段时间是赚是赔
+  // ⚠️ 用 player.cashFlowNet（独立累加），不能从流水条目反推 ——
+  //    条目列表只保留最近 N 条，早期条目已被丢弃。
+  const net = player.cashFlowNet || 0;
+  bottom.appendChild(tabSection('资金流水', flows.length ? `${flows.length} 条` : '无'));
+  bottom.appendChild(tabRow(
+    '累计净额',
+    `${net >= 0 ? '+' : '−'}￥${fmtNum(Math.abs(net))}`,
+    net > 0 ? 'is-green' : (net < 0 ? 'is-red' : 'is-dim'),
+  ));
+
+  if (!flows.length) {
+    bottom.appendChild(tabEmpty('暂无资金流水\n交租、买入、收租等收支都会记在这里'));
     return;
   }
 
-  const totalRent = insts.reduce((s, i) => {
-    const cell = state.board[i.cellIndex];
-    if (!cell || i.mortgaged) return s;
-    const rent = Array.isArray(cell.rent) ? (cell.rent[i.level] ?? cell.rent[0] ?? 0) : (cell.rent || 0);
-    return s + rent;
-  }, 0);
+  // 流水列表 —— 单独滚动，避免把上半段的机构列表顶出视野
+  const list = document.createElement('div');
+  list.className = 'cf-list';
 
-  el.appendChild(tabSection('持有机构', `${insts.length} 家`));
-
-  for (const inst of insts) {
-    const cell = state.board[inst.cellIndex];
-    if (!cell) continue;
+  for (const f of flows) {
     const row = document.createElement('div');
-    row.className = 'tab-inst';
+    row.className = 'cf-row ' + (f.amount >= 0 ? 'is-in' : 'is-out');
 
-    const pc = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
-    const dot = document.createElement('i');
-    dot.className = 'tab-inst-dot';
-    dot.style.background = pc.main;
-    row.appendChild(dot);
+    const turn = document.createElement('span');
+    turn.className = 'cf-turn';
+    turn.textContent = f.round ? `R${f.round}` : `T${f.turn}`;
+    turn.title = `第 ${f.turn} 回合 · 第 ${f.round} 圈`;
+    row.appendChild(turn);
 
-    const name = document.createElement('span');
-    name.className = 'tab-inst-name';
-    name.textContent = cell.name;
-    name.title = cell.name;
-    row.appendChild(name);
+    const reason = document.createElement('span');
+    reason.className = 'cf-reason';
+    reason.textContent = f.reason || (f.tag || '资金变动');
+    reason.title = reason.textContent;
+    row.appendChild(reason);
 
-    const lv = document.createElement('span');
-    lv.className = 'tab-inst-lv';
-    lv.textContent = levelLabel(inst.level) || `L${inst.level}`;
-    row.appendChild(lv);
+    const amt = document.createElement('span');
+    amt.className = 'cf-amt';
+    amt.textContent = `${f.amount >= 0 ? '+' : '−'}￥${fmtNum(Math.abs(f.amount))}`;
+    row.appendChild(amt);
 
-    if (inst.mortgaged) {
-      const flag = document.createElement('span');
-      flag.className = 'tab-inst-flag';
-      flag.textContent = '质押';
-      flag.title = '已质押 —— 暂停产生管理费';
-      row.appendChild(flag);
-    } else {
-      const rent = Array.isArray(cell.rent)
-        ? (cell.rent[inst.level] ?? cell.rent[0] ?? 0)
-        : (cell.rent || 0);
-      const rv = document.createElement('span');
-      rv.className = 'tab-inst-rent';
-      rv.textContent = `￥${fmtNum(rent)}`;
-      rv.title = `每回合管理费 ￥${fmtNum(rent)}`;
-      row.appendChild(rv);
-    }
-
-    el.appendChild(row);
+    list.appendChild(row);
   }
 
-  el.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
+  bottom.appendChild(list);
 }
 
 /**
@@ -725,7 +794,22 @@ export function renderTabNetWorth(el, player, state) {
  */
 export function renderTabPanels(els, player, state) {
   if (!els || !player || !state) return;
-  renderTabInstitutions(els.inst, player, state);
+
+  // ===== 「我的机构」tab：上下拆分 =====
+  //   上半段 = 持有机构（机构名 / 等级 / 每圈管理费）
+  //   下半段 = 资金流水（**本玩家**的收支流水，新的在上）
+  // 拆成两段而不是两个 tab，是为了不占用宝贵的横向 tab 位（现在有 5 个 tab）。
+  const inst = els.inst;
+  inst.replaceChildren();
+  const top = document.createElement('div');
+  top.className = 'tab-split-top';
+  const bottom = document.createElement('div');
+  bottom.className = 'tab-split-bottom';
+  inst.appendChild(top);
+  inst.appendChild(bottom);
+  renderTabInstitutions(top, player, state);
+  renderTabCashFlow(bottom, player, state);
+
   renderTabBuffs(els.buff, player, state);
   renderTabLoans(els.loan, player, state);
   renderTabBonds(els.bond, player, state);

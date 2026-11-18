@@ -15,6 +15,7 @@ import {
   raiseFundsForDeficit,
   applyEventCard, applyTrapCard, takeCentralLoan, repayLoan, issueBond,
   underwriteBond, grantStartPass, startCasinoGame, finishCasinoGame,
+  recordCash,
 } from '../core/rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities, aiName,
@@ -1110,7 +1111,7 @@ class Game {
       // 2) 持有央行 → 每圈流动性投放
       const regBonus = globalRegulatorEffects(state).roundBonus || 0;
       if (regBonus > 0) {
-        player.cash += regBonus;
+        recordCash(state, player, regBonus, '央行流动性投放', '央行');
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell: startCell });
       }
 
