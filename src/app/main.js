@@ -1005,6 +1005,13 @@ class Game {
     const p = currentPlayer(this.state);
     if (!p || p.bankrupt) return;
     if (this.state.phase !== 'await-roll') return;
+    // ⚠ 守卫：只有**人类玩家**能掷骰。
+    //   AI 回合期间 `runAITurn` 也会把 phase 置为 'await-roll'，
+    //   在 AI 摇骰的那段时间里 busy 仍为 false ——
+    //   若此处不拦，玩家点一下就会**替 AI 掷骰**（并把 AI 的骰子结果改掉）。
+    //   UI 上的按钮虽已 disabled，但 handleRoll 可能被其他入口直接调用，
+    //   所以状态层必须自带这道守卫。
+    if (p.isAI) return;
     this.sfx.unlock();
 
     const { dice } = rollDice(this.state, p);
@@ -1944,6 +1951,13 @@ class Game {
 
     const state = this.state;
     this.state.phase = 'await-roll';
+    // ⚠ AI 摇骰期间锁住 busy。
+    //   AI 回合同样把 phase 置为 'await-roll'，而本函数随后要等待
+    //   「700ms 起手 + DIE_ROLL_MS 滚动」才进入 moveAndSettle（那时才置 busy=true）。
+    //   若不提前锁，这段窗口内 phase='await-roll' 且 busy=false ——
+    //   状态上看起来「正等着人类掷骰」，与玩家回合无法区分。
+    //   锁上之后：phase/busy 始终成对一致，AI 回合期间不会误触发玩家操作。
+    this.busy = true;
     this.updateHUD();
 
     const plan = planTurn(state, player);
@@ -1962,7 +1976,7 @@ class Game {
       this.showDice(first.dice);
       this.sfx.diceRoll();
 
-      delay(620, () => {
+      delay(DIE_ROLL_MS, () => {
         this.sfx.diceLand();
         let finalTotal = first.total;
         if (rr.use) {
