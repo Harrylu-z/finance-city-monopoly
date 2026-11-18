@@ -135,6 +135,22 @@ function yuanNum(n) {
   return Number(n ?? 0).toLocaleString('en-US');
 }
 
+/**
+ * #rrggbb + alpha → rgba()
+ *
+ * 用于渐变的色标 —— Canvas 的 createLinearGradient 需要
+ * 带透明度的颜色值，而玩家色是纯 hex。
+ */
+function hexA(hex, a) {
+  const h = String(hex || '').replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  if (full.length !== 6) return hex;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
 export class BoardRenderer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -145,6 +161,21 @@ export class BoardRenderer {
     this.time = 0;
     // 底部为 HUD 主行动按钮预留的像素高度（0 = 不预留）
     this.bottomReserve = 0;
+    // ⚠ 3D 模式标记 —— 角色底座在 3D 下要用「立体台座」画法
+    //   （带侧壁 + 顶面高光），平面模式保持原来的扁平椭圆底座。
+    this.is3D = false;
+  }
+
+  /**
+   * 切换 3D 模式。
+   *
+   * ⚠ Canvas 本身**不会**因为 3D 模式改变渲染方式 ——
+   *   倾斜是由 DOM 层的 CSS transform 施加在整块画布上的。
+   *   这里只是让**画布内部**知道自己在被倾斜，
+   *   从而用与之匹配的画法（如椭圆压扁比例）。
+   */
+  set3D(on) {
+    this.is3D = !!on;
   }
 
   /**
@@ -362,6 +393,7 @@ export class BoardRenderer {
 
     this.drawTokens(ctx, state, view);
 
+    // 空中特效（粒子 / 金币 / 礼花）画在棋子之上
     if (view.effects) view.effects.draw(ctx);
   }
 
@@ -880,7 +912,9 @@ export class BoardRenderer {
         // 底座对齐到棋子脚下
         const baseCx = tx + halfW * s;
         const baseCy = ty + (sh - 1) * s;
-        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main, halfW);
+        // 当前回合玩家 → 底座带呼吸光晕（PR-E）
+        const isCurrent = state.currentPlayerIndex === p.index;
+        this.drawTokenBase(ctx, baseCx, baseCy, s, pc.main, halfW, isCurrent);
 
         if (anim && anim.squash) {
           const sq = anim.squash;
@@ -916,11 +950,23 @@ export class BoardRenderer {
    *
    * 像素版用逐行 fillRect 拓出一个位图圆，边缘是硬阶梯；
    * 现在改用 Canvas 的路径 + 软阴影，任何分辨率下都平滑。
+   *
+   * ⚠ 3D 模式下的「立体台座」：
+   *   3D 俯视时，贴地的圆在屏幕上会被压扁成椭圆。
+   *   若底座还是正圆，看上去就像「浮在空中的圆盘」。
+   *   因此 3D 下把底座画成**带侧壁的圆柱台座**：
+   *     · 顶面 = 压扁的椭圆（0.42 比例）
+   *     · 侧壁 = 顶面与地面之间的柱面（上下两个半椭圆围成）
+   *   这样无论平面还是 3D，底座都「贴在地上」。
    */
-  drawTokenBase(ctx, cx, cy, s, glow, halfW = 8) {
+  drawTokenBase(ctx, cx, cy, s, glow, halfW = 8, isCurrent = false) {
     // 底座宽度跟随立绘宽度（经典棋子 8，职业立绘 16），但封顶避免过宽
     const rx = Math.max(4, Math.min(halfW * s, 10 * s));
     const ry = Math.max(2.5, 3.2 * s);
+
+    // 3D 俯视压缩比 —— 圆形地面印记在 45° 俯视下变成 0.42 的椭圆
+    const flat = this.is3D ? 0.42 : 1;
+    const ryFlat = ry * flat;
 
     // 阴影（从下方向上的渐变深）
     const shadow = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
@@ -929,9 +975,58 @@ export class BoardRenderer {
     shadow.addColorStop(1, 'rgba(15,23,42,0)');
     ctx.fillStyle = shadow;
     ctx.beginPath();
-    ctx.ellipse(cx, cy + ry * 0.35, rx, ry, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy + ry * 0.35, rx, ryFlat, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    if (this.is3D) {
+      // ---------- 立体台座：侧壁 + 顶面 ----------
+      const wallH = Math.max(2, ry * 1.5);
+      const wallTop = cy - wallH;
+
+      // 侧壁：顶面椭圆与地面椭圆之间的柱面
+      const wallGrad = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
+      wallGrad.addColorStop(0, 'rgba(15,23,42,.72)');
+      wallGrad.addColorStop(0.42, 'rgba(15,23,42,.46)');
+      wallGrad.addColorStop(1, 'rgba(15,23,42,.66)');
+      ctx.fillStyle = wallGrad;
+      ctx.beginPath();
+      ctx.ellipse(cx, wallTop, rx * 0.88, ryFlat * 0.8, 0, Math.PI, Math.PI * 2);
+      ctx.ellipse(cx, cy, rx * 0.88, ryFlat * 0.8, 0, 0, Math.PI);
+      ctx.closePath();
+      ctx.fill();
+
+      // 顶面（玩家色）
+      const topGrad = ctx.createLinearGradient(cx, wallTop - ryFlat, cx, wallTop + ryFlat);
+      topGrad.addColorStop(0, hexA(glow, 0.42));
+      topGrad.addColorStop(1, hexA(glow, 0.16));
+      ctx.fillStyle = topGrad;
+      ctx.beginPath();
+      ctx.ellipse(cx, wallTop, rx * 0.88, ryFlat * 0.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 顶面边缘高光
+      ctx.strokeStyle = hexA(glow, isCurrent ? 0.95 : 0.7);
+      ctx.lineWidth = Math.max(1, 1.2 * s);
+      ctx.beginPath();
+      ctx.ellipse(cx, wallTop, rx * 0.88, ryFlat * 0.8, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 当前回合玩家：呼吸光晕（随时间脉动）
+      if (isCurrent) {
+        const pulse = 0.5 + 0.5 * Math.sin(this.time / 260);
+        const halo = ctx.createRadialGradient(cx, wallTop, 0, cx, wallTop, rx * 1.9);
+        halo.addColorStop(0, hexA(glow, 0.34 + 0.20 * pulse));
+        halo.addColorStop(0.55, hexA(glow, 0.14 * pulse));
+        halo.addColorStop(1, hexA(glow, 0));
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.ellipse(cx, wallTop, rx * 1.9, rx * 1.9 * flat, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      return;
+    }
+
+    // ---------- 平面模式：扁平椭圆底座（保持原样）----------
     // 底座圆形（深色）
     ctx.fillStyle = 'rgba(15,23,42,.55)';
     ctx.beginPath();

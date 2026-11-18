@@ -27,6 +27,7 @@ import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Stage3D } from '../render/stage3d.js';
 import { HoverBuildingLayer } from '../render/hoverBuilding.js';
+import { LandingFxLayer } from '../render/landingFx.js';
 import { Sfx } from '../audio/sfx.js';
 import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog, renderTabPanels } from './hud.js';
 import {
@@ -80,6 +81,7 @@ class Game {
     this.renderer = null;
     this.tileLayer = null;
     this.hoverBuildings = null;
+    this.landingFx = null;
     this.background = null;
     this.effects = new Effects();
     this.mover = new MoveAnimator();
@@ -447,6 +449,12 @@ class Game {
       this.renderer,
     );
 
+    // ===== 落地特效层（PR-E）=====
+    // ⚠ 必须走 **DOM**（#fx-layer）而不是 Canvas ——
+    //   地块是 DOM 卡片且完全不透明，Canvas 在最底层，
+    //   画在 Canvas 上的地面冲击波会被牌面完全遮住。
+    this.landingFx = new LandingFxLayer(this.el['fx-layer'], this.renderer);
+
     this.background = new Background(window.innerWidth, window.innerHeight);
 
     // ===== 3D 舞台（视角切换 + 拖拽平移）=====
@@ -462,6 +470,7 @@ class Game {
       {
         onChange: ({ is3D }) => {
           if (this.tileLayer) this.tileLayer.set3D(is3D);
+          if (this.renderer) this.renderer.set3D(is3D);
           if (this.hoverBuildings) {
             this.hoverBuildings.set3D(is3D);
             if (is3D && this.state) this.hoverBuildings.sync(this.state);
@@ -1037,6 +1046,10 @@ class Game {
       to: path[path.length - 1],
       steps,
       path,
+      // PR-E：每踩上一格触发一次落地特效（椭圆冲击波 + 轻微上浮）
+      onLand: (stepIdx) => {
+        this.spawnLandingFx(player, path, stepIdx);
+      },
       onDone: () => {
         stepTimer.cancel();
         const passedStart = computeMove(from, steps, BOARD_SIZE).passedStart;
@@ -1045,6 +1058,28 @@ class Game {
         this.afterMove(player, passedStart);
       },
     });
+  }
+
+  /**
+   * 落地特效 —— 角色每踩上一格，脚下浮起一圈椭圆冲击波 + 轻微上浮的柔光。
+   *
+   * ⚠ 特效画在 **DOM 层**（#fx-layer）而非 Canvas：
+   *   地块是 DOM 卡片且**完全不透明**（白色渐变底），
+   *   Canvas 又在最底层 —— 画在 Canvas 上的地面冲击波会被牌面完全遮住。
+   *   DOM 层在牌面之上，冲击波才能真正「印」在格子上。
+   *
+   * @param {object} player 移动中的玩家
+   * @param {number[]} path 本次移动路径
+   * @param {number} stepIdx 刚刚踩上的第几步（1 起）
+   */
+  spawnLandingFx(player, path, stepIdx) {
+    if (!this.effectsEnabled || !this.landingFx) return;
+    const cellIndex = path[Math.min(path.length - 1, Math.max(0, stepIdx - 1))];
+    if (cellIndex == null) return;
+
+    // 颜色取玩家色 —— 与棋子底座呼应
+    const pc = PLAYER_COLORS[(player.colorIndex || 0) % PLAYER_COLORS.length];
+    this.landingFx.spawn(cellIndex, pc.lt);
   }
 
   afterMove(player, passedStart) {
@@ -2047,6 +2082,8 @@ class Game {
     if (this.tileLayer) this.tileLayer.sync(state);
     // PR-D：建筑的等级 / 持有人配色依赖状态 —— 同步刷新
     if (this.hoverBuildings) this.hoverBuildings.sync(state);
+    // PR-E：清理已播完的落地特效 DOM
+    if (this.landingFx) this.landingFx.update();
   }
 
   /**

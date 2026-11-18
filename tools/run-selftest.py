@@ -178,6 +178,22 @@ def main():
             result["pass"] += hoverBuilding["pass"]
             result["rows"] = result["rows"] + hoverBuilding["rows"]
 
+            # ---- 跑角色立体化 + 落地特效自检（PR-E）----
+            charFx = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-char-fx.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += charFx["total"]
+            result["pass"] += charFx["pass"]
+            result["rows"] = result["rows"] + charFx["rows"]
+
             total = result["total"]
             passed = result["pass"]
             print("=" * 78)
