@@ -22,7 +22,7 @@
  * 因此 canvas 尺寸变化时**不需要任何 JS 重排**，CSS 自动跟随。
  */
 
-import { BOARD_CELLS, BOARD_SIZE, LEVELS } from '../core/board.js';
+import { BOARD_CELLS, BOARD_SIZE, LEVELS, TRACK_POINTS, BOARD_GRID } from '../core/board.js';
 import { PLAYER_COLORS, GROUP_COLORS } from '../core/palette.js';
 
 /* ===========================================================
@@ -532,11 +532,26 @@ function tileInstitution(cell, st) {
     </div>`;
 }
 
-/** 统一入口 —— 监管格 / 特殊格 / 机构格 */
+/**
+ * 统一入口 —— 监管格 / 特殊格 / 机构格。
+ *
+ * ================== 三层结构（3D 关键）==================
+ *   .mt-tile      牌体 —— 承担 3D 倾斜、厚度、落影
+ *     .mt-face    牌面底板 —— 承担浮雕与底色
+ *       .mt-content  信息层 —— **不参与倾斜**，文字始终正立
+ *
+ * ⚠ 为什么信息层要「抽出来」而不是在牌面上做反向 rotateX：
+ *   反向补偿（billboard）的固有代价是牌面不再保持平行四边形，
+ *   有一边会「翘起」—— 麻将牌是矩形的，翘起会破坏牌体质感。
+ *   把信息层整体平铺在牌体之上，牌体保持完整矩形，
+ *   文字正立，代价只是信息层与牌面不共面（视觉上像悬浮信息屏）。
+ */
 export function tileHTML(cell, st) {
-  if (cell.regulator) return tileRegulator(cell, st);
-  if (cell.type !== 'institution') return tileSpecial(cell, st);
-  return tileInstitution(cell, st);
+  let inner;
+  if (cell.regulator) inner = tileRegulator(cell, st);
+  else if (cell.type !== 'institution') inner = tileSpecial(cell, st);
+  else inner = tileInstitution(cell, st);
+  return `<div class="mt-tile"><div class="mt-face">${inner}</div></div>`;
 }
 
 /* ===========================================================
@@ -552,6 +567,7 @@ export class TileLayer {
     this.renderer = renderer;
     this.nodes = [];
     this._lastKey = '';
+    this._is3D = false;
   }
 
   /**
@@ -593,6 +609,62 @@ export class TileLayer {
       this.nodes.push(node);
     }
     this.layout();
+    this.applyDepth();
+  }
+
+  /* ===========================================================
+   * 深度排序 —— 3D 视角下的正确遮挡关系
+   * ===========================================================
+   * ⚠ 为什么必须显式排序：
+   *   DOM 没有深度缓冲。倾斜后「离屏幕近」的格子可能排在 DOM 后���，
+   *   视觉上会被前面的格子盖住 —— 但实际应该是它盖住别人。
+   *
+   * ⚠ 排序依据 = **格子的行号**（不是回合顺序）：
+   *   俯视 45° 时，越靠下（row 越大）的格子离观察者越近。
+   *   回合顺序（沿轨道走）与远近无关，用它排序会得到乱七八糟的结果。
+   *
+   * ⚠ 只在 3D 模式下排序：
+   *   平面模式下 z-index 越少越好 —— 减少重排、避免 hover 抢占的意外。
+   *   所以本方法在平面模式只写 `z-index: auto`（清掉 3D 的残留）。
+   */
+  applyDepth() {
+    const is3D = this.is3D();
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const node = this.nodes[i];
+      if (!node) continue;
+      if (!is3D) {
+        // 平面模式：交回给 hover 规则（CSS 里 .mt-cell:hover { z-index: 3 }）
+        node.style.zIndex = '';
+        continue;
+      }
+      // row 越大越近 → z-index 越大越靠上
+      const row = this._rowOf(i);
+      node.style.zIndex = String(10 + row * 10);
+    }
+  }
+
+  /** 格子索引 → 所在行号（用于深度排序） */
+  _rowOf(index) {
+    const p = TRACK_POINTS[index];
+    if (!p) return 0;
+    // TRACK_POINTS 的 y 已归一化到 0..1000（= (row + 0.5) / rows * 1000）
+    const rows = BOARD_GRID.rows || 1;
+    return Math.floor((p[1] / 1000) * rows);
+  }
+
+  /**
+   * 切换 3D 模式 —— 切换后必须重排深度。
+   *
+   * @param {boolean} on
+   */
+  set3D(on) {
+    this._is3D = !!on;
+    this.applyDepth();
+  }
+
+  /** 当前是否 3D 模式 */
+  is3D() {
+    return !!this._is3D;
   }
 
   /**

@@ -7,6 +7,7 @@
 <title>中国金融城 · 像素大富翁</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="styles/tiles.css">
+<link rel="stylesheet" href="styles/tiles-3d.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23f1f5f9'/%3E%3Crect x='3' y='8' width='3' height='5' fill='%23c8392b'/%3E%3Crect x='7' y='5' width='3' height='8' fill='%230f172a'/%3E%3Crect x='11' y='3' width='3' height='10' fill='%232f9fc4'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -157,18 +158,38 @@
           <span id="hud-market" class="hud-market">震荡</span>
         </div>
         <button id="btn-rank" class="pixel-btn pixel-btn-icon" title="资产排行" aria-label="资产排行">≡</button>
+        <button id="btn-3d" class="pixel-btn pixel-btn-icon" title="切换 3D 立体视角" aria-label="切换 3D 立体视角" aria-pressed="false">◱</button>
       </div>
 
       <!-- ===== 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） ===== -->
       <div id="board-wrap" class="board-wrap">
-        <canvas id="board-canvas" class="board-canvas" aria-label="棋盘"></canvas>
-        <!-- 地块层：46 个 DOM 地块（盖在 canvas 之上，浅色现代数据卡） -->
-        <div id="board-tiles" class="board-tiles" role="list" aria-label="地块"></div>
-        <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
-        <div id="dice-tray" class="dice-tray" aria-live="polite"></div>
-        <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
-        <!-- 移动端：点击地块弹出的详情卡 -->
-        <div id="cell-detail" class="cell-detail" hidden></div>
+        <!--
+          3D 舞台骨架（PR-A）
+          ====================
+          三层职责，从外到内：
+            #board-wrap    —— 尺寸基准，Canvas 按它测量（永远不参与变换）
+            #board-stage   —— 承载 3D 透视倾斜（rotateX 45°）
+            #board-pan     —— 承载拖拽平移（translate）
+
+          ⚠ 为什么平移必须在内层：平移是「移动棋盘」，倾斜是「改变视角」。
+             若平移在倾斜之外，平移量会被透视投影二次放大，手感失真。
+
+          ⚠ 为什么尺寸基准必须在最外层：Canvas 的 backing store 尺寸
+             按 #board-wrap 测量，变换不改变它 —— 这样 3D 切换 / 拖拽
+             都不会触发画布重设（重设会清空画布并触发 ResizeObserver 循环）。
+        -->
+        <div id="board-stage" class="board-stage">
+          <div id="board-pan" class="board-pan">
+            <canvas id="board-canvas" class="board-canvas" aria-label="棋盘"></canvas>
+            <!-- 地块层：34 个 DOM 地块（盖在 canvas 之上，浅色现代数据卡） -->
+            <div id="board-tiles" class="board-tiles" role="list" aria-label="地块"></div>
+            <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+            <div id="dice-tray" class="dice-tray" aria-live="polite"></div>
+            <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
+            <!-- 移动端：点击地块弹出的详情卡 -->
+            <div id="cell-detail" class="cell-detail" hidden></div>
+          </div>
+        </div>
       </div>
 
       <!-- ===== 底部中央：主行动按钮 + 常用操作（常驻，不再收进抽屉） ===== -->
