@@ -116,6 +116,15 @@ export class Effects {
     if (this.shake > 0) this.shake -= 16;
   }
 
+  /**
+   * 空中层特效 —— 在棋子**之后**绘制。
+   *
+   * 粒子 / 金币 / 礼花都是「飘在空中」的，盖住角色是正确的。
+   *
+   * ⚠ 落地冲击波**不在这里** —— 它是地面特效，走 DOM 层
+   *   （见 src/render/landingFx.js）：地块卡片不透明，
+   *   画在 Canvas 上会被完全遮住。
+   */
   draw(ctx) {
     if (!this.particles.length) return;
     ctx.save();
@@ -233,6 +242,8 @@ export class MoveAnimator {
     this.frame = 0;
     this.tick = 0;
     this.onDone = opts.onDone || null;
+    // ⚠ 落地回调 —— 每踩过一格触发一次（PR-E 落地特效）
+    this.onLand = opts.onLand || null;
     this.startedAt = performance.now();
     // 兜底：即使渲染循环被浏览器暂停（后台标签页），也必须在此时限内完成
     this.deadline = this.startedAt + this.steps * this.stepMs + 400;
@@ -258,6 +269,12 @@ export class MoveAnimator {
     if (targetStep !== this.step) {
       this.step = targetStep;
       this.frame = (this.frame + 1) % 4;
+      // ⚠ 落地回调 —— **每跨过一格触发一次**（PR-E 落地特效）。
+      //   step 从 n-1 变成 n 时，说明刚**踩上**了第 n 格 —— 此刻出落地特效。
+      //   ⚠ 不能只触发一次：角色可能连走多格，每一格都要有落脚感。
+      if (this.onLand) {
+        try { this.onLand(this.step, this.path); } catch (e) { /* 特效失败不影响回合 */ }
+      }
     }
 
     if (this.step >= this.steps || now >= this.deadline) {
