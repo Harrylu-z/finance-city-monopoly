@@ -105,6 +105,22 @@ def main():
                 }"""
             )
 
+            # ---- 跑 3D 舞台控制器自检（渲染层逻辑）----
+            stage3d = page.evaluate(
+                """async () => {
+                    const m = await import('/src/core/selftest-stage3d.js');
+                    const res = m.runAll();
+                    return {
+                        total: res.length,
+                        pass: res.filter(r => r.pass).length,
+                        rows: res.map(r => ({ name: r.name, pass: r.pass, detail: r.detail })),
+                    };
+                }"""
+            )
+            result["total"] += stage3d["total"]
+            result["pass"] += stage3d["pass"]
+            result["rows"] = result["rows"] + stage3d["rows"]
+
             total = result["total"]
             passed = result["pass"]
             print("=" * 78)

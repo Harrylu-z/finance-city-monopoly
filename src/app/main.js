@@ -25,6 +25,7 @@ import { BoardRenderer } from '../render/canvas.js';
 import { TileLayer } from '../render/tiles.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
+import { Stage3D } from '../render/stage3d.js';
 import { Sfx } from '../audio/sfx.js';
 import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog, renderTabPanels } from './hud.js';
 import {
@@ -138,6 +139,8 @@ class Game {
       'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
       'board-canvas', 'board-wrap', 'board-tiles', 'stage-bg', 'fx-layer',
+      // 3D 舞台骨架（视角切换 + 拖拽平移）
+      'board-stage', 'board-pan', 'btn-3d',
       // HUD 容器（四角定位，用于测量与避让计算）
       'hud-left', 'hud-player', 'hud-top-right', 'hud-feed', 'hud-bottom', 'hud-right',
       // 左上：当前玩家紧凑单条
@@ -432,6 +435,16 @@ class Game {
     this.bindTileEvents();
 
     this.background = new Background(window.innerWidth, window.innerHeight);
+
+    // ===== 3D 舞台（视角切换 + 拖拽平移）=====
+    // 必须在 renderer 建好之后创建 —— 它要读写 #board-stage / #board-pan，
+    // 且平移只改 transform，不碰 Canvas 的 backing store。
+    this.stage3d = new Stage3D(
+      this.el['board-stage'],
+      this.el['board-pan'],
+      this.el['btn-3d'],
+    );
+
     this.onResize();
     // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
     requestAnimationFrame(() => this.onResize());
