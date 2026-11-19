@@ -16,6 +16,7 @@ import { getAvatarSprites } from '../art/avatars.js';
 import {
   currentActor, legalActions, applyAction, aiAction, visibleHoleCards,
   remainingCards, POKER_CONFIG, cardLabel, evaluateHand, HAND_NAMES,
+  handStrength,
 } from '../core/poker.js';
 
 /** 街道中文名 */
@@ -32,6 +33,18 @@ const STREET_NAME = {
 const ACTION_NAME = {
   fold: '弃牌', check: '过牌', call: '跟注', raise: '加注', allin: '全下',
 };
+
+/**
+ * HTML 转义 —— 牌型名 / 玩家名会进 innerHTML，必须转义。
+ */
+function escapeText(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /**
  * 打开德州扑克桌面。
@@ -203,6 +216,230 @@ export function showPokerTable(opts) {
     els.deck.textContent = `牌库余 ${remainingCards(game)} 张`;
   }
 
+  /* ==========================================================
+   * P1-17：牌力提示
+   *
+   * ⚠ 为什么需要：
+   *   德州扑克的决策核心是「我这手牌有多强」。
+   *   没有提示时玩家只能自己数点 —— 而这正是新手最不会做的事。
+   *
+   * ⚠ 公平性：
+   *   只显示**自己**的牌力（与 AI 用的 `handStrength` 同一个函数），
+   *   **不泄露**对手的牌。牌型名称（如「两对」）在摊牌前也只对自己显示。
+   * ========================================================== */
+  function renderHandHint(seatIndex) {
+    const seat = game.seats[seatIndex];
+    const box = document.createElement('div');
+    box.className = 'poker-hand-hint';
+
+    // 牌型名称（仅自己有牌时才有意义）
+    const cards = [...seat.hole, ...game.community];
+    let handName = '';
+    if (cards.length >= 2) {
+      const ev = evaluateHand(cards);
+      handName = HAND_NAMES[ev.rank] || '';
+    }
+
+    // 强度（0~1）—— 与 AI 完全相同的算法
+    const strength = handStrength(game, seatIndex);
+    const pct = Math.round(strength * 100);
+    // 分档：弱 / 中 / 强
+    const level = strength >= 0.62 ? 'strong'
+      : strength >= 0.38 ? 'mid' : 'weak';
+    const levelText = strength >= 0.62 ? '强'
+      : strength >= 0.38 ? '中等' : '偏弱';
+
+    box.innerHTML = `
+      <span class="poker-hand-hint-label">我的牌力</span>
+      <span class="poker-hand-name">${escapeText(handName) || '待发牌'}</span>
+      <span class="poker-hand-bar">
+        <span class="poker-hand-fill is-${level}" style="width:${pct}%"></span>
+      </span>
+      <span class="poker-hand-pct is-${level}">${pct}% · ${levelText}</span>
+    `;
+    return box;
+  }
+
+  /* ==========================================================
+   * P1-16：加注滑杆 + 底池赔率
+   *
+   * ⚠ 底池赔率（pot odds）—— 玩家判断「该不该跟」的核心依据：
+   *   赔率 = 跟注额 ÷ (底池 + 跟注额)
+   *   跟注额占最终底池的比例越大，赔率越差。
+   *   直接显示百分比，省去玩家心算。
+   * ========================================================== */
+  function renderBetSlider(raiseAct, toCall, seat) {
+    const box = document.createElement('div');
+    box.className = 'poker-bet-box';
+
+    const min = Math.max(1, raiseAct.min || 1);
+    const max = Math.max(min, raiseAct.max ?? min);
+    /**
+     * 滑杆步长 —— 必须能**整除** (max - min)。
+     *
+     * ⚠ 为什么：
+     *   HTML `<input type=range>` 会把 value 吸附到 `min + k*step`。
+     *   若 step 除不尽区间，滑杆**永远到不了 max**（会被吸附回上一个刻度），
+     *   表现为「拖到底了但数字框不是上限」。
+     *   这里取能整除区间的最大「整齐步长」，保证滑杆两端都能精确命中。
+     */
+    const span = max - min;
+    const rawStep = Math.max(1, Math.round(min / 2) || 1);
+    let step = rawStep;
+    for (let s = rawStep; s >= 1; s--) {
+      if (span % s === 0) { step = s; break; }
+    }
+    if (span % step !== 0) step = 1;
+
+    // ---- 赔率条 ----
+    const pot = game.pot;
+    const oddsRow = document.createElement('div');
+    oddsRow.className = 'poker-odds-row';
+    // 跟注赔率
+    const callOdds = toCall > 0 ? (toCall / (pot + toCall)) : 0;
+    // 加注赔率（按当前滑杆值实时更新）
+    const raiseOddsEl = document.createElement('span');
+    raiseOddsEl.className = 'poker-odds-item';
+    oddsRow.innerHTML = `<span class="poker-odds-label">底池赔率</span>`;
+    const callOddsEl = document.createElement('span');
+    callOddsEl.className = 'poker-odds-item';
+    callOddsEl.textContent = toCall > 0
+      ? `跟注 ${(callOdds * 100).toFixed(0)}%`
+      : '无需跟注';
+    oddsRow.appendChild(callOddsEl);
+    oddsRow.appendChild(raiseOddsEl);
+    box.appendChild(oddsRow);
+
+    // ---- 滑杆 ----
+    const sliderRow = document.createElement('div');
+    sliderRow.className = 'poker-bet-row';
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.className = 'poker-bet-slider';
+    range.min = String(min);
+    range.max = String(max);
+    range.step = String(step);
+    range.value = String(min);
+
+    // ---- 数字输入（滑杆 + 数字双向绑定）----
+    const num = document.createElement('input');
+    num.type = 'number';
+    num.className = 'poker-bet-number';
+    num.min = String(min);
+    num.max = String(max);
+    num.step = String(step);
+    num.value = String(min);
+
+    const confirm = document.createElement('button');
+    confirm.className = 'pixel-btn poker-btn poker-btn-sm';
+    confirm.textContent = '确认加注';
+
+    /** 当前加注额（**总额**：与规则层的 raise amount 语义一致） */
+    const current = (from) => {
+      const raw = from === 'range' ? range.value : num.value;
+      const v = Math.max(min, Math.min(max, Number(raw) || min));
+      return Math.round(v);
+    };
+
+    /**
+     * 刷新滑杆 / 数字 / 赔率三处显示。
+     *
+     * ⚠ 必须**从触发源取值**（from）——
+     *   若统一读 num.value，滑杆拖动时数字框还是旧值，
+     *   结果会被立刻钳回最小值 —— 表现为「滑杆拖不动」。
+     */
+    const sync = (from) => {
+      const v = current(from);
+      if (from === 'range') num.value = String(v);
+      else range.value = String(v);
+      // 加注赔率：加注额 vs 底池
+      const o = pot + v > 0 ? v / (pot + v) : 0;
+      raiseOddsEl.textContent = `加注 ${(o * 100).toFixed(0)}%`;
+      confirm.textContent = `确认加注 ￥${v}`;
+      // 按钮是否可用（加注额必须 ≤ 上限）
+      confirm.disabled = v > max;
+    };
+
+    range.addEventListener('input', () => sync('range'));
+    num.addEventListener('input', () => sync('number'));
+    num.addEventListener('change', () => sync('number'));
+    confirm.addEventListener('click', () => {
+      const v = current();
+      doAction({ type: 'raise', amount: v });
+    });
+
+    sliderRow.appendChild(range);
+    sliderRow.appendChild(num);
+    sliderRow.appendChild(confirm);
+    box.appendChild(sliderRow);
+
+    // 档位快选（最小 / 2 倍 / 4 倍）
+    const quick = document.createElement('div');
+    quick.className = 'poker-raise-row';
+    const opts = [min, min * 2, min * 4]
+      .filter((v, i, arr) => v <= max && arr.indexOf(v) === i);
+    for (const v of opts) {
+      const qb = document.createElement('button');
+      qb.className = 'pixel-btn poker-btn poker-btn-sm';
+      qb.textContent = `￥${v}`;
+      qb.addEventListener('click', () => {
+        num.value = String(v);
+        sync('number');
+      });
+      quick.appendChild(qb);
+    }
+    if (opts.length) box.appendChild(quick);
+
+    sync('number');
+    void seat;
+    return box;
+  }
+
+  /* ==========================================================
+   * P1-17：全下二次确认
+   *
+   * ⚠ 用**行内确认条**而不是嵌套弹窗：
+   *   弹窗会盖住牌桌，玩家看不到自己的牌 —— 而「要不要全下」
+   *   恰恰需要看着牌做决定。行内条保留了牌桌视野。
+   * ========================================================== */
+  function confirmAllIn(act, seatIndex) {
+    // 已有确认条 → 去掉（取消）
+    const existing = actionWrap.querySelector('.poker-allin-confirm');
+    if (existing) { existing.remove(); return; }
+
+    const seat = game.seats[seatIndex];
+    const box = document.createElement('div');
+    box.className = 'poker-allin-confirm';
+
+    const msg = document.createElement('div');
+    msg.className = 'poker-allin-msg';
+    msg.innerHTML = `确认<b>全下 ￥${act.amount}</b>？`
+      + `你的剩余筹码将全部押入，<b>无法撤销</b>。`;
+    box.appendChild(msg);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'poker-allin-btns';
+    const cancel = document.createElement('button');
+    cancel.className = 'pixel-btn poker-btn poker-btn-sm';
+    cancel.textContent = '取消';
+    const ok = document.createElement('button');
+    ok.className = 'pixel-btn poker-btn poker-btn-sm poker-btn-allin';
+    ok.textContent = '确认全下';
+    btnRow.appendChild(cancel);
+    btnRow.appendChild(ok);
+    box.appendChild(btnRow);
+
+    cancel.addEventListener('click', () => box.remove());
+    ok.addEventListener('click', () => {
+      box.remove();
+      doAction({ type: 'allin', amount: act.amount });
+    });
+
+    actionWrap.insertBefore(box, actionWrap.firstChild);
+    void seat;
+  }
+
   /** 渲染操作区 */
   function renderActions() {
     actionWrap.innerHTML = '';
@@ -243,6 +480,19 @@ export function showPokerTable(opts) {
       + (seat.assetStack > 0 ? `（含资产额度 ￥${seat.assetStack}）` : '');
     actionWrap.appendChild(note);
 
+    // ==========================================================
+    // P1-17：牌力提示 —— 让玩家知道自己拿的是什么牌
+    // ==========================================================
+    actionWrap.appendChild(renderHandHint(idx));
+
+    // ==========================================================
+    // P1-16：加注滑杆 + 底池赔率
+    // ==========================================================
+    const raiseAct = acts.find((a) => a.type === 'raise');
+    if (raiseAct) {
+      actionWrap.appendChild(renderBetSlider(raiseAct, toCall, seat));
+    }
+
     for (const a of acts) {
       if (a.type === 'raise') {
         // 加注档位：最小加注 / 2 倍 / 4 倍
@@ -267,7 +517,15 @@ export function showPokerTable(opts) {
       btn.textContent = a.label;
       btn.disabled = !!a.disabled;
       if (a.disabled && a.reason) btn.title = a.reason;
-      btn.addEventListener('click', () => doAction({ type: a.type, amount: a.amount }));
+      btn.addEventListener('click', () => {
+        // ⚠ P1-17：全下**二次确认** —— 一把牌押上全部身家，
+        //   误触的代价太大，必须让玩家确认一次。
+        if (a.type === 'allin' && !a.disabled) {
+          confirmAllIn(a, idx);
+          return;
+        }
+        doAction({ type: a.type, amount: a.amount });
+      });
       actionWrap.appendChild(btn);
     }
 

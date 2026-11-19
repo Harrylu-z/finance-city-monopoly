@@ -36,6 +36,7 @@ import { runAll as runCareerCasinoChecks } from './selftest-career-casino.js';
 import { runAll as runPersonalityChecks } from './selftest-personality.js';
 import { runAll as runCashflowChecks } from './selftest-cashflow.js';
 import { runAll as runCharEntityChecks } from './selftest-char-entity.js';
+import { runAll as runCareerPieceChecks } from './selftest-career-piece.js';
 
 /** 断言工具 */
 function check(results, name, fn) {
@@ -1747,6 +1748,12 @@ export function runAll() {
   /* ============ 角色实体 2.5D + 步速放慢（专项模块） ============ */
   const charEntityChecks = runCharEntityChecks();
   for (const r of charEntityChecks) {
+    results.push(r);
+  }
+
+  /* ============ 职业棋子建模（专项模块） ============ */
+  const careerPieceChecks = runCareerPieceChecks();
+  for (const r of careerPieceChecks) {
     results.push(r);
   }
 

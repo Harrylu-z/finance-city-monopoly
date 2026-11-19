@@ -24,12 +24,22 @@
  * ================== 新语义：连续转盘（v2）==================
  * ① **玩家可连续转多次**：每点一次「转」→ 抽一个效果 → **立即真实结算**
  *    → 转盘重置回可转状态 → 玩家可以继续转。玩家点「关闭」才退出并继续回合。
- *    次数上限 = `maxSpins`（默认 5），UI 上显示剩余次数；
+ *    次数上限 = `maxSpins`（默认 3），UI 上显示剩余次数；
  *    达到上限后「转」按钮禁用并提示「次数已用完，请关闭」。
  * ② **AI 触发时玩家只读**：`readonly: true` → 「转」按钮被移除/禁用，
  *    玩家只能看到 AI 抽中的结果与结算过程。
  * ③ **模态拦截**：弹窗打开期间背景有遮罩（modal-backdrop），挡住棋盘点击，
  *    玩家无法在 AI 转盘期间触发自己的转盘格。
+ *
+ * ================== P1-14：跳过动画 ==================
+ * 3.6 秒的转动动画对**无法干预**的 AI 回合是纯浪费。
+ * 因此：
+ *   · AI 自动转盘走**快速版**（`SPIN_MS_FAST` = 1.2s）；
+ *   · 玩家转盘时提供「跳过动画」按钮，点一下立刻结算。
+ *
+ * ⚠ 关键不变量：**跳过只改动画时长，不改抽签结果**。
+ *   pick 在动画开始前就由 `rng` 定死，跳过只是把等待时间缩短，
+ *   落点与结算完全一致 —— 「同 seed 可复现」的承诺不受影响。
  */
 
 import { openModal, closeModal } from '../app/dialogs.js';
@@ -46,8 +56,18 @@ const WHEEL_STYLE = {
 const SPIN_TURNS = 5;
 /** 动画时长（毫秒）—— 与 CSS transition 时长保持一致 */
 const SPIN_MS = 3600;
+/**
+ * AI 转盘的**快速版**时长（P1-14）—— 玩家跳过动画时用。
+ *
+ * ⚠ 为什么 AI 要快：
+ *   AI 每次踩到转盘格，玩家都要干等 3.6 秒看一个**自己无法干预**的动画。
+ *   一局下来几十次 —— 纯浪费时间。
+ *   跳过动画**不改变抽签结果**（pick 在动画开始前就定好了），
+ *   因此只影响观感，不影响规则与可复现性。
+ */
+export const SPIN_MS_FAST = 1200;
 /** 默认最大连续转盘次数 —— 防止玩家无限刷收益，同时满足「连续转好几次」 */
-export const DEFAULT_MAX_SPINS = 5;
+export const DEFAULT_MAX_SPINS = 3;
 
 /**
  * 构造转盘 SVG。
@@ -262,6 +282,22 @@ export function showWheelDialog(wheel, opts = {}) {
     body.appendChild(note);
   }
 
+  // ---- 「跳过动画」按钮（P1-14）----
+  //
+  // ⚠ 关键：**跳过只影响动画时长，不影响抽签结果**。
+  //   pick 在动画开始前就已经由 rng 定死了，
+  //   跳过只是把等待时间从 3.6s 缩到 1.2s —— 落点与结算完全一致。
+  //   因此「同 seed 可复现」的承诺不受影响。
+  let skipBtn = null;
+  {
+    skipBtn = document.createElement('button');
+    skipBtn.className = 'pixel-btn wheel-skip';
+    skipBtn.style.cssText = 'margin:0 auto 10px;display:block;';
+    skipBtn.textContent = '跳过动画';
+    skipBtn.disabled = true;   // 未转动时不可用
+    body.appendChild(skipBtn);
+  }
+
   // 关闭回调：无论走「完成并离开」按钮还是点遮罩，都必须通知 main.js，
   // 由它决定「已转过→继续回合 / 没转过→兜底随机」。
   // 之前 onClose 只挂在返回值 close() 上 —— openModal 根本收不到，
@@ -293,6 +329,10 @@ export function showWheelDialog(wheel, opts = {}) {
 
   let spinning = false;
   let spinIndex = 0;      // 已转次数
+  /** 当前转动的结束定时器 —— 「跳过动画」用它提前触发结算 */
+  let spinTimer = 0;
+  /** 当前转动的已完成回调 —— 跳过时直接调用它 */
+  let spinFinish = null;
 
   /** 更新剩余次数文案 */
   const updateCounter = () => {
@@ -311,14 +351,19 @@ export function showWheelDialog(wheel, opts = {}) {
    * 执行一次转动。
    *
    * @param {number} pick 强制指定的扇区（测试用；不传则随机）
+   * @param {boolean} fast 是否用**快速版**动画（AI / 跳过用）
    */
-  const spin = (pick) => {
+  const spin = (pick, fast = false) => {
     if (spinning) return;
     if (!readonly && spinIndex >= maxSpins) return;
     spinning = true;
     if (spinBtn) {
       spinBtn.disabled = true;
       spinBtn.textContent = '转动中…';
+    }
+    if (skipBtn) {
+      skipBtn.disabled = false;
+      skipBtn.textContent = '跳过动画';
     }
     hub.textContent = '···';
 
@@ -341,7 +386,15 @@ export function showWheelDialog(wheel, opts = {}) {
     svg.style.transform = `rotate(${target}deg)`;
     result.textContent = '转动中…';
 
-    setTimeout(() => {
+    // ⚠ 动画时长可切换 —— 跳过 / AI 走快速版。
+    //   CSS transition 时长也要跟着改，否则「动画还没转完就结算」会很突兀。
+    const dur = fast ? SPIN_MS_FAST : SPIN_MS;
+    svg.style.transition = `transform ${dur}ms cubic-bezier(.15,.85,.1,1)`;
+
+    /** 结算回调 —— 正常结束与「跳过」共用，保证只结算一次 */
+    const finish = () => {
+      if (spinTimer) { clearTimeout(spinTimer); spinTimer = 0; }
+      spinFinish = null;
       const o = outcomes[chosen];
       result.innerHTML = `抽中：<b style="color:${style.dk}">${escapeXml(o.name)}</b>`
         + (o.trap ? ' <span style="color:#dc2626">⚠ 陷阱</span>' : '')
@@ -355,6 +408,7 @@ export function showWheelDialog(wheel, opts = {}) {
         spinBtn.disabled = exhausted;
         spinBtn.textContent = exhausted ? '次数已用完' : '再 转 一 次';
       }
+      if (skipBtn) skipBtn.disabled = true;
       updateCounter();
       if (opts.onSpin) {
         opts.onSpin({
@@ -365,16 +419,32 @@ export function showWheelDialog(wheel, opts = {}) {
           spinIndex,
         });
       }
-    }, SPIN_MS);
+    };
+    spinFinish = finish;
+    spinTimer = setTimeout(finish, dur);
   };
 
   if (spinBtn) {
     spinBtn.addEventListener('click', () => spin());
   }
 
+  // ---- 「跳过动画」—— 立即结算（P1-14）----
+  //
+  // ⚠ 只缩短**等待**，不改变抽签结果（pick 已定死），
+  //   因此落点 / 结算 / 可复现性完全不受影响。
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      if (!spinning || !spinFinish) return;
+      // 让转盘瞬间转到终点，再立刻结算
+      svg.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1)';
+      spinFinish();
+    });
+  }
+
   // AI 玩家 —— 自动开转（只读，玩家不能干预）
+  // ⚠ AI 走**快速版**动画（1.2s）—— 玩家无法干预，没必要干等 3.6 秒。
   if (opts.autoSpin) {
-    setTimeout(() => spin(), 260);
+    setTimeout(() => spin(null, true), 260);
   }
 
   // 暴露 spin 以便自动化测试触发

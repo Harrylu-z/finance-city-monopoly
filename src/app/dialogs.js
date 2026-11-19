@@ -92,6 +92,114 @@ export function closeModal() {
   box._modalActions = null;
 }
 
+/**
+ * 设置弹窗（P1-2）—— **独立入口**（右上角齿轮）。
+ *
+ * ================== 为什么把设置从排行弹窗里搬出来 ==================
+ * 旧设计把「音效 / 特效 / 主题」塞在**资产排行弹窗**底部的菜单里。
+ * 问题：
+ *   · 排行榜是**看数据**的地方，混进设置项属于功能错位；
+ *   · 想改个主题要先点开排行榜 → 层级多绕；
+ *   · 移动端排行弹窗几乎占满屏幕，菜单项挤在最后一行很难点。
+ *
+ * 现在齿轮按钮直接开设置，**设置项独立成窗**。
+ * 兼容：排行弹窗底部的旧菜单项**保留**（仍然可点），
+ * 两边操作的是同一份状态 —— 由调用方传入的回调统一改状态。
+ *
+ * @param {object} opts
+ *   - soundOn   音效当前状态
+ *   - animOn    特效当前状态
+ *   - lightOn   亮色主题当前状态
+ *   - onSound(toggle)  切换音效
+ *   - onAnim(toggle)   切换特效
+ *   - onTheme(toggle)  切换主题
+ *   - onSelfTest()     规则引擎自检
+ *   - onBackToSetup()  返回开局界面
+ *   - onShare()        分享战绩
+ *   - onAssets()       我的机构
+ *   - onMetrics()      财务指标总览
+ */
+export function showSettingsDialog(opts = {}) {
+  const body = document.createElement('div');
+
+  const list = document.createElement('div');
+  list.className = 'settings-list';
+
+  /**
+   * 一行设置项 —— 左侧标签 + 右侧开关按钮。
+   * 开关做成**按钮**而不是 checkbox：
+   *   · 与全局「pixel-btn」风格统一；
+   *   · 状态文案直接写在按钮上（音效：开 / 音效：关），无需另配标签。
+   */
+  const row = (label, valueText, onClick) => {
+    const r = document.createElement('div');
+    r.className = 'settings-row';
+    const l = document.createElement('span');
+    l.className = 'settings-label';
+    l.textContent = label;
+    const b = document.createElement('button');
+    b.className = 'pixel-btn settings-toggle';
+    b.textContent = valueText;
+    b.addEventListener('click', () => {
+      // 由调用方改状态并回填文案
+      onClick(b);
+    });
+    r.appendChild(l);
+    r.appendChild(b);
+    list.appendChild(r);
+    return b;
+  };
+
+  // ---- 音效 ----
+  const soundBtn = row('音效', opts.soundOn ? '开' : '关', (b) => {
+    const next = b.textContent.trim() !== '开';
+    b.textContent = next ? '开' : '关';
+    if (opts.onSound) opts.onSound(next);
+  });
+
+  // ---- 特效 ----
+  const animBtn = row('特效', opts.animOn ? '开' : '关', (b) => {
+    const next = b.textContent.trim() !== '开';
+    b.textContent = next ? '开' : '关';
+    if (opts.onAnim) opts.onAnim(next);
+  });
+
+  // ---- 主题 ----
+  const themeBtn = row('主题', opts.lightOn ? '亮色' : '暗色', (b) => {
+    const next = b.textContent.trim() !== '亮色';
+    b.textContent = next ? '亮色' : '暗色';
+    if (opts.onTheme) opts.onTheme(next);
+  });
+
+  // ---- 其它入口 ----
+  const extra = document.createElement('div');
+  extra.className = 'settings-extra';
+  const extraBtn = (text, fn) => {
+    const b = document.createElement('button');
+    b.className = 'pixel-btn settings-extra-btn';
+    b.textContent = text;
+    b.addEventListener('click', () => {
+      if (fn) fn();
+    });
+    extra.appendChild(b);
+    return b;
+  };
+  extraBtn('我的机构', () => { closeModal(); if (opts.onAssets) opts.onAssets(); });
+  extraBtn('财务指标总览', () => { closeModal(); if (opts.onMetrics) opts.onMetrics(); });
+  extraBtn('分享战绩', () => { closeModal(); if (opts.onShare) opts.onShare(); });
+  extraBtn('规则引擎自检', () => { closeModal(); if (opts.onSelfTest) opts.onSelfTest(); });
+  extraBtn('返回开局界面', () => { closeModal(); if (opts.onBackToSetup) opts.onBackToSetup(); });
+  list.appendChild(extra);
+
+  body.appendChild(list);
+
+  return openModal({
+    title: '设置',
+    body,
+    actions: [{ text: '关闭', primary: true, onClick: () => {} }],
+  });
+}
+
 /** 收购确认弹窗 */
 export function showPurchaseDialog(cell, price, level, player, onAccept, onDecline) {
   const body = document.createElement('div');
@@ -297,13 +405,63 @@ export function showMetroDialog(onChoose) {
 }
 
 /**
- * 交租弹窗 —— 踩到他人机构时弹出。
+   * 交租弹窗 —— 踩到他人机构时弹出。
  *
  * 玩家不能选择「不付」（租金是硬规则），但弹窗会明确展示：
  *   · 机构名与归属人、所属集团；
  *   · 租金构成（基础租金 × 集团系数 × 市场周期 × 事件 × Buff）；
  *   · 交租后的现金余额。
+ *
+ * ================== P0-18：小额免打扰 ==================
+ * 每踩一次他人机构就弹一次窗，会把「连续几步都在交租」的观感
+ * 完全打断 —— 玩家被迫反复点「确认支付」，节奏全断。
+ *
+ * 因此分档：
+ *   · **小额（< ￥200）** —— 不弹窗，只飘字 + toast 一条；
+ *   · **大额（≥ ￥200）** —— 照旧弹窗（这是需要玩家确认的重要决策）。
+ *
+ * 弹窗内另加「本局不再提示」复选框 —— 勾选后本局**不再弹任何交租窗**
+ * （小额本就免弹，大额也只飘字）。用**内存标志**实现：
+ * 不落盘 —— 「不再提示」是**本局**的临时决定，重开一局应恢复提示。
  */
+
+/** 小额免打扰阈值（小于此金额不弹窗） */
+export const RENT_DIALOG_MIN = 200;
+
+/**
+ * 「本局不再提示交租窗」标志 —— **内存态**，刷新页面即重置。
+ *
+ * ⚠ 为什么不用 localStorage：
+ *   「本局不再提示」表达的是「这一次对局的临时偏好」，
+ *   持久化会让玩家下次开局仍然被静默扣钱（体验更差），
+ *   且会污染存档（存档只应记录对局结果，不该记录 UI 偏好）。
+ */
+let rentDialogMuted = false;
+
+/** 本局是否已静音交租窗 */
+export function isRentDialogMuted() {
+  return rentDialogMuted;
+}
+
+/** 重置交租窗提示（每次开局调用） */
+export function resetRentDialogMute() {
+  rentDialogMuted = false;
+}
+
+/** 静音交租窗（供「本局不再提示」勾选时调用） */
+export function muteRentDialog() {
+  rentDialogMuted = true;
+}
+
+/**
+ * 交租金额是否需要弹窗确认。
+ * @param {number} rent 管理费金额
+ */
+export function shouldShowRentDialog(rent) {
+  if (rentDialogMuted) return false;
+  return Number(rent) >= RENT_DIALOG_MIN;
+}
+
 export function showRentDialog(player, info, onClose) {
   const body = document.createElement('div');
 
@@ -365,11 +523,32 @@ export function showRentDialog(player, info, onClose) {
     <span class="dim">（已扣除 ￥${info.rent}）</span>`;
   body.appendChild(cash);
 
+  // ---- 「本局不再提示」复选框 ----
+  // 勾选后本局不再弹出交租窗（小额本就免弹，大额改为只飘字）。
+  const muteRow = document.createElement('label');
+  muteRow.className = 'modal-check';
+  const muteBox = document.createElement('input');
+  muteBox.type = 'checkbox';
+  muteBox.id = 'rent-mute-check';
+  const muteLabel = document.createElement('span');
+  muteLabel.textContent = '本局不再提示（交租只飘字，不弹窗）';
+  muteRow.appendChild(muteBox);
+  muteRow.appendChild(muteLabel);
+  body.appendChild(muteRow);
+
   return openModal({
     title: '交租 · 他人机构',
     body,
     dismissible: false,
-    actions: [{ text: '确认支付', primary: true, onClick: onClose }],
+    actions: [{
+      text: '确认支付',
+      primary: true,
+      onClick: () => {
+        // 勾选状态下静音（内存标志，不落盘）
+        if (muteBox.checked) muteRentDialog();
+        if (onClose) onClose();
+      },
+    }],
   });
 }
 

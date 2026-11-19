@@ -11,6 +11,101 @@
 
 import { PALETTE } from '../core/palette.js';
 
+/**
+ * ================== P1-32：粒子预渲染（离屏 canvas 缓存）==================
+ *
+ * 旧实现每帧为**每一个粒子**新建一个 `createRadialGradient` ——
+ * 一场结算能同时有 30+ 粒子，即 30+ 次渐变对象分配 + 30+ 次路径填充。
+ * 渐变对象是 Canvas 里最贵的对象之一，这是掉帧的主因。
+ *
+ * 优化：把粒子按「颜色 + 半径」**预渲染到离屏 canvas**，
+ * 之后每帧只是 `drawImage` —— 快一个数量级。
+ *
+ * 缓存 key = `${kind}|${color}|${r}`，尺寸取整以提高命中率。
+ */
+const spriteCache = new Map();
+
+/** 离屏画布工厂 */
+function makeOffscreen(w, h) {
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.ceil(w));
+  cv.height = Math.max(1, Math.ceil(h));
+  return cv;
+}
+
+/**
+ * 取（并缓存）一个粒子的离屏贴图。
+ *
+ * @param {'spark'|'coin'|'dust'} kind
+ * @param {string} color
+ * @param {number} r 半径（像素）
+ * @returns {HTMLCanvasElement} 贴图，绘制时用 drawImage + 平移居中
+ */
+function particleSprite(kind, color, r) {
+  // 半径量化到 0.5px —— 提高缓存命中率（视觉无差别）
+  const rq = Math.max(1, Math.round(r * 2) / 2);
+  const key = `${kind}|${color}|${rq}`;
+  const hit = spriteCache.get(key);
+  if (hit) return hit;
+
+  const pad = Math.ceil(rq * 2.6) + 2;
+  const size = pad * 2;
+  const cv = makeOffscreen(size, size);
+  const ctx = cv.getContext('2d');
+  const c = pad;
+
+  if (kind === 'coin') {
+    // 金币：金色圆盘 + 高光弧 + 外发光
+    const glow = ctx.createRadialGradient(c, c, 0, c, c, rq * 2.6);
+    glow.addColorStop(0, hexA(color, 0.45));
+    glow.addColorStop(1, hexA(color, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(c, c, rq * 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(c, c, rq, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = hexA('#b4791a', 0.85);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(c, c, rq * 0.66, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    ctx.beginPath();
+    ctx.ellipse(c - rq * 0.3, c - rq * 0.34, rq * 0.28, rq * 0.18, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (kind === 'dust') {
+    // 尘土：半透明柔边圆斑
+    const g = ctx.createRadialGradient(c, c, 0, c, c, rq);
+    g.addColorStop(0, hexA(color, 0.55));
+    g.addColorStop(1, hexA(color, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(c, c, rq, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // 礼花碎片：圆角小矩形（旋转在 draw 时做，不进贴图）
+    const w = 4;
+    const h = 7;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(c - w / 2, c - h / 2, w, h, 1.5);
+    ctx.fill();
+    // 顶部高光
+    ctx.fillStyle = 'rgba(255,255,255,.34)';
+    ctx.beginPath();
+    ctx.roundRect(c - w / 2, c - h / 2, w, h * 0.42, 1.2);
+    ctx.fill();
+  }
+
+  spriteCache.set(key, cv);
+  // 缓存上限 —— 长时间游戏不会无限增长
+  if (spriteCache.size > 240) spriteCache.clear();
+  return cv;
+}
+
 export class Effects {
   constructor() {
     this.particles = [];
@@ -141,60 +236,49 @@ export class Effects {
     ctx.restore();
   }
 
-  /** 金币：金色圆盘 + 高光弧 + 外发光 */
+  /**
+   * 金币：金色圆盘 + 高光弧 + 外发光
+   *
+   * ⚠ P1-32：改用**预渲染离屏贴图**（particleSprite）——
+   *   旧实现每帧为每个金币新建径向渐变，30 个金币 = 30 次渐变分配。
+   */
   drawCoin(ctx, p, alpha) {
     const r = 4.5 * p.size;
+    const sprite = particleSprite('coin', p.color, r);
+    const half = sprite.width / 2;
     ctx.globalAlpha = alpha;
-    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
-    glow.addColorStop(0, hexA(p.color, 0.45));
-    glow.addColorStop(1, hexA(p.color, 0));
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = hexA('#b4791a', 0.85);
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r * 0.66, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,.55)';
-    ctx.beginPath();
-    ctx.ellipse(p.x - r * 0.3, p.y - r * 0.34, r * 0.28, r * 0.18, -0.6, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.drawImage(sprite, p.x - half, p.y - half);
     ctx.globalAlpha = 1;
   }
 
-  /** 尘土：半透明柔边圆斑 */
+  /**
+   * 尘土：半透明柔边圆斑
+   *
+   * ⚠ P1-32：预渲染贴图（alpha 改由 globalAlpha 施加）。
+   */
   drawDust(ctx, p, alpha) {
-    const r = p.size;
-    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
-    g.addColorStop(0, hexA(p.color, 0.55 * alpha));
-    g.addColorStop(1, hexA(p.color, 0));
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fill();
+    const sprite = particleSprite('dust', p.color, p.size);
+    const half = sprite.width / 2;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(sprite, p.x - half, p.y - half);
+    ctx.globalAlpha = 1;
   }
 
-  /** 礼花碎片：圆角小矩形 + 旋转 */
+  /**
+   * 礼花碎片：圆角小矩形 + 旋转
+   *
+   * ⚠ P1-32：形状预渲染到离屏贴图，旋转/缩放在 draw 时叠加。
+   */
   drawSpark(ctx, p, alpha) {
     const w = 4 * p.size;
     const h = 7 * p.size;
+    const sprite = particleSprite('spark', p.color, Math.max(w, h) / 2);
+    const half = sprite.width / 2;
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.rot);
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = p.color;
-    roundRect(ctx, -w / 2, -h / 2, w, h, 1.6);
-    ctx.fill();
-    ctx.globalAlpha = alpha * 0.5;
-    ctx.fillStyle = 'rgba(255,255,255,.6)';
-    roundRect(ctx, -w / 2, -h / 2, w * 0.42, h, 1.2);
-    ctx.fill();
+    ctx.drawImage(sprite, -half, -half);
     ctx.restore();
     ctx.globalAlpha = 1;
   }

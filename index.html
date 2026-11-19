@@ -159,6 +159,21 @@
         </div>
         <button id="btn-rank" class="pixel-btn pixel-btn-icon" title="资产排行" aria-label="资产排行">≡</button>
         <button id="btn-3d" class="pixel-btn pixel-btn-icon" title="切换 3D 立体视角" aria-label="切换 3D 立体视角" aria-pressed="false">◱</button>
+        <button id="btn-settings" class="pixel-btn pixel-btn-icon" title="设置" aria-label="设置">⚙</button>
+      </div>
+
+      <!-- ===== 顶部全宽回合归属条 =====
+           谁在行动 —— 一眼可见。
+           宽度铺满顶部，按玩家色分段，当前行动者那一段高亮 + 呼吸光晕。
+           ⚠ 与左下角「当前玩家卡」分工不同：
+              卡片固定显示**人类玩家**（我的资产），
+              这条显示的是**当前正在行动的是谁**（可能是 AI）。 -->
+      <div id="turn-bar" class="turn-bar" aria-label="回合归属" role="status">
+        <div id="turn-bar-track" class="turn-bar-track"></div>
+        <div id="turn-bar-owner" class="turn-bar-owner">
+          <span class="turn-bar-owner-dot"></span>
+          <span id="turn-bar-name" class="turn-bar-owner-name">—</span>
+        </div>
       </div>
 
       <!-- ===== 中栏：棋盘容器（canvas 尺寸由 JS 按此元素测量） ===== -->

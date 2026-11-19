@@ -44,6 +44,8 @@ export class Stage3D {
     this.is3D = false;
     this.x = 0;
     this.y = 0;
+    /** 缩放倍数（移动端双指缩放）—— 与平移一起写进 #board-pan 的 transform */
+    this.zoom = 1;
     this.dragging = false;
     this._pointerId = null;
     this._start = { px: 0, py: 0, x: 0, y: 0 };
@@ -86,6 +88,33 @@ export class Stage3D {
   /** 当前平移量 */
   get offset() {
     return { x: this.x, y: this.y };
+  }
+
+  /**
+   * 设置缩放倍数（移动端双指缩放）。
+   *
+   * ================== 为什么缩放必须作用在 `#board-pan` ==================
+   * 棋盘由**两层**组成，且必须始终严格对齐：
+   *   · Canvas（`#board-canvas`）—— 棋子 / 特效 / 底板
+   *   · DOM 地块（`#board-tiles`）—— 34 个地块卡面
+   * 若只给 Canvas 加 `scale()`，地块层原地不动 ——
+   * 表现为「缩放后地块与棋盘错位」，双指缩放直接不可用。
+   *
+   * `#board-pan` 是两者的**共同祖先**，在其上缩放可保证同源同缩放。
+   * 因此缩放与平移、倾斜合并写进**同一个** transform（见 `_apply`）。
+   *
+   * @param {number} z 目标缩放倍数（1 ~ 2.2）
+   */
+  setZoom(z) {
+    const next = Math.max(1, Math.min(2.2, Number(z) || 1));
+    if (Math.abs(next - this.zoom) < 0.001) return;
+    this.zoom = next;
+    this._apply();
+  }
+
+  /** 当前缩放倍数 */
+  get zoomLevel() {
+    return this.zoom;
   }
 
   /**
@@ -255,10 +284,15 @@ export class Stage3D {
     //
     // ⚠ 顺序很重要：先 rotateX 再 translate3d —— 平移在倾斜**之内**，
     //   拖拽量才不会被透视投影二次放大。
+    //
+    // ⚠ 缩放放在**最外层**（最前）—— 它是「整个棋盘的放大」，
+    //   必须同时作用于 Canvas 与 DOM 地块层，两者才能保持对齐。
+    //   若缩放只加在 Canvas 上，地块会留在原地（错位）。
     const tilt = this.is3D ? 'rotateX(45deg) ' : '';
     // 3D 模式下额外给一点 Z 位移，避免棋盘「贴脸」
     const z = this.is3D ? '-40px' : '0px';
+    const scale = this.zoom > 1.001 ? `scale(${this.zoom.toFixed(3)}) ` : '';
     this.pan.style.transform =
-      `${tilt}translate3d(${this.x.toFixed(2)}px, ${this.y.toFixed(2)}px, ${z})`;
+      `${scale}${tilt}translate3d(${this.x.toFixed(2)}px, ${this.y.toFixed(2)}px, ${z})`;
   }
 }

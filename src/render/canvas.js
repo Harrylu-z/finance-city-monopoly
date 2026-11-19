@@ -19,6 +19,7 @@ import {
 import { PLAYER_COLORS, PALETTE, GROUP_COLORS, REGULATOR_COLOR } from '../core/palette.js';
 import { getAvatarSprites } from '../art/avatars.js';
 import { CharEntityRenderer } from './charEntity.js';
+import { CareerPieceRenderer } from './careerPiece.js';
 
 const GROUP_INDEX = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
@@ -169,6 +170,10 @@ export class BoardRenderer {
     // ⚠ 独立成对象而非散落在 drawTokens 里，是因为它需要跨帧缓存
     //   （渐变对象每帧重建会拖慢渲染）。
     this.charEntities = new CharEntityRenderer();
+    // 职业棋子渲染器 —— 立体台座 + 职业轮廓杆身 + 职业头饰 + 徽记
+    // ⚠ 这是棋盘角色的**主视觉**（真正的「棋子」），
+    //   charEntities 只作为底层的体积补充。
+    this.careerPieces = new CareerPieceRenderer();
   }
 
   /**
@@ -884,6 +889,7 @@ export class BoardRenderer {
 
     // ⚠ 实体计数归零 —— 供自检断言「角色实体确实被绘制」
     this.charEntities.entityCount = 0;
+    this.careerPieces.resetCount();
     this.lastTokenCount = 0;
 
     for (const [cellIndex, players] of byCell) {
@@ -925,33 +931,30 @@ export class BoardRenderer {
         const isCurrent = state.currentPlayerIndex === p.index;
 
         // ==========================================================
-        // 角色实体（2.5D）—— 台座 + 柱体 + 球头
+        // 移动动画参数（三个绘制层共用）
         // ==========================================================
         //
-        // ⚠ 为什么「实体」画在立绘**下面**：
-        //   实体的职责是**体积**（底座 / 躯干 / 头部），
-        //   而职业立绘表达的是**人物细节**（脸 / 服饰）。
-        //   两者叠加：实体提供「站在台座上的小人」的体积感，
-        //   立绘浮在躯干之上，提供身份辨识度。
-        //
-        // ⚠ 实体尺寸与立绘尺寸的换算：
-        //   实体的「脚底」= 立绘的脚底（baseCy），
-        //   实体的身高按 s 缩放，与立绘的 40px 高形成比例关系。
-        //   实体比立绘**矮**（躯干 + 头 ≈ 立绘身高的 60%），
-        //   这样立绘的头部会探出实体之上，形成层次而非重叠。
-        //
-        // ⚠ squash 压缩：落地时整个实体一起压扁 —— 不只是立绘。
-        //   只压立绘会让「立绘浮在半空」，实体不压则脚底会离地。
+        // ⚠ squash 压缩：落地时**整个**棋子一起压扁 —— 不只是立绘。
+        //   只压立绘会让「立绘浮在半空」，棋子不压则脚底会离地。
         const squash = (anim && anim.squash) ? anim.squash : null;
         // 弹跳位移（腾空时向上）
         const bob = (anim && anim.bob) ? anim.bob : 0;
         // 朝向微倾（-1~1，左/右）
         const lean = (anim && anim.lean) ? anim.lean : 0;
 
+        // ==========================================================
+        // ① 通用实体（接地阴影 + 球头体积）—— **垫在最底层**
+        // ==========================================================
+        //
+        // ⚠ 为什么还要保留它：
+        //   旧版通用实体提供**接地阴影**与额外的球体体积，
+        //   叠在棋子之下能让棋子在浅色地块上更「立得住」，
+        //   且不破坏新棋子的剪影（它的轮廓被棋子完全覆盖）。
+        //   它现在只是「地基」，不再是主角。
         this.charEntities.draw(ctx, {
           cx: baseCx,
           cy: baseCy,
-          s,
+          s: s * 0.86,
           color: pc.main,
           colorLt: pc.lt,
           colorDk: pc.dk,
@@ -964,33 +967,84 @@ export class BoardRenderer {
           bob,
           squash,
         });
+
+        // ==========================================================
+        // ② 职业棋子（2.5D / 3D 立体台座）—— **主视觉**
+        // ==========================================================
+        //
+        // ⚠ 为什么「棋子」是主视觉、立绘是配角：
+        //   用户反馈「角色棋子没有建模」—— 此前棋盘上的「棋子」其实
+        //   只是一张平贴立绘，没有任何体积。
+        //   现在改成**真正的棋子**：台座 + 杆身 + 头饰 + 职业徽记，
+        //   每个职业有**独立的旋转体轮廓**与**独立的头饰**，
+        //   剪影层面就能分辨（这是「棋子」最经典的辨识方式）。
+        //
+        // ⚠ 棋子画在立绘**下面**，立绘作为「徽章」贴在杆身上方 ——
+        //   立绘提供脸 / 服饰细节，棋子提供体积与剪影。
+        //   两者比例经过压算：立绘缩到 0.62 并下移，
+        //   让立绘的头部探出棋子头顶，形成「人站在棋子上」的层次。
+
+        // hover / 选中态 —— 由 hoverCell 决定
+        const isHovered = this.hoverCell === cellIndex;
+
+        this.careerPieces.draw(ctx, {
+          cx: baseCx,
+          cy: baseCy,
+          s,
+          color: pc.main,
+          colorLt: pc.lt,
+          colorDk: pc.dk,
+          pieceIndex: p.avatar,
+          isCurrent,
+          isAI: !!p.isAI,
+          selected: false,
+          hovered: isHovered,
+          time: this.time,
+          flat: this.is3D,
+          lean,
+          bob,
+          squash,
+        });
         this.lastTokenCount++;
 
-        // ---- 立绘叠加（浮在实体之上）----
+        // ==========================================================
+        // ③ 立绘 —— 作为「棋子上的小人」叠加（缩放 + 下移）
+        // ==========================================================
+        //
+        // ⚠ 立绘缩放系数 0.62：让棋子（杆身 + 头饰）成为视觉主体，
+        //   立绘只提供「这是谁」的面部信息。
+        const ps = s * 0.62;                 // 立绘缩放
+        const pw = sw * ps;
+        const ph = sh * ps;
+        // 立绘底边对齐棋子台面（略高于地面，避免被台座吞掉脚）
+        const pFootY = baseCy - 4.2 * s;
+        const px = baseCx - pw / 2;
+        const py = pFootY - ph;
+
         if (squash) {
           const sq = squash;
           const outlined = this.outlinedSprite(sprite, pc.main);
           const pad = 4;
           ctx.save();
-          ctx.translate(Math.round(tx + halfW * s), Math.round(ty + sh * s));
+          ctx.translate(Math.round(baseCx), Math.round(pFootY));
           ctx.scale(sq.sx, sq.sy);
           ctx.drawImage(
             outlined,
-            -(halfW + pad) * s,
-            -(sh + pad) * s,
-            (sw + pad * 2) * s,
-            (sh + pad * 2) * s
+            -(halfW + pad) * ps,
+            -(sh + pad) * ps,
+            (sw + pad * 2) * ps,
+            (sh + pad * 2) * ps
           );
           ctx.restore();
         } else {
-          this.drawTokenOutline(ctx, sprite, tx, ty, s, pc.main);
+          this.drawTokenOutline(ctx, sprite, px, py, ps, pc.main);
         }
 
         // 名牌 —— 站在格子上的**所有玩家**都挂名牌；当前回合玩家额外有箭头 + 金色高亮
         if (!anim) {
           const isCur = state.currentPlayerIndex === p.index;
-          if (isCur) this.drawTurnArrow(ctx, tx + halfW * s, ty - 7);
-          this.drawTokenNameTag(ctx, tx + halfW * s, ty - 10, p.name, pc.main, isCur);
+          if (isCur) this.drawTurnArrow(ctx, baseCx, py - 6);
+          this.drawTokenNameTag(ctx, baseCx, py - 9, p.name, pc.main, isCur);
         }
       });
     }

@@ -36,7 +36,8 @@ import {
   showEventCardDialog, showGameOverDialog,
   showLoanDialog, showBondDialog, showBondResultDialog, showTrapDialog, showBuffPanel,
   showPlayerDetailDialog, showRentDialog, openModal, closeModal,
-  showMarginCallDialog,
+  showMarginCallDialog, showSettingsDialog,
+  shouldShowRentDialog, resetRentDialogMute,
 } from './dialogs.js';
 import { showTutorial } from './tutorial.js';
 import { openShareDialog, parseShareUrl } from './share.js';
@@ -129,6 +130,9 @@ class Game {
     this.busy = false;
     this.config = null;
     this.effectsEnabled = true;
+    // P1-32：棋盘尺寸 dirty 位 + 节流时间戳
+    this._boardSizeDirty = true;
+    this._lastSizeCheck = 0;
   }
 
   init() {
@@ -148,6 +152,8 @@ class Game {
     // 因此把重算推迟到下一帧执行，避开同批次布局，循环即可收敛。
     if (typeof ResizeObserver !== 'undefined' && this.el['board-wrap']) {
       this.boardObserver = new ResizeObserver(() => {
+        // P1-32：置 dirty 位 —— 逐帧兜底检查时才知道要去读 DOM 尺寸
+        this.markBoardSizeDirty();
         if (this._resizePending) return;
         this._resizePending = true;
         requestAnimationFrame(() => {
@@ -194,7 +200,9 @@ class Game {
       'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-loan',
       'tab-panel-bond', 'tab-panel-net',
       // 右上：回合徽章 + 按钮
-      'hud-round', 'hud-market', 'btn-rank',
+      'hud-round', 'hud-market', 'btn-rank', 'btn-settings',
+      // 顶部全宽回合归属条（P1-1）
+      'turn-bar', 'turn-bar-track', 'turn-bar-owner', 'turn-bar-name',
       // 资产排行弹窗底部的「菜单」分组（承接原 #btn-menu 的功能）
       'btn-menu-share', 'btn-menu-assets', 'btn-menu-metrics', 'btn-menu-sound',
       'btn-menu-anim', 'btn-menu-theme', 'btn-menu-selftest', 'btn-menu-setup',
@@ -421,6 +429,10 @@ class Game {
   beginGame(config) {
     clearInterval(this.setupBgTimer);
 
+    // ⚠ P0-18：「本局不再提示交租窗」是**内存态**的临时偏好，
+    //   每开一局都要重置 —— 否则上一局勾选后，之后所有局都不弹交租窗。
+    resetRentDialogMute();
+
     const rng = makeRng(config.seed);
     const personalities = assignPersonalities(rng, config.aiCount);
     // AI 的职业同样按 seed 稳定分配（与性格相互独立）
@@ -622,6 +634,10 @@ class Game {
     this.el['btn-rank-close'].addEventListener('click', () => this.closeRankModal());
     this.el['rank-backdrop'].addEventListener('click', () => this.closeRankModal());
 
+    // ===== 设置入口（P1-2）：右上角齿轮 =====
+    // 独立弹窗，**不再**要求先打开排行弹窗才能改设置。
+    this.el['btn-settings'].addEventListener('click', () => this.openSettingsDialog());
+
     this.el['btn-selftest-back'].addEventListener('click', () => {
       this.el['selftest-screen'].hidden = true;
       this.el['setup-screen'].hidden = false;
@@ -806,13 +822,31 @@ class Game {
     wrap.addEventListener('pointerleave', release);
   }
 
-  /** 设置棋盘缩放倍数（移动端双指缩放） */
+  /**
+   * 设置棋盘缩放倍数（移动端双指缩放）。
+   *
+   * ================== P0-25：为什么不能再改 Canvas 的 transform ==================
+   * 旧实现只给 `#board-canvas` 加 `scale()` —— 而棋盘其实是**两层**：
+   *   · Canvas（`#board-canvas`）—— 棋子 / 特效 / 底板
+   *   · DOM 地块（`#board-tiles`）—— 34 个地块卡面
+   * 只缩放 Canvas 会让地块层原地不动，表现为**缩放后地块与棋盘错位**。
+   *
+   * 现在改为作用到 `#board-pan`（两层的共同祖先）——
+   * 由 Stage3D 把缩放与平移、倾斜合并进同一个 transform，
+   * 保证 Canvas 与地块层**同源同缩放**，永远对齐。
+   */
   setBoardZoom(z) {
-    this.boardZoom = z;
+    const next = Math.max(1, Math.min(2.2, Number(z) || 1));
+    this.boardZoom = next;
+    if (this.stage3d && typeof this.stage3d.setZoom === 'function') {
+      this.stage3d.setZoom(next);
+      return;
+    }
+    // 兜底：Stage3D 不可用时至少保证 Canvas 自身缩放生效
     const canvas = this.el['board-canvas'];
     if (!canvas) return;
     canvas.style.transformOrigin = 'center center';
-    canvas.style.transform = z > 1.01 ? `scale(${z.toFixed(3)})` : '';
+    canvas.style.transform = next > 1.01 ? `scale(${next.toFixed(3)})` : '';
   }
 
   /** 打开资产排行弹窗 */
@@ -828,6 +862,50 @@ class Game {
 
   closeRankModal() {
     this.el['rank-root'].hidden = true;
+  }
+
+  /**
+   * 打开设置弹窗（P1-2）。
+   *
+   * 独立入口 —— 右上角齿轮直接开设置，不必先打开排行弹窗。
+   * 排行弹窗底部的旧菜单项**保留兼容**（仍可点，状态同源）。
+   */
+  openSettingsDialog() {
+    const light = document.body.classList.contains('theme-light');
+    showSettingsDialog({
+      soundOn: this.sfx.enabled,
+      animOn: this.effectsEnabled,
+      lightOn: light,
+      onSound: (on) => {
+        this.sfx.setEnabled(on);
+        // 同步排行弹窗里的旧开关文案（兼容入口）
+        const b = this.el['btn-menu-sound'];
+        if (b) b.textContent = `音效：${on ? '开' : '关'}`;
+        this.toast(on ? '音效开启' : '音效关闭');
+      },
+      onAnim: (on) => {
+        this.effectsEnabled = on;
+        this.effects.enabled = on;
+        document.body.classList.toggle('no-anim', !on);
+        const b = this.el['btn-menu-anim'];
+        if (b) b.textContent = `特效：${on ? '开' : '关'}`;
+        this.toast(on ? '特效开启' : '特效关闭（保帧率）');
+      },
+      onTheme: (on) => {
+        document.body.classList.toggle('theme-light', on);
+        const b = this.el['btn-menu-theme'];
+        if (b) b.textContent = `主题：${on ? '亮色' : '暗色'}`;
+        this.toast(on ? '亮色主题' : '暗色主题');
+      },
+      onAssets: () => this.handleShowAssets(),
+      onMetrics: () => {
+        const me = this.humanPlayer();
+        if (me) this.openPlayerDetail(me, null);
+      },
+      onShare: () => this.handleShare(),
+      onSelfTest: () => this.runSelfTest(),
+      onBackToSetup: () => this.backToSetup(),
+    });
   }
 
   /**
@@ -1380,7 +1458,16 @@ class Game {
           this.shakeScreen();
           this.floatText(`-￥${r.rent}`, c, PALETTE.redLt);
           // 踩到他人机构 —— 弹出交租确认窗（AI 不弹，避免打断观战节奏）
+          //
+          // ⚠ P0-18：小额（< ￥200）**不弹窗**，只飘字 + toast。
+          //   连续几步都在交租时，反复弹窗会把节奏完全打断。
+          //   大额仍弹窗 —— 那是需要玩家确认的重要决策。
           if (!player.isAI) {
+            if (!shouldShowRentDialog(r.rent)) {
+              // 免打扰路径：只提示，不打断
+              this.toast(`交租 ￥${r.rent} 给 ${r.ownerName}`, 't-bad');
+              break;
+            }
             this.busy = false;
             showRentDialog(player, {
               cellName: r.cell.name,
@@ -2147,7 +2234,10 @@ class Game {
 
     // 兜底尺寸同步：若棋盘容器尺寸与渲染器记录不一致（例如媒体查询
     // 刚刚切换、或字体加载导致行高变化），立即重算。
-    // clientWidth/clientHeight 是整数且读取代价极低，逐帧检查无压力。
+    //
+    // ⚠ P1-32：读取 clientWidth/Height 会触发**强制同步布局**，
+    //   每帧读就是每秒 60 次强制回流 —— 已改为 dirty 位 + 250ms 节流，
+    //   未标记脏时完全不碰布局属性（详见 syncBoardSize 注释）。
     this.syncBoardSize();
 
     // 背景层绘制到独立的 #stage-bg（覆盖整个 stage）
@@ -2258,16 +2348,46 @@ class Game {
    * 逐帧兜底：棋盘容器尺寸与渲染器记录不一致时触发重算。
    * 覆盖「媒体查询刚切换」「字体加载后行高变化」「面板增减」等
    * ResizeObserver 可能漏掉的时机。
+   *
+   * ================== P1-32：节流 250ms + dirty 位 ==================
+   *
+   * 旧实现**每帧**都读 `clientWidth/clientHeight` ——
+   * 这会触发浏览器的**强制同步布局**（layout thrashing）：
+   * 读尺寸 → 写样式 → 下一帧再读尺寸 → 再强制回流。
+   * 在 60fps 下就是每秒 60 次强制回流，是掉帧的隐形杀手。
+   *
+   * 优化：
+   *   ① 用 `ResizeObserver` 置 dirty 位 —— 尺寸真的变了才标记；
+   *   ② 读取尺寸的频率节流到 250ms 一次；
+   *   ③ 没 dirty 时**完全不读 DOM 尺寸**（零布局开销）。
    */
-  syncBoardSize() {
+  syncBoardSize(force = false) {
     const wrap = this.el['board-wrap'];
     if (!wrap) return;
+
+    // 未标记脏 且 未到节流窗口 → 直接跳过（不读任何布局属性）
+    const now = performance.now();
+    if (!force && !this._boardSizeDirty && (now - (this._lastSizeCheck || 0)) < 250) {
+      return;
+    }
+    this._lastSizeCheck = now;
+    this._boardSizeDirty = false;
+
     const bw = Math.floor(wrap.clientWidth);
     const bh = Math.floor(wrap.clientHeight);
     if (bw < 80 || bh < 80) return;
     if (bw !== this.renderer.w || bh !== this.renderer.h) {
       this.onResize();
     }
+  }
+
+  /**
+   * 标记棋盘尺寸为「脏」—— 由 ResizeObserver 调用。
+   *
+   * 置脏后下一次 `syncBoardSize()` 才会真正去读 DOM 尺寸。
+   */
+  markBoardSizeDirty() {
+    this._boardSizeDirty = true;
   }
 
   /** 让背景 canvas 的内部像素尺寸与 CSS 尺寸一致 */
@@ -2349,6 +2469,9 @@ class Game {
     mk.textContent = this.marketName(state.market);
     mk.className = 'hud-market ' + (state.market === 'bull' ? 'is-bull' : state.market === 'bear' ? 'is-bear' : '');
 
+    // ===== 顶部全宽回合归属条（P1-1）：谁在行动 =====
+    this.renderTurnBar(state);
+
     // ===== 底部：主行动 + 常用操作按钮 =====
     const isPlayer = p && !p.isAI && !p.bankrupt;
     const canRoll = isPlayer && !this.busy && state.phase === 'await-roll';
@@ -2383,6 +2506,69 @@ class Game {
     if (!state) return;
     clearLog(el);
     for (const entry of state.log.slice(-60)) appendLog(el, entry);
+  }
+
+  /**
+   * 顶部全宽回合归属条（P1-1）。
+   *
+   * ================== 为什么需要它 ==================
+   * 左侧「当前玩家卡」固定显示**人类玩家**（我的资产 / 我的机构），
+   * 它**不会**随 AI 回合切换 —— 所以「现在是谁在行动」这件事
+   * 在屏幕上**没有直接答案**。玩家只能盯着棋盘上的箭头猜，
+   * AI 一多就彻底分不清谁在动。
+   *
+   * 这条色带按玩家分段（每段 = 一个玩家，底色 = 玩家主色，
+   * 与棋盘棋子 / HUD 头像 / 扑克座位完全一致），
+   * 当前行动者那段高亮 + 呼吸光晕，并在下方标出名字。
+   *
+   * ⚠ DOM 只在**玩家集合变化**时重建；每帧只改 class / 颜色，
+   *   避免逐帧操作 DOM 造成布局抖动（性能）。
+   */
+  renderTurnBar(state) {
+    const track = this.el['turn-bar-track'];
+    const owner = this.el['turn-bar-owner'];
+    const nameEl = this.el['turn-bar-name'];
+    if (!track || !owner) return;
+
+    const players = state.players || [];
+    // ---- 结构性变化才重建 DOM：玩家数量 / id 列表变了 ----
+    const sig = players.map((p) => `${p.id}:${p.colorIndex}`).join(',');
+    if (this._turnBarSig !== sig) {
+      this._turnBarSig = sig;
+      track.innerHTML = '';
+      this._turnBarSegs = players.map((p) => {
+        const seg = document.createElement('div');
+        seg.className = 'turn-bar-seg';
+        seg.dataset.pid = String(p.id);
+        const pc = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
+        seg.style.setProperty('--seg-color', pc.main);
+        track.appendChild(seg);
+        return seg;
+      });
+    }
+
+    // ---- 逐帧只更新「谁在行动」 ----
+    const cur = currentPlayer(state);
+    const curId = cur ? cur.id : -1;
+    const segs = this._turnBarSegs || [];
+    for (let i = 0; i < segs.length; i++) {
+      const p = players[i];
+      const seg = segs[i];
+      const isActive = p && p.id === curId && state.phase !== 'gameover';
+      seg.classList.toggle('is-active', !!isActive);
+      seg.classList.toggle('is-out', !!(p && p.bankrupt));
+    }
+
+    if (cur) {
+      const pc = PLAYER_COLORS[cur.colorIndex % PLAYER_COLORS.length];
+      nameEl.textContent = cur.isAI
+        ? `${cur.name}（AI）行动中`
+        : `${cur.name} 行动中`;
+      owner.style.setProperty('--owner-color', pc.main);
+    } else {
+      nameEl.textContent = '—';
+      owner.style.setProperty('--owner-color', 'var(--c-dim)');
+    }
   }
 
   /* ==================== 特效辅助 ==================== */

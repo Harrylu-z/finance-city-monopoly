@@ -47,6 +47,9 @@ export class Background {
     this.t = 0;
     this.phaseIndex = 3;
     this.taxiSpeed = 0.22;
+    /** P1-32：静态层离屏缓存（天空 / 太阳 / 钟楼 / 地面 / 夜色压暗） */
+    this._static = null;
+    this._staticKey = '';
     this.resize(w, h);
   }
 
@@ -55,10 +58,19 @@ export class Background {
     this.h = Math.max(1, h);
     this.buildLayers();
     this.initKline();
+    // 尺寸变了 → 静态缓存失效
+    this._static = null;
+    this._staticKey = '';
   }
 
   setPhase(index) {
-    this.phaseIndex = ((index % DAY_PHASES.length) + DAY_PHASES.length) % DAY_PHASES.length;
+    const next = ((index % DAY_PHASES.length) + DAY_PHASES.length) % DAY_PHASES.length;
+    if (next !== this.phaseIndex) {
+      this.phaseIndex = next;
+      // 时段变了 → 静态层配色失效，需重烘焙
+      this._static = null;
+      this._staticKey = '';
+    }
   }
 
   get phase() {
@@ -211,8 +223,34 @@ export class Background {
     return Math.floor(this.H * this.groundHeightRatio);
   }
 
-  draw(ctx, elapsed) {
-    this.t = elapsed;
+  /**
+   * ================== P1-32：静态层离屏缓存 ==================
+   *
+   * 旧实现每帧重绘**全部**背景元素（天空渐变 / 太阳光晕 / 钟楼 / 地面），
+   * 其中包含 4~6 次渐变对象分配 + 数十次路径填充 —— 这是纯浪费，
+   * 因为这些元素**完全不随时间变化**（只随尺寸 / 时段变化）。
+   *
+   * 优化：把「静态部分」烘焙到一张离屏 canvas，缓存 key = `w|h|phase`，
+   *       每帧只 `drawImage` 一次；「动态部分」（星星闪烁 / 云 / 视差 /
+   *       霓虹 / 信号灯 / 出租车 / K 线）仍然实时绘制。
+   */
+  buildStaticLayer() {
+    const key = `${this.w}|${this.h}|${this.phaseIndex}`;
+    if (this._static && this._staticKey === key) return this._static;
+
+    const cv = document.createElement('canvas');
+    cv.width = this.w;
+    cv.height = this.h;
+    const ctx = cv.getContext('2d');
+    this.paintStatic(ctx);
+
+    this._static = cv;
+    this._staticKey = key;
+    return cv;
+  }
+
+  /** 绘制「静态部分」：天空 / 太阳月亮 / 钟楼 / 地面 / 夜色压暗 */
+  paintStatic(ctx) {
     const { W, H } = this;
     const ph = this.phase;
 
@@ -224,26 +262,6 @@ export class Background {
     sky.addColorStop(1, ph.skyTop);
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, this.w, this.h);
-
-    // ===== ② 星星（柔和光点 + 弥散晕）=====
-    if (ph.id === 'night') {
-      let s = 999;
-      const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
-      for (let i = 0; i < 60; i++) {
-        const x = rnd() * W;
-        const y = rnd() * H * 0.45;
-        const twinkle = Math.floor(elapsed / 700 + i) % 3 === 0;
-        const r = twinkle ? 2.0 : 1.3;
-        const hg = ctx.createRadialGradient(x, y, 0, x, y, r * 4.5);
-        hg.addColorStop(0, `rgba(248,250,252,${twinkle ? 0.95 : 0.5})`);
-        hg.addColorStop(0.35, `rgba(248,250,252,${twinkle ? 0.35 : 0.18})`);
-        hg.addColorStop(1, 'rgba(248,250,252,0)');
-        ctx.fillStyle = hg;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 4.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
 
     // ===== ③ 太阳 / 月亮：柔和光晕（纯径向渐变，无硬边）=====
     const sunX = W * 0.78;
@@ -277,6 +295,52 @@ export class Background {
       ctx.fill();
     }
 
+    // ===== ⑥ 钟楼（轮廓化扁平剪影）=====
+    const tw = 62;
+    const th = 86;
+    const tx = W * 0.10;
+    const ty = H - this.groundHeight() - th;
+    this.drawExchangeTower(ctx, tx, ty, tw, th, ph);
+
+    // ===== ⑦ 地面 =====
+    ctx.drawImage(this.ground, 0, H - this.groundHeight());
+
+    // ===== ⑧ 夜色压暗（极淡）=====
+    if (ph.dim > 0) {
+      ctx.fillStyle = `rgba(15,23,42,${ph.dim})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+  }
+
+  draw(ctx, elapsed) {
+    this.t = elapsed;
+    const { W, H } = this;
+    const ph = this.phase;
+
+    // ===== 静态层：一次 drawImage 搞定天空 / 太阳 / 钟楼 / 地面 / 压暗 =====
+    const staticCv = this.buildStaticLayer();
+    ctx.drawImage(staticCv, 0, 0);
+
+    // ===== ② 星星（柔和光点 + 弥散晕）=====
+    if (ph.id === 'night') {
+      let s = 999;
+      const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+      for (let i = 0; i < 60; i++) {
+        const x = rnd() * W;
+        const y = rnd() * H * 0.45;
+        const twinkle = Math.floor(elapsed / 700 + i) % 3 === 0;
+        const r = twinkle ? 2.0 : 1.3;
+        const hg = ctx.createRadialGradient(x, y, 0, x, y, r * 4.5);
+        hg.addColorStop(0, `rgba(248,250,252,${twinkle ? 0.95 : 0.5})`);
+        hg.addColorStop(0.35, `rgba(248,250,252,${twinkle ? 0.35 : 0.18})`);
+        hg.addColorStop(1, 'rgba(248,250,252,0)');
+        ctx.fillStyle = hg;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     // ===== ④ 云：**柔边椭圆**（径向渐变，边缘自然消散）=====
     this.drawClouds(ctx, elapsed, 0.5, ph.cloud, 6);
     this.drawClouds(ctx, elapsed, 1.0, ph.cloud, 4);
@@ -292,25 +356,9 @@ export class Background {
 
     if (ph.neon > 0.05) this.drawNeonSigns(ctx, elapsed);
 
-    // ===== ⑥ 钟楼（轮廓化扁平剪影）=====
-    const tw = 62;
-    const th = 86;
-    const tx = W * 0.10;
-    const ty = H - this.groundHeight() - th;
-    this.drawExchangeTower(ctx, tx, ty, tw, th, ph);
-
-    // ===== ⑦ 地面 =====
-    ctx.drawImage(this.ground, 0, H - this.groundHeight());
-
     this.drawSignals(ctx, elapsed);
     this.drawTaxi(ctx, elapsed);
     this.drawTickerBand(ctx, elapsed);
-
-    // ===== ⑧ 夜色压暗（极淡）=====
-    if (ph.dim > 0) {
-      ctx.fillStyle = `rgba(15,23,42,${ph.dim})`;
-      ctx.fillRect(0, 0, this.w, this.h);
-    }
   }
 
   /** 云 —— 用径向渐变画柔边椭圆（不是硬边 path） */
