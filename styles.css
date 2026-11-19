@@ -695,12 +695,12 @@ canvas, .pixel-panel, .pixel-btn, img {
 }
 /* 播报列表常驻展开：原先的折叠切换按钮（.feed-toggle / .feed-latest）
    已删除，#log-panel 不再需要 hidden 状态。
-   按钮原本占掉 30px，这部分高度让给列表 —— 上限从 340px 提到 370px，
-   让播报多显示几条、也不留空白。 */
+   高度必须引用竖栏预留的 --feed-h（.hud-left 定义、此处继承）——
+   之前各写各的（46vh/370px vs 215px），播报一多就反向盖住 Tab 面板底部。 */
 .log-panel {
   display: flex;
   flex-direction: column;
-  max-height: min(46vh, 370px);
+  max-height: var(--feed-h);
   background: rgba(255,255,255,.94);
 }
 .log-list {

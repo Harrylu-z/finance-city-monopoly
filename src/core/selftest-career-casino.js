@@ -627,17 +627,19 @@ export function runCasinoChecks() {
     return '12 局随机对局 · 全桌现金净额之和恒为 0';
   });
 
-  check(results, '结算守恒：资产折让净额之和为 0（不重复记账）', () => {
+  check(results, '结算守恒：财富净额之和为 0（现金+资产让渡口径）', () => {
     // 回归用例：曾经出现过「下注记一次 + 结算再记一次」导致资产折让翻倍。
+    // 资产筹码派付时超额部分折现金（赢家现金 ↔ 输家让渡等额转移），
+    // 所以现金与资产**各自**不要求守恒，两者之和（财富）必须恒为 0。
     for (let i = 0; i < 12; i++) {
       const state = makeCasinoState();
       // 给每人加资产，制造资产额度下注场景
       for (const p of state.players) {
         p.institutions.push({ cellIndex: 4, level: 3, mortgaged: false, mortgageAmount: 0 });
       }
-      const lockBefore = state.players.reduce((s, p) => s + (p.pokerAssetLock || 0), 0);
       const game = startCasinoGame(state);
       assert(game, '赌场应能开局');
+      const wealthBefore = state.players.reduce((s, p) => s + p.cash + totalAssets(p, state), 0);
       let guard = 0;
       while (!game.over && guard++ < 300) {
         const idx = currentActor(game);
@@ -648,14 +650,20 @@ export function runCasinoChecks() {
         if (!r.ok) applyAction(game, idx, { type: 'fold' });
       }
       const out = finishCasinoGame(state, game);
+      const sumCashNet = out.deltas.reduce((s, d) => s + (d.cashDelta || 0), 0);
       const sumAssetNet = out.deltas.reduce((s, d) => s + (d.assetDelta || 0), 0);
-      assert(sumAssetNet === 0, `第 ${i + 1} 局资产净额之和 ${sumAssetNet}（应为 0）`);
+      assert(sumCashNet + sumAssetNet === 0,
+        `第 ${i + 1} 局财富净额之和 ${sumCashNet + sumAssetNet}（应为 0；现金 ${sumCashNet} / 资产 ${sumAssetNet}）`);
+      // 全桌总财富（现金 + 总资产 − 让渡）结算前后必须相等 —— 防止价值蒸发
+      const wealthAfter = state.players.reduce((s, p) => s + p.cash + totalAssets(p, state), 0);
+      assert(wealthAfter === wealthBefore,
+        `第 ${i + 1} 局总财富蒸发：结算前 ￥${wealthBefore} → 结算后 ￥${wealthAfter}`);
       // 每人的资产折让不得为负
       for (const p of state.players) {
         assert((p.pokerAssetLock || 0) >= 0, `${p.name} 资产折让为负 ${p.pokerAssetLock}`);
       }
     }
-    return '12 局含资产下注 · 资产折让净额之和恒为 0 · 无重复记账';
+    return '12 局含资产下注 · 财富净额之和恒为 0 · 无重复记账';
   });
 
   check(results, '赢家赢回的资产折让被正确解除', () => {

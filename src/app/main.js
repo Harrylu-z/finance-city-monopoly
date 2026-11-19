@@ -1287,11 +1287,21 @@ class Game {
       this.handleSettlement(player, results);
     };
 
-    showWheelDialog(wheel, {
+    const wheelModal = showWheelDialog(wheel, {
       autoSpin: isAI,
       readonly: isAI,
       playerName: player.name,
       onSpin: (r) => {
+        if (isAI) {
+          // AI 只读转盘：让结果停留片刻再自动收起并继续回合，
+          // 之前弹窗滞留在屏幕上、游戏在背后悄悄继续。
+          delay(1400, () => {
+            doSettle(r.outcomeId, r.outcome.name);
+            // modal.close 是 openModal 的纯关闭，不会再触发下方 onClose 兜底
+            if (wheelModal.modal) wheelModal.modal.close();
+          });
+          return;
+        }
         // 每次转动都**立即真实结算** —— 玩家可以接着再转
         doSettle(r.outcomeId, r.outcome.name);
       },
@@ -1309,7 +1319,9 @@ class Game {
           return;
         }
         const picked = outs[state.rng.int(0, outs.length - 1)];
-        doSettle(picked, picked);
+        // 兜底也必须传 outcome 的 id / name —— 之前把整个对象当 id 传入，
+        // 规则层匹配不到效果（该路径在 onClose 修活前是死代码，从未暴露）
+        doSettle(picked.id, picked.name);
       },
     });
   }
@@ -1542,7 +1554,10 @@ class Game {
           break;
         }
         case 'trap-card': {
-          log(state, 'bad', `${player.name} 触发监管陷阱「${r.card.title}」`, '监管');
+          // 必须真实应用监管卡效果（罚金 / 强制披露 / 自我租金倍率）——
+          // 之前只记日志不做结算，「监管抽查」形同虚设。
+          // applyTrapCard 内部含减免判定与 log，这里不重复记日志。
+          applyTrapCard(state, player, r.card);
           this.sfx.deny();
           const c = this.cellCenter(player.position);
           this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.red, PALETTE.redLt, FX.amber], speed: 2.4 });

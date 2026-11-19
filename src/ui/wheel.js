@@ -260,12 +260,29 @@ export function showWheelDialog(wheel, opts = {}) {
     body.appendChild(note);
   }
 
+  // 关闭回调：无论走「完成并离开」按钮还是点遮罩，都必须通知 main.js，
+  // 由它决定「已转过→继续回合 / 没转过→兜底随机」。
+  // 之前 onClose 只挂在返回值 close() 上 —— openModal 根本收不到，
+  // 玩家没转就关窗时 busy 永久为 true，回合卡死。
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    if (opts.onClose) opts.onClose();
+  };
+
   const modal = openModal({
     title: wheel.label || '命运转盘',
     body,
-    // 只读（AI）模式**不可**点击遮罩关闭 —— 必须等 AI 转完
-    dismissible: !readonly,
-    actions: [{ text: readonly ? '关闭' : '完成并离开', primary: !readonly }],
+    // 只读（AI）模式**不可**点击遮罩关闭 —— 必须等 AI 转完；
+    // 转动动画期间同样禁止关闭 —— 防止关窗后 onSpin 迟到触发二次结算
+    get dismissible() { return !readonly && !spinning; },
+    onClose: finish,
+    actions: [{
+      text: readonly ? '关闭' : '完成并离开',
+      primary: !readonly,
+      onClick: finish,   // 返回非 false → openModal 随后自动 closeModal
+    }],
   });
 
   // 暴露给自动化测试
