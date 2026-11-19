@@ -104,6 +104,9 @@ export function decide(state, player, decision, ctx = {}) {
   if (decision === 'redeem') {
     return decideRedeem(state, player, p, diff);
   }
+  if (decision === 'takeover') {
+    return decideTakeover(state, player, p, diff, ctx.cellIndex, ctx.price);
+  }
   return { action: 'idle', reason: '观望' };
 }
 
@@ -278,6 +281,44 @@ function decideRedeem(state, player, p, diff) {
   }
   const c = BOARD_CELLS[pick.cellIndex];
   return { action: 'redeem', reason: `赎回${c.name}，恢复管理费收入`, cellIndex: pick.cellIndex, cost };
+}
+
+/** 强制收购决策 —— 踩到他人已质押地块时，是否按 2 倍价强收 */
+function decideTakeover(state, player, p, diff, cellIndex, price) {
+  const rng = state.rng;
+  const cell = BOARD_CELLS[cellIndex];
+  if (!cell) return { action: 'pass', reason: '目标地块不存在' };
+  // 从持有人身上取真实等级，价格按「当前等级买入价 × 2」核对
+  let level = 0;
+  for (const o of (state.players || [])) {
+    const inst = (o.institutions || []).find((i) => i.cellIndex === cellIndex);
+    if (inst && inst.mortgaged) { level = inst.level; break; }
+  }
+  const expect = Math.round((cell.price[level] ?? cell.price[0] ?? 0) * (CONFIG.forcedTakeoverMult ?? 2));
+  const finalPrice = Number.isFinite(price) ? price : expect;
+  if (player.cash < finalPrice) {
+    return { action: 'pass', reason: `现金不足，${cell.name}强收还差 ￥${finalPrice - player.cash}` };
+  }
+  // 强收溢价高（2 倍），只在欲望足够或战略价值高时出手
+  let desire = p.greed * diff.greed * (1 + (rng.next() * 2 - 1) * diff.noise);
+  if (p.preferGroups.includes(cell.group)) desire *= 1.20;
+  if (p.preferGroups.length && !p.preferGroups.includes(cell.group)) desire *= 0.86;
+  if (p.concentration) {
+    const sameGroup = player.institutions.some((i) => BOARD_CELLS[i.cellIndex].group === cell.group);
+    if (sameGroup) desire *= 1 + p.concentration * 0.6;
+  }
+  if (cell.landmark) desire *= 1.2;
+  // 2 倍溢价 → 门槛高于普通收购
+  const effTier = Math.max(0, (cell.star || 1) - 1);
+  desire /= Math.max(0.6, 1 + effTier * 0.30);
+  desire *= 0.85;
+  const reserve = Math.floor(player.cash * p.cashReserve);
+  if (finalPrice > player.cash - reserve) desire *= 0.35;
+  const threshold = 0.85 - 0.35 * diff.accuracy;
+  if (desire < threshold) {
+    return { action: 'pass', reason: `溢价太高，${cell.name}先放一放` };
+  }
+  return { action: 'buy', reason: `质押资产打折（${level} 级 2 倍价），${cell.name}值得强收`, cost: finalPrice, cellIndex };
 }
 
 /** 决策理由模板 —— 按性格挑话术 */

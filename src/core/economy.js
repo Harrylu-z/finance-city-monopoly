@@ -161,8 +161,11 @@ export const CONFIG = {
   maintenanceCostPerLevel: [8, 18, 32, 48, 66],
   // 监管机构（不产生租金）不收维持成本 —— 它们的价值在全局效果上
   maintenanceFreeRegulators: true,
-  // 维持成本按「中位圈数」结算（与牛熊周期、债券到期同一时间基准）
+  // 维持成本按「触发者自己的走圈」结算（谁走完一圈就结谁的，不再全场一起结）
   maintenanceSettleOnRoundComplete: true,
+  // 被质押地块的强制收购倍率 —— 踩到他人已质押地块时，
+  // 可按「该地块当前等级买入价 × 本倍率」强行收购（含建筑等级）
+  forcedTakeoverMult: 2,
 
   // ===== 监管机构持有效果 =====
   regulatorEffects: {

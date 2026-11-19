@@ -18,7 +18,7 @@ import {
 } from './economy.js';
 import {
   createState, computeMove, computeTeleportSteps, rollDice, movePlayer, settleOnCell,
-  resolvePurchase, upgradeInstitution, mortgageInstitution, redeemInstitution,
+  resolvePurchase, resolveTakeover, chargeMaintenanceCosts, upgradeInstitution, mortgageInstitution, redeemInstitution,
   endTurn, checkBankruptcy, rankPlayers, currentPlayer,
   applyTrapCard, takeCentralLoan, repayLoan, issueBond, processBonds,
   underwriteBond, addBuff, selfRentMultFor, medianLaps,
@@ -1043,21 +1043,31 @@ export function runAll() {
     return `质押 +￥${mv.amount}，赎回 -￥${total}（净 -￥${before - p.cash + mv2.amount}）`;
   });
 
-  /* ---------- 质押机构暂停收租 ---------- */
-  check(results, '已质押机构不产生管理费', () => {
+  /* ---------- 质押机构暂停收租 + 强制收购 ---------- */
+  check(results, '已质押机构不产生管理费（触发强制收购选项）', () => {
     const state = makeTestState();
     const owner = state.players[0];
     const payer = state.players[1];
     const idx = firstInstitution(state);
+    const cell = BOARD_CELLS[idx];
     owner.institutions.push({ cellIndex: idx, level: 2, mortgaged: true, mortgageAmount: 500 });
     owner.cash = 1000;
     payer.cash = 1000;
 
     const results2 = settleOnCell(state, payer, idx);
-    const noRent = results2.find((r) => r.kind === 'mortgaged-no-rent');
-    assert(!!noRent, '踩到已质押机构应触发「暂停收租」而非扣租');
-    assert(payer.cash === 1000, '已质押机构不应收取管理费');
-    assert(owner.cash === 1000, '已质押机构不应给归属人带来收入');
+    const offer = results2.find((r) => r.kind === 'takeover-offer');
+    assert(!!offer, '踩到已质押机构应触发「强制收购选项」而非扣租');
+    const expectPrice = Math.round((cell.price[2] ?? cell.price[0] ?? 0) * (CONFIG.forcedTakeoverMult ?? 2));
+    assert(offer.price === expectPrice, `强收价应为当前等级买入价×2：期望 ￥${expectPrice}，实际 ￥${offer.price}`);
+    assert(offer.level === 2, '强收选项应携带建筑等级 2');
+    assert(payer.cash === 1000, '触发强收选项时不应直接扣租');
+    assert(owner.cash === 1000, '触发强收选项时归属人不应直接获利');
+
+    // 拒绝强收 → 不扣租、不转账
+    const declined = resolveTakeover(state, payer, false);
+    assert(declined === false, '拒绝强收应返回 false');
+    assert(payer.cash === 1000 && owner.cash === 1000, '拒绝强收不应发生资金变动');
+    assert(state.pending == null, '拒绝后应清除 pending');
 
     // 解押后恢复收租
     owner.institutions[0].mortgaged = false;
@@ -1065,7 +1075,77 @@ export function runAll() {
     const results3 = settleOnCell(state, payer, idx);
     const paid = results3.find((r) => r.kind === 'rent-paid');
     assert(!!paid && paid.rent > 0, '解押后应恢复收取管理费');
-    return `质押 0 租金 → 解押后 ￥${paid ? paid.rent : 0}`;
+    return `质押触发强收 ￥${offer.price}（2 级×2）→ 拒绝无资金变动 → 解押后 ￥${paid ? paid.rent : 0}`;
+  });
+
+  check(results, '强制收购：2 倍含等级价成交（等级随资产过户）', () => {
+    const state = makeTestState();
+    const owner = state.players[0];
+    const buyer = state.players[1];
+    const idx = firstInstitution(state);
+    const cell = BOARD_CELLS[idx];
+    owner.institutions.push({ cellIndex: idx, level: 2, mortgaged: true, mortgageAmount: 500 });
+    const price = Math.round((cell.price[2] ?? cell.price[0] ?? 0) * (CONFIG.forcedTakeoverMult ?? 2));
+    owner.cash = 1000;
+    buyer.cash = price + 500;
+
+    const r = settleOnCell(state, buyer, idx);
+    assert(r.find((x) => x.kind === 'takeover-offer'), '应先触发强收选项');
+    const ok = resolveTakeover(state, buyer, true);
+    assert(ok === true, '现金充足时强收应成交');
+    assert(buyer.cash === 500, `买方应支付 ￥${price}，剩余 ￥500，实际 ￥${buyer.cash}`);
+    assert(owner.cash === 1000 + price, '收购款应全额支付给原持有人');
+    assert(!owner.institutions.some((i) => i.cellIndex === idx), '原持有人应失去该机构');
+    const got = buyer.institutions.find((i) => i.cellIndex === idx);
+    assert(!!got, '买方应获得该机构');
+    assert(got.level === 2, `等级应随资产过户保持 2 级，实际 ${got.level}`);
+    assert(got.mortgaged === false && got.mortgageAmount === 0, '成交后质押状态应清除');
+    assert(state.pending == null, '成交后应清除 pending');
+
+    // 现金不足 → 拒绝成交
+    const state2 = makeTestState();
+    const o2 = state2.players[0];
+    const b2 = state2.players[1];
+    o2.institutions.push({ cellIndex: idx, level: 2, mortgaged: true, mortgageAmount: 500 });
+    o2.cash = 1000;
+    b2.cash = price - 1;
+    settleOnCell(state2, b2, idx);
+    const fail = resolveTakeover(state2, b2, true);
+    assert(fail === false, '现金不足时强收应失败');
+    assert(o2.institutions.length === 1 && o2.institutions[0].mortgaged === true, '失败后原持有人资产不应变动');
+    return `成交价 ￥${price}（2 级买入价×2）· 等级过户保持 2 级`;
+  });
+
+  check(results, '维持成本：谁走完一圈就结谁的', () => {
+    const state = makeTestState();
+    const a = state.players[0];
+    const b = state.players[1];
+    const idxA = firstInstitution(state);
+    let idxB = -1;
+    for (let i = 0; i < BOARD_CELLS.length; i++) {
+      if (BOARD_CELLS[i].type === 'institution' && i !== idxA) { idxB = i; break; }
+    }
+    a.institutions.push({ cellIndex: idxA, level: 0, mortgaged: false, mortgageAmount: 0 });
+    b.institutions.push({ cellIndex: idxB, level: 0, mortgaged: false, mortgageAmount: 0 });
+    // 现金充裕，避免追保/破产干扰断言
+    a.cash = 100000;
+    b.cash = 100000;
+    const beforeA = a.cash;
+    const beforeB = b.cash;
+    const notesA = chargeMaintenanceCosts(state, a);
+    assert(notesA.length === 1, '只结算触发者一人，应恰好一条播报');
+    assert(a.cash < beforeA, '触发者应被扣除维持成本');
+    assert(b.cash === beforeB, '未走完一圈的角色不应被扣维持成本');
+    assert(a.maintenanceDebt === 0, '现金充足时不应产生欠费');
+    // 另一人单独结算时只扣自己
+    const notesB = chargeMaintenanceCosts(state, b);
+    assert(notesB.length === 1, '另一人结算时也应恰好一条播报');
+    assert(b.cash < beforeB, '另一人结算时应被扣费');
+    // 空目标兼容：不传 target 则结算全场
+    a.cash = 100000; b.cash = 100000;
+    const notesAll = chargeMaintenanceCosts(state);
+    assert(notesAll.length === 2, `全场结算应有 2 条播报，实际 ${notesAll.length}`);
+    return '单人结算各扣一次，全场结算 2 条';
   });
 
   /* ---------- 自身租金系数（评级展望）---------- */

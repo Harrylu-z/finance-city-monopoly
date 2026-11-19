@@ -245,6 +245,53 @@ export function showPurchaseDialog(cell, price, level, player, onAccept, onDecli
   });
 }
 
+/** 强制收购弹窗 —— 踩到他人已质押地块时，可按当前等级买入价 ×2 强行收购 */
+export function showTakeoverDialog(cell, price, level, player, ownerName, onAccept, onDecline) {
+  const body = document.createElement('div');
+
+  const thumb = getInstitutionSprite(cell, level, PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length].main, GROUP_INDEX[cell.group] ?? 0);
+  const img = document.createElement('canvas');
+  img.className = 'modal-thumb';
+  const k = 3;
+  img.width = thumb.width * k;
+  img.height = thumb.height * k;
+  img.style.width = img.width + 'px';
+  img.style.height = img.height + 'px';
+  const ictx = img.getContext('2d');
+  ictx.imageSmoothingEnabled = false;
+  ictx.drawImage(thumb, 0, 0, img.width, img.height);
+  body.appendChild(img);
+
+  const text = document.createElement('div');
+  text.className = 'modal-text';
+  const group = GROUP_META[cell.group];
+  const basePrice = cell.price[level] ?? cell.price[0] ?? price;
+  const rent = calculateRent(cell, level, { market: 'normal', eventMult: 1 });
+  text.innerHTML = `
+    <span class="hl">${cell.name}</span>（${group.name} · ${levelLabel(level)}）已被
+    <span class="hl-red">${ownerName}</span> 质押，暂停收租。<br>
+    是否以 <span class="hl">￥${price}</span>（当前等级买入价 ￥${basePrice} × 2 倍）<span class="hl-red">强制收购</span>？<br>
+    成交后该机构连同 <span class="hl">${levelLabel(level)}</span> 等级一并过户给你（质押状态清除），<br>
+    当前基础管理费：<span class="hl-green">￥${rent}</span> / 次
+  `;
+  body.appendChild(text);
+
+  const note = document.createElement('div');
+  note.className = 'modal-note';
+  note.textContent = `强收购款全额支付给原持有人${ownerName}。${player.cash < price ? '注意：当前现金不足。' : ''}`;
+  body.appendChild(note);
+
+  return openModal({
+    title: '强制收购 · 质押资产',
+    body,
+    dismissible: false,
+    actions: [
+      { text: '放弃强收', onClick: onDecline },
+      { text: `确认强收 ￥${price}`, primary: true, onClick: onAccept },
+    ],
+  });
+}
+
 /** 机构管理弹窗 */
 export function showInstitutionDialog(player, state, onUpgrade, onMortgage, onRedeem) {
   const body = document.createElement('div');

@@ -10,7 +10,7 @@ import {
 } from '../core/economy.js';
 import {
   createState, log, currentPlayer, computeMove, computeTeleportSteps,
-  rollDice, movePlayer, settleOnCell, resolvePurchase, upgradeInstitution,
+  rollDice, movePlayer, settleOnCell, resolvePurchase, resolveTakeover, upgradeInstitution,
   mortgageInstitution, redeemInstitution, endTurn, checkBankruptcy, rankPlayers,
   raiseFundsForDeficit,
   applyEventCard, applyTrapCard, takeCentralLoan, repayLoan, issueBond,
@@ -32,7 +32,7 @@ import { LandingFxLayer } from '../render/landingFx.js';
 import { Sfx } from '../audio/sfx.js';
 import { renderRank, renderFinanceCompare, renderActiveStatus, appendLog, clearLog, renderTabPanels } from './hud.js';
 import {
-  showPurchaseDialog, showInstitutionDialog, showMetroDialog,
+  showPurchaseDialog, showTakeoverDialog, showInstitutionDialog, showMetroDialog,
   showEventCardDialog, showGameOverDialog,
   showLoanDialog, showBondDialog, showBondResultDialog, showTrapDialog, showBuffPanel,
   showPlayerDetailDialog, showRentDialog, openModal, closeModal,
@@ -1486,6 +1486,27 @@ class Game {
           }
           break;
         }
+        case 'takeover-offer': {
+          if (player.isAI) {
+            this.aiTakeover(player, r);
+          } else {
+            this.busy = false;
+            showTakeoverDialog(r.cell, r.price, r.level, player, r.ownerName,
+              () => {
+                const ok = resolveTakeover(state, player, true);
+                if (ok) this.onTakeovered(player, r);
+                this.busy = true;
+                this.continueAfterSettlement(player);
+              },
+              () => {
+                resolveTakeover(state, player, false);
+                this.busy = true;
+                this.continueAfterSettlement(player);
+              });
+            return;
+          }
+          break;
+        }
         case 'mortgaged-no-rent': {
           log(state, 'sys', `${r.cell.name} 已被 ${r.ownerName} 质押，暂停产生管理费`, '质押');
           break;
@@ -1802,6 +1823,18 @@ class Game {
       `${player.name} 收购了 ${r.cell.name}（￥${r.price}）`, '收购');
   }
 
+  onTakeovered(player, r) {
+    this.sfx.buy();
+    const c = this.cellCenter(r.cellIndex);
+    this.effects.floatUp(c.x, c.y, { count: 10, colors: [PALETTE.gold, FX.amberLt, PALETTE.paper] });
+    this.effects.burst(c.x, c.y, { count: 14, colors: [PALETTE.gold, FX.amberLt], speed: 2.8 });
+    this.effects.triggerShake();
+    this.shakeScreen();
+    this.floatText(`-￥${r.price}`, c, FX.amber);
+    log(this.state, player.isAI ? 'ai' : 'good',
+      `${player.name} 强制收购了 ${r.ownerName} 的 ${r.cell.name}（￥${r.price}，${levelLabel(r.level)} 2 倍价）`, '强收');
+  }
+
   /* ==================== 私人赌场 · 德州扑克 ==================== */
 
   /**
@@ -1907,6 +1940,21 @@ class Game {
     } else {
       resolvePurchase(state, player, false);
       log(state, 'ai', `${player.name} 放弃 ${r.cell.name}：${decision.reason}`, playerPersonality(player).tag);
+    }
+  }
+
+  aiTakeover(player, r) {
+    const state = this.state;
+    const decision = decide(state, player, 'takeover', { cellIndex: r.cellIndex, price: r.price });
+
+    if (decision.action === 'buy' && player.cash >= r.price) {
+      const ok = resolveTakeover(state, player, true);
+      if (ok) this.onTakeovered(player, r);
+      else log(state, 'ai', `${player.name} 强收 ${r.cell.name} 失败（现金不足）`, playerPersonality(player).tag);
+      if (decision.reason) log(state, 'ai', `${player.name}：${decision.reason}`, playerPersonality(player).tag);
+    } else {
+      resolveTakeover(state, player, false);
+      log(state, 'ai', `${player.name} 放弃强收 ${r.cell.name}：${decision.reason}`, playerPersonality(player).tag);
     }
   }
 

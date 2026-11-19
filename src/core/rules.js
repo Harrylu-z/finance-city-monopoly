@@ -484,12 +484,26 @@ export function settleOnCell(state, player, cellIndex) {
       // 收租 —— 租金受集团 Buff 与监管效果影响
       const inst = owner.institutions.find((i) => i.cellIndex === cellIndex);
 
-      // 已质押的机构暂停产生管理费（质押融资的核心代价）
+      // 已质押的机构：暂停收租，并提供「强制收购」选项
+      // 踩到他人已质押地块 → 可按「该地块当前等级买入价 × 2」强行收购（含建筑等级）
       if (inst.mortgaged) {
+        const takeoverPrice = Math.round(
+          ((cell.price[inst.level] ?? cell.price[0] ?? 0)) * (CONFIG.forcedTakeoverMult ?? 2),
+        );
         results.push({
-          kind: 'mortgaged-no-rent', cellIndex, cell,
+          kind: 'takeover-offer', cellIndex, cell,
+          level: inst.level,
+          price: takeoverPrice,
+          from: player.id,
+          to: owner.id,
+          ownerId: owner.id,
           ownerName: owner.name,
+          mortgageAmount: inst.mortgageAmount || 0,
         });
+        state.pending = {
+          kind: 'takeover', cellIndex, price: takeoverPrice, level: inst.level,
+          from: player.id, to: owner.id, playerId: player.id,
+        };
       } else {
         const buffMult = buffMultiplierFor(owner, cell.group, state)
           * buffEffectMult(owner, 'rentMult');
@@ -1627,6 +1641,62 @@ export function processBonds(state, currentLap = null) {
  * 玩家决定是否收购。
  * @returns {boolean} 是否成交
  */
+export function resolveTakeover(state, player, accept) {
+  const pend = state.pending;
+  if (!pend || pend.kind !== 'takeover') return false;
+  const cell = BOARD_CELLS[pend.cellIndex];
+  const owner = (state.players || []).find((p) => p.id === pend.to);
+
+  if (!accept) {
+    log(state, 'sys', `${player.name} 放弃了强制收购 ${cell.name} 的机会`, '放弃');
+    state.pending = null;
+    return false;
+  }
+  if (!owner || owner.bankrupt) {
+    log(state, 'bad', `原持有人已不在场，强制收购 ${cell.name} 失败`, '收购');
+    state.pending = null;
+    return false;
+  }
+  const ownerInst = owner.institutions.find((i) => i.cellIndex === pend.cellIndex);
+  if (!ownerInst || !ownerInst.mortgaged) {
+    log(state, 'sys', `${cell.name} 已不在质押状态，强制收购取消`, '收购');
+    state.pending = null;
+    return false;
+  }
+
+  const level = ownerInst.level;
+  const mult = CONFIG.forcedTakeoverMult ?? 2;
+  const price = pend.price ?? Math.round((cell.price[level] ?? 0) * mult);
+  if (player.cash < price) {
+    log(state, 'bad', `${player.name} 现金不足，无法强制收购 ${cell.name}（需 ￥${price}）`, '缺钱');
+    state.pending = null;
+    return false;
+  }
+
+  // 成交：买方付款 → 原持有人收款 → 机构连等级一起过户（质押状态清除）
+  recordCash(state, player, -price, `强制收购 ${cell.name}`, '收购');
+  recordCash(state, owner, price, `被强制收购 ${cell.name}`, '转让');
+  owner.institutions = owner.institutions.filter((i) => i.cellIndex !== pend.cellIndex);
+  player.institutions.push({
+    cellIndex: pend.cellIndex,
+    level,
+    mortgaged: false,
+    mortgageAmount: 0,
+  });
+  player.stats.acquisitions += 1;
+  player.stats.acquisitionSpend += price;
+  state.pending = null;
+  emit(state, 'takeover', { playerId: player.id, from: owner.id, cellIndex: pend.cellIndex, price, level });
+  log(state, player.isAI ? 'ai' : 'self',
+    `${player.name} 以 ￥${price} 强制收购了 ${owner.name} 已质押的 ${cell.name}（${levelLabel(level)}，${mult} 倍含建筑等级价）`,
+    '收购');
+  return true;
+}
+
+/**
+ * 玩家决定是否收购。
+ * @returns {boolean} 是否成交
+ */
 export function resolvePurchase(state, player, accept) {
   const pend = state.pending;
   if (!pend || pend.kind !== 'purchase') return false;
@@ -1831,7 +1901,8 @@ export function endTurn(state) {
     player._marketBonusLap = null;
     // 起点补贴的去重标记同样按**圈号**记录（见 grantStartPass），
     // 圈号推进后自然解锁下一圈，无需在这里手动清标志。
-    onRoundComplete(state);
+    // 维持成本：谁走完一圈就结谁的（不再全场一起结）
+    onRoundComplete(state, player);
   }
 
   // 游戏结束检测
@@ -1875,26 +1946,30 @@ export function medianLaps(state) {
 }
 
 /**
- * 结算每位玩家的**维持成本**（每圈一次的持有侧固定支出）。
+ * 结算某位玩家的**维持成本**（该角色自己走完一圈时结算一次）。
  *
  * ⚠ 这是「破产机制可触发」与「不存在必赢策略」的关键一环。
  *   旧版没有持有侧成本 —— 铺满机构后每圈只进不出，
  *   形成「正现金流永动机」，破产几乎不会发生。
  *
  * 规则：
- *   · 按各机构的**等级**计费（高级位更贵，见 CONFIG.maintenanceCostPerLevel）；
+ *   · 谁走完一圈就结谁的（按各机构的**等级**计费，高级位更贵）；
  *   · 监管机构不收维持成本（它们的价值在全局效果上）；
  *   · 现金不足以支付时：先扣到 0（不产生负数），
  *     剩余部分转为**欠费**，并立即触发追保 / 破产检查；
  *   · 欠费累计超过**市值的 50%** → 强制清算（资不抵债）。
  *
  * @param {object} state
+ * @param {object|null} target 只结算该玩家；传空则结算全场（兼容旧调用）
  * @returns {string[]} 播报文案
  */
-export function chargeMaintenanceCosts(state) {
+export function chargeMaintenanceCosts(state, target = null) {
   const notes = [];
-  for (const p of state.players) {
-    if (p.bankrupt) continue;
+  const list = target
+    ? [target]
+    : (state.players || []);
+  for (const p of list) {
+    if (!p || p.bankrupt) continue;
     const insts = (p.institutions || []);
     if (!insts.length) continue;
 
@@ -1942,14 +2017,14 @@ export function chargeMaintenanceCosts(state) {
  * ⚠ P1：牛熊周期与债券到期一律按**中位圈数**（medianLaps）判定，
  *   而非 state.round —— 保证不同座位速度不同也能公平对齐。
  */
-function onRoundComplete(state) {
+function onRoundComplete(state, lapPlayer = null) {
   const lap = medianLaps(state);
 
   // 限时全局状态递减（P1：事件卡的全场租金系数到期自动恢复）
   tickGlobalBuffs(state);
 
-  // 维持成本结算（持有侧固定支出）—— 破产机制的关键一环
-  const maintNotes = chargeMaintenanceCosts(state);
+  // 维持成本结算：谁走完一圈就结谁的（lapPlayer 为本次绕圈的角色）
+  const maintNotes = chargeMaintenanceCosts(state, lapPlayer);
   for (const n of maintNotes) log(state, 'bad', n, '维持成本');
 
   // 牛熊周期切换（按中位圈数）
@@ -2112,6 +2187,12 @@ export function completeTurnSettlement(state, player) {
     const cell = BOARD_CELLS[player.position];
 
     if (pend.kind === 'purchase') {
+      const r = settleOnCell(state, player, player.position);
+      results.push(...r);
+      if (state.pending === pend) state.pending = null; // 避免死循环
+      break;
+    }
+    if (pend.kind === 'takeover') {
       const r = settleOnCell(state, player, player.position);
       results.push(...r);
       if (state.pending === pend) state.pending = null; // 避免死循环
