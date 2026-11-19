@@ -68,9 +68,9 @@ export const CAREERS = [
     passive: {
       id: 'actuarial',
       name: '精算费率',
-      desc: '自己收取的管理费 +6%',
+      desc: '自己收取的管理费 +12%',
       hook: 'rentMult',
-      effect: { rentMult: 1.06 },
+      effect: { rentMult: 1.12 },
     },
   },
   {

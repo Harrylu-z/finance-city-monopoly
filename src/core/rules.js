@@ -515,7 +515,7 @@ export function settleOnCell(state, player, cellIndex) {
         //   即便有负面限时状态，租金也不会低于基准的一定的比例，
         //   且到期后自动恢复（不留下永久痕迹）。
         const selfMult = selfRentMultFor(owner);
-        // 精算师职业：自己收取的管理费 +6%（温和加成，不改写胜负）
+        // 精算师职业：自己收取的管理费 +12%（温和加成，不改写胜负）
         const careerMult = careerEffectMult(owner, 'rentMult');
         const rent = Math.round(calculateRent(cell, inst.level, {
           market: state.market, eventMult: state.eventMult, buffMult,

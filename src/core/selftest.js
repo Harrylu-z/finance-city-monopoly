@@ -669,6 +669,70 @@ export function runAll() {
     return `3 档阈值 ${CONFIG.groupBuffThresholds.join('/')} 生效，最高 ×${CONFIG.groupBuffRentMult[2]}`;
   });
 
+  /* ---------- 经济平衡：靠收租能赢 ---------- */
+  check(results, '深耕可杀人：满级 + 满 Buff 的 3 星租金 ≥ ￥400', () => {
+    const topBuff = CONFIG.groupBuffRentMult[CONFIG.groupBuffRentMult.length - 1];
+    const lv4 = 4;
+    const threeStar = BOARD_CELLS.filter(
+      (c) => c.type === 'institution' && !c.regulator && c.star === 3);
+    assert(threeStar.length >= 1, '棋盘上找不到 3 星机构');
+    const report = [];
+    for (const cell of threeStar) {
+      const rent = calculateRent(cell, lv4, {
+        market: 'normal', eventMult: 1, buffMult: topBuff,
+      });
+      assert(rent >= 400,
+        `${cell.name} 满级+满Buff 租金 ${rent} < 400（收租追不上输血）`);
+      report.push(`${cell.name}=${rent}`);
+    }
+    return `${report.join(' / ')}（Buff ×${topBuff}，等级系数 ×${CONFIG.levelRentMult[lv4]}）`;
+  });
+
+  check(results, '深耕可杀人：地标级回本圈数 < 网点级回本圈数', () => {
+    // 「深耕」的真正口径不是「单位资金效率单调递增」（price 表本身是递增阶梯，
+    // 效率天然 U 形），而是：
+    //   **把同一家机构从 level 0 升到地标级(level 4)，回本圈数必须变短**
+    // —— 即「升级花的钱能被更高的租金更快赚回来」。
+    //
+    // 口径：回本圈数 = price[lv] ÷ 到手租金（单家、无 Buff 口径）
+    const report = [];
+    for (const cell of BOARD_CELLS) {
+      if (cell.type !== 'institution' || cell.regulator) continue;
+      const rentAt = (lv) => calculateRent(cell, lv, { market: 'normal', eventMult: 1 });
+      const pb0 = cell.price[0] / rentAt(0);
+      const pb4 = cell.price[4] / rentAt(4);
+      assert(pb4 < pb0,
+        `${cell.name} 地标级回本 ${pb4.toFixed(1)} 圈 ≥ 网点级 ${pb0.toFixed(1)} 圈（升级不划算）`);
+      report.push(`${(pb0 - pb4).toFixed(1)}`);
+    }
+    return `24 家机构全部满足，最大回本圈数改善 ${Math.max(...report.map(Number))} 圈`;
+  });
+
+  check(results, '维持成本不超过该等级租金的 60%（持有侧不吞掉收入）', () => {
+    for (const cell of BOARD_CELLS) {
+      if (cell.type !== 'institution' || cell.regulator) continue;
+      for (let lv = 0; lv <= 4; lv++) {
+        const rent = calculateRent(cell, lv, { market: 'normal', eventMult: 1 });
+        const maint = CONFIG.maintenanceCostPerLevel[lv];
+        assert(maint <= rent * 0.6,
+          `${cell.name} lv${lv} 维持费 ${maint} 超过租金 ${rent} 的 60%`);
+      }
+    }
+    return '五级 × 24 家的维持成本全部 ≤ 租金 60%';
+  });
+
+  check(results, '净现金流为正（单家 3 星持有即自给自足）', () => {
+    // 单家 3 星机构（满 Buff）每圈净收益必须为正 —— 这是「收租能赢」的地板
+    const topBuff = CONFIG.groupBuffRentMult[CONFIG.groupBuffRentMult.length - 1];
+    const cell = BOARD_CELLS.find((c) => c.type === 'institution' && !c.regulator && c.star === 3);
+    for (let lv = 0; lv <= 4; lv++) {
+      const rent = calculateRent(cell, lv, { market: 'normal', eventMult: 1, buffMult: topBuff });
+      const maint = CONFIG.maintenanceCostPerLevel[lv];
+      assert(rent - maint > 0, `${cell.name} lv${lv} 净现金流 ${rent - maint} ≤ 0`);
+    }
+    return `${cell.name} 五级净现金流均为正`;
+  });
+
   /* ---------- 监管机构效果 ---------- */
   check(results, '监管机构全局效果生效', () => {
     const state = makeTestState();
@@ -686,11 +750,12 @@ export function runAll() {
     assert(Math.abs(eff.upgradeCostMult - 0.88) < 1e-9, `升级费系数应为 0.88，实际 ${eff.upgradeCostMult}`);
     assert(ownsRegulator(owner, 'csrc'), '应识别出持有证监会');
 
-    // 持有央行 —— 每圈 +80
+    // 持有央行 —— 每圈 +50
     const pbcIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'pbc');
     owner.institutions.push({ cellIndex: pbcIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
     eff = globalRegulatorEffects(state);
-    assert(eff.roundBonus === 80, `流动性投放应为 80，实际 ${eff.roundBonus}`);
+    assert(eff.roundBonus === CONFIG.regulatorEffects.pbc.roundBonus,
+      `流动性投放应为 ${CONFIG.regulatorEffects.pbc.roundBonus}，实际 ${eff.roundBonus}`);
 
     // 持有金稳会 —— 陷阱罚金减免 50%
     const fscIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'fsc');
@@ -1154,6 +1219,7 @@ export function runAll() {
     const owner = state.players[0];
     const payer = state.players[1];
     const idx = firstInstitution(state);
+    const cell = BOARD_CELLS[idx];
     owner.institutions.push({ cellIndex: idx, level: 1, mortgaged: false, mortgageAmount: 0 });
     payer.cash = 100000;
 
@@ -1171,7 +1237,10 @@ export function runAll() {
     payer.position = idx;
     const results3 = settleOnCell(state, payer, idx);
     const up = results3.find((r) => r.kind === 'rent-paid');
-    assert(up.rent === Math.round(base.rent * 1.12),
+    // ⚠ 限时 Buff 的 1.12 是乘进 calculateRent 的 buffMult 里**一起取整**的，
+    //   不是「先取整再乘 1.12」—— 这里按同一口径重算原始乘积。
+    const rawBase = cell.rent[1] * CONFIG.levelRentMult[1] * CONFIG.groupRentMult[cell.group];
+    assert(up.rent === Math.round(rawBase * 1.12),
       `限时 Buff 下租金应 ×1.12：${base.rent} → ${up.rent}`);
 
     // Buff 过期后自动恢复（不再有永久痕迹）
@@ -1271,8 +1340,12 @@ export function runAll() {
 
     assert(bull > normal, `牛市租金应更高：${bull} vs ${normal}`);
     assert(bear < normal, `熊市租金应更低：${bear} vs ${normal}`);
-    assert(bull === Math.round(normal * CONFIG.bullRentMult), '牛市系数不符');
-    assert(bear === Math.round(normal * CONFIG.bearRentMult), '熊市系数不符');
+    // ⚠ 不能写成 Math.round(normal × mult) —— calculateRent 内部已取整，
+    //   再乘系数会二次取整，与「原始值 × 系数」可能有 ±1 的差。
+    //   这里按同一口径重算一遍原始乘积。
+    const raw = cell.rent[2] * CONFIG.levelRentMult[2] * CONFIG.groupRentMult[cell.group];
+    assert(bull === Math.round(raw * CONFIG.bullRentMult), '牛市系数不符');
+    assert(bear === Math.round(raw * CONFIG.bearRentMult), '熊市系数不符');
     return `正常 ￥${normal} / 牛 ￥${bull} / 熊 ￥${bear}`;
   });
 

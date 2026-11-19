@@ -2,9 +2,22 @@
  * 经济规则引擎 —— 纯函数，无副作用，便于单元测试。
  *
  * 核心公式：
- *   租金 = 基础租金(level) × 市场周期系数 × 全局事件系数 × 集团系数 × 集团Buff系数
- *   升级费用 = 下一级买入价 × 升级系数 × 监管优惠系数
+ *   租金 = 基础租金(level) × 等级租金系数 × 市场周期系数 × 全局事件系数
+ *          × 集团系数 × 集团Buff系数
+ *   升级费用 = 下一级买入价 × 升级系数 × 监管优惠系数（+ 地标附加费）
  *   总资产 = 现金 + 机构市值（按当前等级买入价折算）
+ *
+ * ================= 经济平衡目标（标准档）=================
+ * 设计主张：**「靠收租能赢」**——收租必须追得上输血，且破产可达。
+ *
+ * 回本圈数（price[lv] ÷ 实际每圈租金，单家、无 Buff 口径）：
+ *   · 1 星 ≈ 6 圈 · 2 星 ≈ 8 圈 · 3 星 ≈ 11 圈（买下即回本的「铺盘」决策）
+ *   · 升到地标级（lv4）后回本圈数**下降**（lv4 系数 1.7 + 集团系数上调）
+ *     —— 「深耕」比「铺盘」更划算，鼓励升级而非无脑摊大饼。
+ *   · 满 Buff（生态圈龙头 ×1.6）时 3 星地标级回本 ≈ 4~5 圈 —— 集团协同有强正反馈。
+ *
+ * ⚠ 这些数字依赖 CONFIG 里的乘数一起看，单改一项会失真 ——
+ *   改动时务必同步更新本注释与 board.js 的「回本圈数」说明。
  *
  * 金融化包装：
  *   质押融资 → 股权质押（已实现）
@@ -17,9 +30,9 @@ import { BOARD_CELLS, LEVELS, GROUP_META, REGULATORS } from './board.js';
 /** 可调参数 —— 全部集中在此，便于平衡调整 */
 export const CONFIG = {
   // 升级费用 = 下一级买入价 × 该系数
-  upgradeCostFactor: 0.85,
+  upgradeCostFactor: 0.65,
   // 升级到地标级额外附加费
-  landmarkSurcharge: 400,
+  landmarkSurcharge: 200,
 
   // ===== 升级许可（P2 / m5）=====
   // 许可有效期（该玩家自己的回合数）—— 过期需再次踏足
@@ -33,11 +46,11 @@ export const CONFIG = {
   redeemFee: 0.12,
 
   // 起点补贴
-  startBonus: 300,
+  startBonus: 180,
 
   // 市场周期
-  bullRentMult: 1.2,
-  bearRentMult: 0.8,
+  bullRentMult: 1.3,
+  bearRentMult: 0.75,
   // 每多少圈切换一次牛熊
   marketCycleRounds: 3,
 
@@ -51,12 +64,21 @@ export const CONFIG = {
   // 旧存档中永久 selfRentMult 的恢复节奏（多少回合回到 1）
   selfRentMultDecayTurns: 4,
 
+  // ===== 等级租金系数（深耕可杀人）=====
+  // 按机构**等级**递增的租金乘数 —— 高级位的租金绝对值显著高于低级位，
+  // 于是「升级」相对「铺更多家小机构」的资金效率更高，
+  // 「无脑铺盘」不再是唯一最优解。
+  // ⚠ 与 board.js 的 price/rent 表是**乘性配套**的：
+  //   改动本数组会同步改变回本圈数（price ÷ (rent × 本系数)），
+  //   记得同步 economy.js 顶部与 board.js 的回本圈数注释。
+  levelRentMult: [1.0, 1.1, 1.25, 1.45, 1.7],
+
   // 集团租金系数（券商弹性高，保险稳健，资管牌照溢价）
   groupRentMult: {
-    bank: 1.0,
-    broker: 1.1,
-    insurer: 0.95,
-    asset: 1.05,
+    bank: 1.05,
+    broker: 1.18,
+    insurer: 1.0,
+    asset: 1.12,
   },
 
   /**
@@ -135,7 +157,7 @@ export const CONFIG = {
   //   三档在单类只有 6 家的情况下依然全部可达。
   groupBuffThresholds: [2, 4, 6],
   // 各档位带来的租金加成
-  groupBuffRentMult: [1.08, 1.16, 1.25],
+  groupBuffRentMult: [1.15, 1.35, 1.6],
   // 各档位名称
   groupBuffNames: ['区域协同', '集团化经营', '生态圈龙头'],
 
@@ -156,9 +178,12 @@ export const CONFIG = {
   //
   // 数值口径：按**机构等级**递增（高级位更贵 —— 与租金同步），
   // 保证「升级」不会被维持成本吃掉升级带来的增量收益。
-  //   1 星 网点级 ≈ 每圈 6~10 元（约为该机构租金的 12%~15%）
-  //   3 星 地标级 ≈ 每圈 40~60 元（约为该机构租金的 40%）
-  maintenanceCostPerLevel: [8, 18, 32, 48, 66],
+  //   1 星 网点级 ≈ 每圈 5~8 元（约为该机构租金的 10%~15%）
+  //   3 星 地标级 ≈ 每圈 35~55 元（约为该机构租金的 40%）
+  // ⚠ 维持成本整体比旧档下调（[8,18,32,48,66] → [6,14,26,42,60]），
+  //   因为收入侧（等级租金系数 + 集团系数 + Buff）同时上调了 ——
+  //   两边一起调才能维持「正现金流要靠真本事」的难度曲线。
+  maintenanceCostPerLevel: [6, 14, 26, 42, 60],
   // 监管机构（不产生租金）不收维持成本 —— 它们的价值在全局效果上
   maintenanceFreeRegulators: true,
   // 维持成本按「触发者自己的走圈」结算（谁走完一圈就结谁的，不再全场一起结）
@@ -170,7 +195,7 @@ export const CONFIG = {
   // ===== 监管机构持有效果 =====
   regulatorEffects: {
     // 人民银行：每圈开始额外流动性投放
-    pbc: { roundBonus: 80 },
+    pbc: { roundBonus: 50 },
     // 证监会：全体升级费用降低
     csrc: { upgradeCostMult: 0.88 },
     // 银保监：全体租金降低（审慎约束）
@@ -195,6 +220,13 @@ export function baseRent(cell, level) {
 
 /**
  * 计算某格在当前市场环境下的实际租金。
+ *
+ * 乘子顺序（全部相乘，顺序不影响结果）：
+ *   等级租金系数 × 市场周期系数 × 集团系数 × 全局事件系数 × 集团Buff系数
+ *
+ * ⚠ 等级租金系数（CONFIG.levelRentMult）是「深耕可杀人」的核心：
+ *   高级位的租金绝对值显著更高，让「升级」比「铺更多家小机构」更划算。
+ *
  * @param {object} cell 棋盘格
  * @param {number} level 等级
  * @param {object} ctx { market, eventMult, buffMult }
@@ -202,14 +234,16 @@ export function baseRent(cell, level) {
 export function calculateRent(cell, level, ctx = {}) {
   if (!cell || cell.type !== 'institution') return 0;
   if (cell.regulator) return 0; // 监管机构不产生租金
-  const base = baseRent(cell, level);
+  const lv = Math.max(0, Math.min(4, level | 0));
+  const base = baseRent(cell, lv);
+  const levelMult = CONFIG.levelRentMult[lv] ?? 1;
   const marketMult = ctx.market === 'bull' ? CONFIG.bullRentMult
     : ctx.market === 'bear' ? CONFIG.bearRentMult
     : 1.0;
   const groupMult = CONFIG.groupRentMult[cell.group] ?? 1;
   const eventMult = ctx.eventMult ?? 1;
   const buffMult = ctx.buffMult ?? 1;
-  return Math.round(base * marketMult * groupMult * eventMult * buffMult);
+  return Math.round(base * levelMult * marketMult * groupMult * eventMult * buffMult);
 }
 
 /**

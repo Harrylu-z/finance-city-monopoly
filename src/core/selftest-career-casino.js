@@ -130,9 +130,9 @@ export function runCareerChecks() {
     assert(careerEffectMult({}, 'buyCostMult') === 1, '无职业应返回 1');
     assert(careerEffectMult({ career: 'ib' }, 'buyCostMult') === 0.92, '投行家应为 0.92');
     assert(careerEffectMult({ career: 'fund' }, 'upgradeCostMult') === 0.94, '基金经理应为 0.94');
-    assert(careerEffectMult({ career: 'actuary' }, 'rentMult') === 1.06, '精算师应为 1.06');
+    assert(careerEffectMult({ career: 'actuary' }, 'rentMult') === 1.12, '精算师应为 1.12');
     assert(careerEffectMult({ career: 'risk' }, 'trapRelief') === 0.30, '风控总监应为 0.30');
-    return 'buyCostMult 0.92 / upgradeCostMult 0.94 / rentMult 1.06 / trapRelief 0.30';
+    return 'buyCostMult 0.92 / upgradeCostMult 0.94 / rentMult 1.12 / trapRelief 0.30';
   });
 
   check(results, '未知职业 id 安全降级', () => {
@@ -215,7 +215,7 @@ export function runCareerChecks() {
     return `罚金 -200 → ${res.cash}（减免 30%）`;
   });
 
-  check(results, '被动 · 精算师租金 +6%', () => {
+  check(results, '被动 · 精算师租金 +12%', () => {
     const state = makeCasinoState();
     const owner = state.players[2];
     owner.career = 'actuary';
@@ -232,10 +232,15 @@ export function runCareerChecks() {
     const res = settleOnCell(state, payer, cellIdx);
     const rentRes = res.find((r) => r.kind === 'rent-paid');
     assert(rentRes, '未产生交租结算');
-    assert(rentRes.rent === Math.round(cell.rent[2] * 1.06),
-      `租金 ${rentRes.rent} ≠ ${Math.round(cell.rent[2] * 1.06)}`);
+    // 基准口径：基础租金 × 等级租金系数 × 集团系数 → calculateRent 取整，
+    // 再乘职业系数（rules.js 里职业系数是**在取整之后**另乘的一层）。
+    const base = Math.round(cell.rent[2]
+      * CONFIG.levelRentMult[2]
+      * CONFIG.groupRentMult[cell.group]);
+    assert(rentRes.rent === Math.round(base * 1.12),
+      `租金 ${rentRes.rent} ≠ ${Math.round(base * 1.12)}`);
     assert(before - payer.cash === rentRes.rent, '扣款额与租金不一致');
-    return `租金 ￥${rentRes.rent}（基准 ￥${cell.rent[2]} × 1.06）`;
+    return `租金 ￥${rentRes.rent}（基础 ￥${cell.rent[2]} × 等级 ${CONFIG.levelRentMult[2]} × 集团 ${CONFIG.groupRentMult[cell.group]} = ￥${base}，再 × 职业 1.12）`;
   });
 
   check(results, '被动 · 交易员择时价差收益', () => {
