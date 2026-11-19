@@ -21,6 +21,12 @@ export const CONFIG = {
   // 升级到地标级额外附加费
   landmarkSurcharge: 400,
 
+  // ===== 升级许可（P2 / m5）=====
+  // 许可有效期（该玩家自己的回合数）—— 过期需再次踏足
+  upgradePermitTurns: 3,
+  // 同时持有的许可数量上限 —— 防止囤积许可后连升多级
+  maxUpgradePermits: 3,
+
   // 抵押（股权质押融资）系数
   mortgageRatio: 0.55,
   // 赎回（解押）费用
@@ -34,6 +40,16 @@ export const CONFIG = {
   bearRentMult: 0.8,
   // 每多少圈切换一次牛熊
   marketCycleRounds: 3,
+
+  // ===== 限时全局状态 / 自身租金系数（P1）=====
+  // 事件卡「全行业」租金系数的持续圈数（到期自动恢复为 1）
+  eventMultTurns: 2,
+  // 监管卡「影响自身」的租金系数持续回合数（限时 Buff，到期自动消失）
+  selfRentMultTurns: 3,
+  // 自身租金系数的下限（防止负面限时状态把收入压到 0）
+  selfRentFloorMult: 0.7,
+  // 旧存档中永久 selfRentMult 的恢复节奏（多少回合回到 1）
+  selfRentMultDecayTurns: 4,
 
   // 集团租金系数（券商弹性高，保险稳健，资管牌照溢价）
   groupRentMult: {
@@ -123,6 +139,31 @@ export const CONFIG = {
   // 各档位名称
   groupBuffNames: ['区域协同', '集团化经营', '生态圈龙头'],
 
+  // ===== 维持成本（每圈按持有机构收取）=====
+  // ⚠ 这是「破产机制可触发」与「不存在必赢策略」的关键一环。
+  //
+  // 为什么必须有它：
+  //   旧版只有「收入侧」（租金）与「一次性支出」（买入 / 升级），
+  //   没有「持有侧」的持续成本 —— 于是：
+  //     · 铺满 24 家机构后每圈躺着收租，现金只会越来越多；
+  //     · 只要开局铺满一圈，就有了「正现金流永动机」；
+  //     · 破产（现金为负）几乎永远不会发生，机制形同虚设。
+  //
+  // 有了维持成本之后：
+  //   · 每圈净收益 = 收租 − 维持费，必须为正才有意义；
+  //   · 「铺盘」有真实的持有成本 —— 铺得越多、每天的固定支出越大；
+  //   · 现金为负 → 追保（质押）→ 仍不足 → **破产清算**，机制真正可达。
+  //
+  // 数值口径：按**机构等级**递增（高级位更贵 —— 与租金同步），
+  // 保证「升级」不会被维持成本吃掉升级带来的增量收益。
+  //   1 星 网点级 ≈ 每圈 6~10 元（约为该机构租金的 12%~15%）
+  //   3 星 地标级 ≈ 每圈 40~60 元（约为该机构租金的 40%）
+  maintenanceCostPerLevel: [8, 18, 32, 48, 66],
+  // 监管机构（不产生租金）不收维持成本 —— 它们的价值在全局效果上
+  maintenanceFreeRegulators: true,
+  // 维持成本按「中位圈数」结算（与牛熊周期、债券到期同一时间基准）
+  maintenanceSettleOnRoundComplete: true,
+
   // ===== 监管机构持有效果 =====
   regulatorEffects: {
     // 人民银行：每圈开始额外流动性投放
@@ -192,9 +233,40 @@ export function mortgageValue(cell, level) {
   return Math.round((cell.price[lv] || 0) * CONFIG.mortgageRatio);
 }
 
-/** 赎回（解押）需要支付的费用 */
+/**
+ * 赎回（解押）需要支付的费用 */
 export function redeemFee(mortgagedAmount) {
   return Math.round(mortgagedAmount * CONFIG.redeemFee);
+}
+
+/**
+ * 某家机构每圈的**维持成本**（持有侧固定支出）。
+ *
+ * @param {object} cell
+ * @param {number} level
+ * @returns {number} 每圈应付的维持费（监管机构为 0）
+ */
+export function maintenanceCost(cell, level) {
+  if (!cell || cell.type !== 'institution') return 0;
+  if (cell.regulator && CONFIG.maintenanceFreeRegulators) return 0;
+  const lv = Math.max(0, Math.min(4, level | 0));
+  return CONFIG.maintenanceCostPerLevel[lv] || 0;
+}
+
+/**
+ * 玩家持有全部机构的**每圈维持成本**合计。
+ *
+ * @param {object} player
+ * @returns {number}
+ */
+export function totalMaintenanceCost(player) {
+  let sum = 0;
+  for (const inst of (player.institutions || [])) {
+    const cell = BOARD_CELLS[inst.cellIndex];
+    if (!cell) continue;
+    sum += maintenanceCost(cell, inst.level);
+  }
+  return sum;
 }
 
 /** 机构资产市值（排名与清算用）；已抵押按半值计 */
@@ -203,6 +275,28 @@ export function assetValue(cell, level, mortgaged) {
   const lv = Math.max(0, Math.min(4, level | 0));
   const v = cell.price[lv] || 0;
   return mortgaged ? Math.round(v * 0.5) : v;
+}
+
+/**
+ * 玩家**机构市值**（不含现金）—— 赌场资产折算额度的唯一基数。
+ *
+ * ⚠ F1：不能用 `totalAssets()`（= 现金 + 机构市值）当折算基数 ——
+ *   那等于把现金算两遍（现金既进 cashStack 又进 assetStack），
+ *   玩家可凭空拿到 1.5 倍桌上面值。
+ *
+ * @param {object} player
+ * @param {object} state
+ * @returns {number} 机构市值合计（已质押按半值计）
+ */
+export function institutionValue(player, state) {
+  let total = 0;
+  for (const inst of (player.institutions || [])) {
+    const cell = BOARD_CELLS[inst.cellIndex];
+    total += assetValue(cell, inst.level, inst.mortgaged);
+  }
+  // 赌场中已让渡的资产估值不再重复计入额度
+  const lock = Math.max(0, player.pokerAssetLock || 0);
+  return Math.max(0, total - lock);
 }
 
 /**
@@ -256,6 +350,8 @@ export function financialMetrics(player, state) {
 
   // 每家机构的「当前管理费收入」（未质押且非监管机构才产生）
   let rentIncome = 0;
+  // 每圈维持成本合计（持有侧固定支出）
+  let maintenance = 0;
 
   const market = state ? state.market : 'normal';
   const regEff = globalRegulatorEffects(state || { players: [] });
@@ -269,6 +365,8 @@ export function financialMetrics(player, state) {
     levelSum += inst.level;
     levelCount += 1;
     if (inst.level > maxLevel) maxLevel = inst.level;
+    // 维持成本：所有机构（含已质押）都要付 —— 机构还在你名下就要养
+    maintenance += maintenanceCost(cell, inst.level);
 
     if (cell.regulator) {
       regulatorCount += 1;
@@ -349,6 +447,10 @@ export function financialMetrics(player, state) {
     maxLevel,
     rentIncome,           // 当前每圈潜在管理费收入
     avgRentIncome,        // 按已进行圈数摊薄
+    // 持有侧固定支出（每圈）—— 与 rentIncome 一起决定每圈净现金流
+    maintenanceCost: maintenance,
+    maintenanceDebt: player.maintenanceDebt || 0,
+    netPerLap: rentIncome - maintenance,
     rentsCollected,
     rentsPaid,
     netRentFlow,
@@ -375,20 +477,61 @@ export function isBankrupt(player, state) {
   return liquid < CONFIG.bankruptcyFloor;
 }
 
-/** 清算：变卖所有机构，得出最终清算金额 */
+/**
+ * 清算：变卖所有机构，得出最终清算金额。
+ *
+ * ⚠ F2：破产清算必须**清除全部金融头寸**，否则会出现「死后仍在收息 / 收租」：
+ *   · `loans` —— 央行贷款（否则 serviceLoans 继续扣息、还会再触发一次破产检查）；
+ *   · `bonds` —— 作为发行方持有的债券（否则 processBonds 继续付息/兑付，
+ *     凭空从破产方转走现金）；
+ *   · `subscribedBonds` —— 作为认购方持有的债券（否则继续收票息、收本金）；
+ *   · `pokerAssetLock` —— 赌场的资产让渡（否则总资产永远少一块）；
+ *   · `buffs` —— 限时状态（否则状态残留）；
+ *   · `upgradePermits` —— 升级许可（否则残留）。
+ *
+ * 债券债务的处理：债券本息是**发行方的偿付义务**，
+ * 发行方破产 → 该笔债券到期时**跳过兑付**（债权人损失本金），
+ * 由 rules.processBonds 依据 `p.bankrupt` 判定。
+ *
+ * @param {object} player
+ * @returns {{settlement:number, actions:string[], debts:object}}
+ */
 export function liquidate(player) {
   const actions = [];
   let proceeds = player.cash;
+
+  // ===== 记录被免除的债务（供上层播报 / 审计）=====
+  const debts = {
+    loans: (player.loans || []).length,
+    loanAmount: (player.loans || []).reduce((a, l) => a + (l.amount || 0), 0),
+    bonds: (player.bonds || []).length,
+    bondPayable: (player.bonds || []).reduce(
+      (a, b) => a + b.face * (b.subscribers ? b.subscribers.length : 0), 0),
+    subscribedBonds: (player.subscribedBonds || []).length,
+    bondReceivable: (player.subscribedBonds || []).reduce((a, b) => a + (b.face || 0), 0),
+    pokerAssetLock: Math.max(0, player.pokerAssetLock || 0),
+  };
+
   for (const inst of (player.institutions || [])) {
     const cell = BOARD_CELLS[inst.cellIndex];
     const v = assetValue(cell, inst.level, inst.mortgaged);
     proceeds += v;
     actions.push(`${cell.name} 强制转让 ￥${v}`);
   }
+
+  // ===== 清除全部金融头寸（F2）=====
   player.institutions = [];
   player.cash = 0;
   player.bankrupt = true;
-  return { settlement: Math.max(0, Math.round(proceeds)), actions };
+  player.loans = [];
+  player.bonds = [];
+  player.subscribedBonds = [];
+  player.pokerAssetLock = 0;
+  player.buffs = [];
+  player.upgradePermits = {};
+  player.loanCountThisRound = 0;
+
+  return { settlement: Math.max(0, Math.round(proceeds)), actions, debts };
 }
 
 /** 买入价（受市场周期影响：牛市挂牌价上浮，熊市折价） */
@@ -556,11 +699,28 @@ export function bondCouponFor(state, issuer) {
   return Math.round(coupon * 1000) / 1000;
 }
 
-/** 一张债券的到期兑付金额（本金 + 累计票息） */
+/**
+ * 一张债券的到期兑付金额。
+ *
+ * ⚠ m2（口径统一）：此前的实现返回「本金 + 累计票息」，
+ *   与 processBonds 里的实际兑付口径（**本金** + 当期另付的票息）不一致，
+ *   导致 HUD / 债务面板显示的数字和实际兑付对不上。
+ *   现在统一为：**本金面值**（票息单独按期支付，不计入兑付额）。
+ *
+ * @param {object} bond
+ * @returns {number} 每位认购者可获得的本金
+ */
 export function bondRedeemValue(bond) {
-  const coupons = bond.couponsPaid || 0;
+  return bond.face || 0;
+}
+
+/**
+ * 一张债券的「累计已付票息」（仅供展示，与实际付息记录一致）。
+ * @param {object} bond
+ */
+export function bondCouponPaidValue(bond) {
   const per = bond.couponPer ?? Math.round(bond.face * CONFIG.bondCoupon);
-  return Math.round(bond.face + per * coupons);
+  return Math.round(per * (bond.couponsPaid || 0));
 }
 
 /** 发行一次债券需要的最低认购人数 */

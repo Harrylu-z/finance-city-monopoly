@@ -13,11 +13,11 @@ import {
 } from './board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
-  assetValue, totalAssets, isBankrupt, liquidate, purchasePrice, levelLabel,
+  assetValue, totalAssets, institutionValue, isBankrupt, liquidate, purchasePrice, levelLabel,
   globalRegulatorEffects, groupBuffTier, buffMultiplierFor, loanRepayAmount,
   loanInterestPerTurn, loanOutstandingAmount,
   outstandingLoan, bondRedeemValue, bondMinSubscribers, bondCouponFor,
-  buffEffectMult,
+  buffEffectMult, maintenanceCost, totalMaintenanceCost,
 } from './economy.js';
 import { makeRng } from './rng.js';
 import {
@@ -33,6 +33,37 @@ import {
 } from './poker.js';
 
 let eventSeq = 0;
+
+/**
+ * 债券 id 全局自增计数器（m1）。
+ *
+ * 放在 state 上（而非模块级），这样：
+ *   · 读档 / 分局时计数器随状态一起保存，恢复后不会重复；
+ *   · 同种子对局的 id 序列完全可复现。
+ *
+ * @param {object} state
+ * @returns {string} 形如 `bond_7` 的唯一 id
+ */
+export function nextBondId(state) {
+  if (!state) return 'bond_0';
+  if (typeof state.bondSeq !== 'number' || !Number.isFinite(state.bondSeq)) {
+    // 兼容旧存档：从现有债券里推断一个起点，避免与已有 id 冲突
+    let max = 0;
+    for (const p of (state.players || [])) {
+      for (const b of (p.bonds || [])) {
+        const m = /bond_(\d+)$/.exec(b.id || '');
+        if (m) max = Math.max(max, Number(m[1]) + 1);
+      }
+      for (const b of (p.subscribedBonds || [])) {
+        const m = /bond_(\d+)$/.exec(b.id || '');
+        if (m) max = Math.max(max, Number(m[1]) + 1);
+      }
+    }
+    state.bondSeq = max;
+  }
+  state.bondSeq += 1;
+  return `bond_${state.bondSeq}`;
+}
 
 /** 创建初始状态 */
 export function createState(options = {}) {
@@ -65,8 +96,9 @@ export function createState(options = {}) {
     difficulty,
     diceCount,
     market,               // 'bull' | 'bear' | 'normal'
-    eventMult: 1,         // 全局事件卡租金系数
-    round: 1,             // 圈数
+    eventMult: 1,         // 全局事件卡租金系数（由 globalBuffs 推导，见 recomputeGlobalMult）
+    globalBuffs: [],      // 限时全局状态：{ id, name, desc, remaining, total, effect }
+    round: 1,             // 全局圈数（发生过几次绕圈事件；展示用）
     turnNumber: 0,        // 总回合数
     currentPlayerIndex: 0,
     players: [],
@@ -77,6 +109,8 @@ export function createState(options = {}) {
     events: [],
     maxTurns: 5000,
     bankruptedThisTurn: false,
+    // 债券 id 全局自增计数器（m1）
+    bondSeq: 0,
   };
 
   players.forEach((p, i) => {
@@ -115,6 +149,10 @@ export function createState(options = {}) {
       position: 0,
       inJail: false,
       bankrupt: false,
+      // ⚠ P1：玩家**自己**绕过的圈数（与全局 state.round 分离）。
+      //   牛熊周期与债券到期统一按「全家中位圈数」判定，
+      //   避免跑得快的玩家单方面改变全场节奏。
+      laps: p.laps ?? 0,
       institutions: [],   // {cellIndex, level, mortgaged, mortgageAmount}
       stats: {
         acquisitions: 0, upgrades: 0, rentsCollected: 0, rentsPaid: 0, largestRent: 0,
@@ -133,8 +171,10 @@ export function createState(options = {}) {
       subscribedBonds: [],// 作为认购方持有的债券：{id, issuerId, face, coupon, couponPer, couponsPaid, dueRound}
       buffs: [],          // 限时状态：{id, name, desc, kind, remaining, total, startedTurn, effect}
       loanCountThisRound: 0,
+      // 维持成本欠费累计（超过资产 50% → 强制清算）
+      maintenanceDebt: 0,
       // 升级许可：只有再次踩到自有地块后才获得一次升级许可
-      upgradePermits: {}, // cellIndex -> true
+      upgradePermits: {}, // cellIndex -> { turn, expiresTurn }
     });
   });
 
@@ -425,7 +465,17 @@ export function settleOnCell(state, player, cellIndex) {
     } else if (owner.id === player.id) {
       // 踩到自己的机构 —— 获得升级许可（只有再次踩到自有地块后才能升级）
       if (!cell.regulator) {
-        player.upgradePermits[cellIndex] = true;
+        // ⚠ P2（m5）：升级许可加**时效 + 数量上限**。
+        //   旧实现 `upgradePermits[cellIndex] = true` 是**永久**的 ——
+        //   只要踩过一次自己的地块，以后走到哪都能对这块地升级，
+        //   甚至囤积一堆许可后一次性连升多级（实质上取消了「再次踏足」限制）。
+        //   现在：
+        //     · 每个许可有**时效**（CONFIG.upgradePermitTurns 个自己的回合）；
+        //     · 同时持有的许可数有**上限**（CONFIG.maxUpgradePermits），
+        //       超出的不再发放（并提示）；
+        //     · 许可的记录结构从 `true` 升级为 `{ turn, expiresTurn }`，
+        //       同时兼容旧存档的 `true`（视为刚发放、给足时效）。
+        grantUpgradePermit(state, player, cellIndex);
         results.push({ kind: 'upgrade-permit', cellIndex, cell });
       } else {
         results.push({ kind: 'own-regulator', cellIndex, cell });
@@ -444,7 +494,13 @@ export function settleOnCell(state, player, cellIndex) {
         const buffMult = buffMultiplierFor(owner, cell.group, state)
           * buffEffectMult(owner, 'rentMult');
         // 归属人的自身租金系数（信用评级展望 / 自查类事件卡）
-        const selfMult = owner.selfRentMult ?? 1;
+        // ⚠ P1：`selfRentMult` 不再是**永久**乘数（一次监管抽查就永久扣租）。
+        //   现在它由「限时 Buff（reg-self-rent）」承担 ——
+        //   buffEffectMult(owner, 'rentMult') 已包含该限时效果，
+        //   selfRentMult 只保留一个**下限保护**的角色（见 selfRentFloorMult）：
+        //   即便有负面限时状态，租金也不会低于基准的一定的比例，
+        //   且到期后自动恢复（不留下永久痕迹）。
+        const selfMult = selfRentMultFor(owner);
         // 精算师职业：自己收取的管理费 +6%（温和加成，不改写胜负）
         const careerMult = careerEffectMult(owner, 'rentMult');
         const rent = Math.round(calculateRent(cell, inst.level, {
@@ -489,18 +545,104 @@ export function marketNoteFor(market) {
 }
 
 /**
+ * 「交易员」职业的择时价差收益 —— 在**行情切换**时发放。
+ *
+ * ⚠ P2（m-trader）：34 格棋盘上**没有独立的「牛熊切换格」**了 ——
+ *   行情切换有两条来源：
+ *     1. 转盘抽到「牛熊切换」效果（`SPECIAL.market`）；
+ *     2. 每 `CONFIG.marketCycleRounds` 圈**自动切换**（按中位圈数判定）。
+ *   旧实现只在 `case 'market'` 里发奖励，而该 case 现在只能由转盘触发，
+ *   自动切换路径完全漏发 —— 职业被动事实上**失效**。
+ *   现在把发放逻辑抽成本函数，两条路径共用；
+ *   并且「每圈只发一次」的去重键从 `state.round` 改成
+ *   **玩家自己的圈数** `player.laps`（与 state.round 分离后语义才对得上）。
+ *
+ * @param {object} state
+ * @param {object} player
+ * @param {object} [cell] 触发格（可选）
+ * @returns {object|null} 结算条目（未发放时返回 null）
+ */
+export function grantMarketTimingBonus(state, player, cell = null) {
+  if (!player || player.bankrupt) return null;
+  const amount = careerEffectValue(player, 'marketBonus');
+  if (!(amount > 0)) return null;
+  // 每「玩家自己的一圈」只发一次（用 laps 做去重键）
+  const lap = player.laps || 0;
+  if (player._marketBonusLap != null && player._marketBonusLap === lap) return null;
+  player._marketBonusLap = lap;
+  recordCash(state, player, amount, '择时价差收益', '收益');
+  return {
+    kind: 'bonus', amount, cell,
+    reason: '交易员择时价差收益',
+  };
+}
+
+/**
+ * 归属人的「自身租金系数」—— P1：限时 buff + 下限 + 恢复。
+ *
+ * 语义：
+ *   · 正面效果（评级上调等）由限时 Buff 承担，在 `buffEffectMult` 里生效；
+ *   · 负面效果（监管整改等）同样由限时 Buff 承担（见 applyTrapCard）；
+ *   · 本函数只负责**下限保护**：
+ *     即使叠加了负面限时状态，租金也不低于基准 × CONFIG.selfRentFloorMult，
+ *     避免「一次监管抽查 + 一个陷阱」把某个机构的收入压到 0；
+ *   · 旧字段 `player.selfRentMult` 若来自**旧存档**（永久乘数），
+ *     这里按「下限 + 恢复」处理：只取其与下限之间较宽松的一侧，
+ *     并在若干回合后自动衰减回 1（`selfRentMultDecayTurns`），
+ *     不再让永久痕迹留在存档里。
+ *
+ * @param {object} owner 归属人
+ * @returns {number} 自身租金系数（≥ CONFIG.selfRentFloorMult）
+ */
+export function selfRentMultFor(owner) {
+  const legacy = owner.selfRentMult;
+  if (typeof legacy !== 'number' || legacy === 1) return 1;
+  // 旧存档的永久乘数：按剩余回合逐步恢复
+  const remain = typeof owner.selfRentMultTurns === 'number'
+    ? owner.selfRentMultTurns
+    : 0;
+  if (remain <= 0) return 1;
+  const floor = CONFIG.selfRentFloorMult;
+  // 复利式恢复：每回合向 1 靠拢 1/总回合
+  const step = 1 / Math.max(1, CONFIG.selfRentMultDecayTurns);
+  const cur = legacy + (1 - legacy) * step;
+  owner.selfRentMult = Math.round(cur * 1000) / 1000;
+  owner.selfRentMultTurns = remain - 1;
+  if (owner.selfRentMultTurns <= 0) {
+    owner.selfRentMult = 1;
+    owner.selfRentMultTurns = 0;
+  }
+  return Math.max(floor, owner.selfRentMult);
+}
+
+/**
  * 发放「经过起点」的货币发行补贴。
  *
  * 规则（改动后）：
  *   · **只要经过起点格就能拿到补贴** —— 不要求「恰好停在起点」；
  *   · 绕圈跨过起点（索引 0）时同样发放；
- *   · 同一圈内不重复发放（用 _startBonusGranted 标记去重）。
+ *   · 同一圈内不重复发放。
+ *
+ * ⚠ P2（m6）：去重标记的**复位时机**从「布尔标志」改为**圈号记录**。
+ *   旧实现用 `_startBonusGranted = true/false`：
+ *     · 复位只发生在 main.js 的 `if (passedStart)` 分支 ——
+ *       「恰好停在起点」（landedOnStart）但没跨圈的路径**不复位**，
+ *       于是该玩家此后**永远拿不到补贴**；
+ *     · 而「跨过起点」却会复位 —— 两条路径的语义不对称。
+ *   现在记录「发放时所在的圈号」`_startBonusLap`：
+ *     · 判定 = 「本圈（玩家自己的 laps）还没发过」；
+ *     · 无论落在起点、跨过起点、还是传送回起点，
+ *       只要玩家自己的圈号推进了，就自然解锁下一圈。
+ *   这样「每圈恰好一次」由**圈号**保证，与触发路径无关。
  *
  * 返回结算条目数组（空数组表示本圈已发过，不再重复发放）。
  */
 export function grantStartPass(state, player, cell) {
-  if (player._startBonusGranted) return [];
+  const lap = player.laps || 0;
+  // 首圈（laps = 0）也允许发一次：用 -1 作为「从未发放」的初始值
+  if (player._startBonusLap != null && player._startBonusLap === lap) return [];
   recordCash(state, player, CONFIG.startBonus, '货币发行补贴', '补贴');
+  player._startBonusLap = lap;
   player._startBonusGranted = true;
   return [{ kind: 'start-bonus', amount: CONFIG.startBonus, cell: cell || null }];
 }
@@ -534,6 +676,73 @@ export function addBuff(state, player, buff) {
 }
 
 /**
+ * 添加**限时全局状态**（影响全场租金等全局系数）。
+ *
+ * ⚠ P1：事件卡的「全行业」租金系数现在走这里 ——
+ *   它是**限时**的（到期自动恢复 1），而不是永久改写 state.eventMult。
+ *
+ * 同 id 的旧状态被覆盖；`eventMult` 每次重算：
+ *   多个全局状态叠加时，取**对收取方最不利**的那个
+ *   （即 rentMult 最小者）—— 避免玩家靠抽卡叠增益无限膨胀。
+ *
+ * @param {object} state
+ * @param {object} buff { id, name, desc, turns, effect:{rentMult?} }
+ */
+export function setGlobalBuff(state, buff) {
+  state.globalBuffs = state.globalBuffs || [];
+  state.globalBuffs = state.globalBuffs.filter((b) => b.id !== buff.id);
+  const entry = {
+    id: buff.id,
+    name: buff.name,
+    desc: buff.desc || '',
+    remaining: buff.turns,
+    total: buff.turns,
+    startedLap: state.lapCounter || 0,
+    effect: buff.effect || {},
+  };
+  state.globalBuffs.push(entry);
+  recomputeGlobalMult(state);
+  emit(state, 'global-buff-gained', { buffId: entry.id, name: entry.name });
+  log(state, 'sys', `全市场进入「${entry.name}」状态：${entry.desc}（持续 ${entry.total} 圈）`, '状态');
+  return entry;
+}
+
+/**
+ * 重算全局乘数（state.eventMult）—— 由限时全局状态推导。
+ * @param {object} state
+ */
+export function recomputeGlobalMult(state) {
+  let mult = 1;
+  for (const b of (state.globalBuffs || [])) {
+    const v = b.effect?.rentMult;
+    if (typeof v === 'number' && v !== 1) mult = Math.min(mult, v);
+  }
+  state.eventMult = mult;
+  return mult;
+}
+
+/**
+ * 递减全局限时状态（每完成一圈调用一次）。
+ * @param {object} state
+ */
+export function tickGlobalBuffs(state) {
+  if (!state.globalBuffs || !state.globalBuffs.length) return;
+  const expired = [];
+  for (const b of state.globalBuffs) {
+    b.remaining -= 1;
+    if (b.remaining <= 0) expired.push(b);
+  }
+  if (expired.length) {
+    state.globalBuffs = state.globalBuffs.filter((b) => b.remaining > 0);
+    for (const b of expired) {
+      log(state, 'sys', `全市场状态「${b.name}」结束`, '状态');
+      emit(state, 'global-buff-expired', { buffId: b.id });
+    }
+    recomputeGlobalMult(state);
+  }
+}
+
+/**
  * 回合结束时递减该玩家自己的 Buff。
  * 获得状态的当回合不扣减，因此「3 回合」= 之后完整经历 3 个自己的回合。
  */
@@ -550,6 +759,103 @@ export function tickBuffs(state, player) {
     for (const b of expired) {
       log(state, 'sys', `${player.name} 的「${b.name}」状态结束`, '状态');
       emit(state, 'buff-expired', { playerId: player.id, buffId: b.id });
+    }
+  }
+}
+
+/**
+ * 需要「每回合一次」闸门的特殊效果 id（P1）。
+ *
+ * 这些效果都具备「自我放大」或「可套利」的性质：
+ *   · refinance（再融资窗口）—— 一回合内可无限发债 → 无限融资套利；
+ *   · clearing（清算所）/ crossborder（跨境互联）—— 传送后可再落到传送格 → 连锁传送；
+ *   · metro（地铁枢纽）—— 传送后可再落到地铁格 → 连锁移动。
+ */
+export const GATED_SPECIALS = new Set(['refinance', 'clearing', 'crossborder', 'metro']);
+
+/**
+ * 读取玩家本回合已用掉的特殊格闸门集合。
+ * @param {object} state
+ * @param {object} player
+ * @returns {Set<string>}
+ */
+function specialGateSet(state, player) {
+  if (!player._specialGates) player._specialGates = {};
+  const rec = player._specialGates;
+  // 回合号变了 → 闸门重置
+  if (rec.turn !== state.turnNumber) {
+    rec.turn = state.turnNumber;
+    rec.used = {};
+  }
+  if (!rec.used) rec.used = {};
+  return rec.used;
+}
+
+/**
+ * 该玩家本回合是否已经触发过某个特殊效果。
+ */
+export function specialGateUsed(state, player, specialId) {
+  return !!specialGateSet(state, player)[specialId];
+}
+
+/**
+ * 标记该玩家本回合已触发某个特殊效果。
+ */
+export function markSpecialGate(state, player, specialId) {
+  specialGateSet(state, player)[specialId] = true;
+}
+
+/**
+ * 发放升级许可（带**时效 + 数量上限** —— P2 / m5）。
+ *
+ * 规则：
+ *   · 每个许可的有效期为 `CONFIG.upgradePermitTurns` 个**自己的回合**；
+ *   · 同时持有的许可数不超过 `CONFIG.maxUpgradePermits`；
+ *     超限时不再发放（并提示玩家），防止囤积许可后一次性连升多级；
+ *   · 旧存档里 `upgradePermits[cell] === true` 的记录视为「刚发放」，
+ *     补齐时效字段（向后兼容）。
+ *
+ * @param {object} state
+ * @param {object} player
+ * @param {number} cellIndex
+ * @returns {{ok:boolean, reason?:string}}
+ */
+export function grantUpgradePermit(state, player, cellIndex) {
+  if (!player.upgradePermits) player.upgradePermits = {};
+  // 先清理过期许可
+  pruneUpgradePermits(state, player);
+  const live = Object.keys(player.upgradePermits).length;
+  if (live >= CONFIG.maxUpgradePermits && !player.upgradePermits[cellIndex]) {
+    log(state, 'sys',
+      `${player.name} 的升级许可已达上限（${CONFIG.maxUpgradePermits} 个），本次不再发放`, '升级');
+    return { ok: false, reason: '升级许可已达上限' };
+  }
+  player.upgradePermits[cellIndex] = {
+    turn: state.turnNumber,
+    expiresTurn: state.turnNumber + CONFIG.upgradePermitTurns,
+  };
+  return { ok: true };
+}
+
+/**
+ * 清理过期的升级许可（在自己的回合结束时调用）。
+ * @param {object} state
+ * @param {object} player
+ */
+export function pruneUpgradePermits(state, player) {
+  if (!player.upgradePermits) return;
+  for (const k of Object.keys(player.upgradePermits)) {
+    const p = player.upgradePermits[k];
+    if (p === true) {
+      // 旧存档格式 → 补齐时效
+      player.upgradePermits[k] = {
+        turn: state.turnNumber,
+        expiresTurn: state.turnNumber + CONFIG.upgradePermitTurns,
+      };
+      continue;
+    }
+    if (!p || typeof p.expiresTurn !== 'number' || state.turnNumber > p.expiresTurn) {
+      delete player.upgradePermits[k];
     }
   }
 }
@@ -605,6 +911,22 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
     sp = picked;
   }
 
+  // ===== 每回合一次的「特殊格闸门」（P1）=====
+  // 某些特殊效果**不应该**在一个回合内被反复触发：
+  //   · 再融资窗口（发债）—— 一回合内可无限发债 = 无限融资套利；
+  //   · 清算所 / 跨境互联（传送）—— 传送后可再落到传送格，形成连锁；
+  //   · 地铁枢纽（地铁）—— 传送后可再落到地铁格，形成连锁。
+  // 闸门按「效果 id」维度记录：**每个玩家每个回合每种效果只生效一次**。
+  const gated = GATED_SPECIALS.has(sp.id);
+  if (gated && specialGateUsed(state, player, sp.id)) {
+    results.push({
+      kind: 'neutral', cell,
+      reason: `${sp.name || sp.short || sp.id} 本回合已触发过，本次不再生效`,
+    });
+    return results;
+  }
+  if (gated) markSpecialGate(state, player, sp.id);
+
   switch (sp.id) {
     case 'start': {
       // 起点补贴由 grantStartPass 统一发放（带去重标记），避免重复计息
@@ -659,10 +981,28 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
     }
     case 'crossborder': {
       // 随机飞往另一处机构
+      // ⚠ P2（m7）：排除**监管格**与**内环 3 星核心格**。
+      //   旧实现从「全部机构格」里随机 —— 意味着跨境互联可能把人
+      //   直接送到监管格（一次性买断 ￥3000~3600 的核心资产，
+      //   等于「免费抽奖抽中核心资产」），或送到内环 3 星机构
+      //   （同样是最贵的几块地）。
+      //   现在只在**外环普通机构**里跳 —— 传送是「位置变动」，
+      //   不应成为「白拿核心资产」的漏洞。
       const instCells = BOARD_CELLS
-        .map((c, i) => (c.type === 'institution' ? i : -1))
+        .map((c, i) => {
+          if (c.type !== 'institution') return -1;
+          if (c.regulator) return -1;                       // 排除监管格
+          if (c.star === 3) return -1;                      // 排除 3 星核心资产
+          return i;
+        })
         .filter((i) => i >= 0);
-      const target = instCells[state.rng.int(0, instCells.length - 1)];
+      const target = instCells.length
+        ? instCells[state.rng.int(0, instCells.length - 1)]
+        : -1;
+      if (target < 0) {
+        results.push({ kind: 'neutral', cell, reason: '跨境互联暂无可达机构' });
+        break;
+      }
       results.push({ kind: 'teleport', target, cell, reason: sp.name });
       state.pending = { kind: 'teleport', target, playerId: player.id };
       break;
@@ -683,17 +1023,10 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       const next = state.market === 'bull' ? 'bear' : 'bull';
       state.market = next;
       results.push({ kind: 'market-switch', market: next, cell });
-      // 「交易员」职业：踩到牛熊切换格时额外获得一笔价差收益
-      // （每圈只发一次，防止反复刷同一格；金额温和，不决定走势）
-      const marketBonus = careerEffectValue(player, 'marketBonus');
-      if (marketBonus > 0 && !player._marketBonusRound) {
-        player._marketBonusRound = state.round;
-        recordCash(state, player, marketBonus, '择时价差收益', '收益');
-        results.push({
-          kind: 'bonus', amount: marketBonus, cell,
-          reason: '交易员择时价差收益',
-        });
-      }
+      // 「交易员」职业：行情切换时额外获得一笔价差收益
+      // （每圈只发一次，防止反复刷；金额温和，不决定走势）
+      const bonus = grantMarketTimingBonus(state, player);
+      if (bonus) results.push(bonus);
       break;
     }
     case 'casino': {
@@ -822,14 +1155,31 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
   return results;
 }
 
-/** 应用事件卡效果 */
+/**
+ * 应用事件卡效果。
+ *
+ * ⚠ P1：`scope === 'all'` 的租金系数不再是**永久**改写 `state.eventMult`，
+ *   而是变成一个**限时全局状态**（`state.globalBuffs`），
+ *   到期自动恢复为 1。
+ *   旧实现的问题：任何一张「全行业」事件卡都会**永久**改变全场的租金系数，
+ *   而且后来的卡片直接覆盖前面的（取 max / 覆盖），
+ *   玩家一旦抽到一张 e9（rentMult 1.20）就永久通吃了。
+ *   现在：限时 N 圈、同类叠加取更严格（对收取方更不利）的那个、到期自动失效。
+ */
 export function applyEventCard(state, player, card) {
   const e = card.effect;
   if (e.cash) {
     recordCash(state, player, e.cash, `事件卡「${card.title}」`, e.cash > 0 ? '收益' : '成本');
   }
   if (e.rentMult && e.scope === 'all') {
-    state.eventMult = e.rentMult;
+    // 限时全局状态：持续 CONFIG.eventMultTurns 圈
+    setGlobalBuff(state, {
+      id: 'event-rent-mult',
+      name: `事件卡「${card.title}」`,
+      desc: `全市场管理费 ×${e.rentMult.toFixed(2)}`,
+      turns: CONFIG.eventMultTurns,
+      effect: { rentMult: e.rentMult },
+    });
   }
   emit(state, 'event-applied', { playerId: player.id, cardId: card.id });
   return { cash: e.cash || 0, rentMult: state.eventMult };
@@ -840,6 +1190,12 @@ export function applyEventCard(state, player, card) {
  * 罚金减免来源（取最大，不叠加）：
  *   1. 持有「金融稳定委员会」的玩家 —— 减免 50%
  *   2. 「风控总监」职业 —— 减免 30%
+ *
+ * ⚠ P1：`scope === 'self'` 的租金系数不再是**永久**写进
+ *   `player.selfRentMult`（那是乘算且永不恢复 —— 一次监管抽查
+ *   就永久扣掉该玩家 12%~25% 的管理费收入），
+ *   现在改成**限时 Buff**（与其它限时状态同构），
+ *   到期自动消失；确实需要「永久下调」时用下限 + 恢复机制兜底。
  */
 export function applyTrapCard(state, player, card) {
   const e = card.effect;
@@ -854,7 +1210,14 @@ export function applyTrapCard(state, player, card) {
   }
   if (cash) recordCash(state, player, cash, `监管卡「${card.title}」`, cash > 0 ? '收益' : '成本');
   if (e.rentMult && e.scope === 'self') {
-    player.selfRentMult = (player.selfRentMult ?? 1) * e.rentMult;
+    addBuff(state, player, {
+      id: 'reg-self-rent',
+      name: `监管整改 · ${card.title}`,
+      desc: `本机构管理费 ×${e.rentMult.toFixed(2)}`,
+      turns: CONFIG.selfRentMultTurns,
+      kind: 'bad',
+      effect: { rentMult: e.rentMult },
+    });
   }
   emit(state, 'trap-applied', { playerId: player.id, cardId: card.id, cash });
   log(state, 'bad',
@@ -875,8 +1238,12 @@ export function applyTrapCard(state, player, card) {
  *
  * 规则要点：
  *   1. 所有**未破产**玩家上桌（至少 2 人才能开局）；
- *   2. 桌上面值 = 现金 + 资产折算额度（资产折算率 50%）；
+ *   2. 桌上面值 = 现金 + **机构市值**折算额度（资产折算率 50%）；
  *      —— 允许「用资产下注」，但**不转移资产所有权**；
+ *      ⚠ F1：折算基数**只能是机构市值**，绝不能包含现金。
+ *      `totalAssets()` = 现金 + 机构市值，若直接拿来当折算基数，
+ *      等于把现金算两遍（现金既进 cashStack 又进 assetStack），
+ *      玩家可以凭空拿到 1.5 倍的桌上面值。
  *   3. 「赌王」职业起始底牌 3 张（其余 2 张），
  *      全局牌库仍严格一副 52 张（见 core/poker.js 的 assertDeckIntegrity）；
  *   4. 结算时现金**最多扣到 0**，不足部分记为资产折让 → 绝不产生负数。
@@ -894,8 +1261,9 @@ export function startCasinoGame(state) {
     isAI: !!p.isAI,
     cash: Math.max(0, p.cash || 0),
     // 资产折算额度 —— 由 poker.js 内部按 assetBetRatio 折算，
-    // 这里只传原始资产市值，避免重复折算。
-    assetValue: Math.max(0, totalAssets(p, state)),
+    // 这里只传**机构市值**（不含现金），避免重复折算 / 重复计入现金。
+    // ⚠ F1：totalAssets 含现金，必须扣掉 cash 只留机构市值。
+    assetValue: Math.max(0, institutionValue(p, state)),
     // 赌王职业：多 1 张底牌
     extraHole: careerEffectValue(p, 'pokerExtraHole'),
     // 量化研究员：坏牌判定更保守（更容易跟牌）
@@ -1060,7 +1428,13 @@ export function issueBond(state, issuer, decisions) {
     };
   }
   const bond = {
-    id: `bond${state.turnNumber}_${issuer.id}`,
+    // ⚠ m1：债券 id 改为**全局自增**。
+    //   旧写法 `bond${turnNumber}_${issuerId}` 在「同一回合内同一发行人
+    //   发多笔债」或「多局/读档」时会撞 id —— 认购方的 subscribedBonds
+    //   按 id 匹配，一旦撞 id 就会串账（多债共用一条持有记录、
+    //   兑付时重复清除）。
+    //   现在用 state 内的全局自增计数器，天然唯一且可复现。
+    id: nextBondId(state),
     issuerId: issuer.id,
     face: CONFIG.bondFace,
     coupon,
@@ -1068,6 +1442,10 @@ export function issueBond(state, issuer, decisions) {
     subscribers: subs.map((s) => s.playerId),
     couponsPaid: 0,
     issuedRound: state.round,
+    // ⚠ P1：到期圈数按**发行方自己的圈数**记（而不是全局 state.round），
+    //   再由 processBonds 用「中位圈数」与之比较 —— 保证不同座位
+    //   速度不同时，债券的存续期是稳定的「N 圈」而不是「N 次绕圈事件」。
+    dueLap: (issuer.laps || 0) + CONFIG.bondTerm,
     dueRound: state.round + CONFIG.bondTerm,
   };
   issuer.bonds.push(bond);
@@ -1077,7 +1455,8 @@ export function issueBond(state, issuer, decisions) {
     recordCash(state, buyer, -CONFIG.bondFace, '认购公司债券', '债券');
     buyer.subscribedBonds.push({
       id: bond.id, issuerId: issuer.id, face: CONFIG.bondFace,
-      coupon, couponPer, couponsPaid: 0, dueRound: bond.dueRound,
+      coupon, couponPer, couponsPaid: 0,
+      dueLap: bond.dueLap, dueRound: bond.dueRound,
     });
   }
   recordCash(state, issuer, CONFIG.bondFace * subs.length, `发行债券募资（${subs.length} 家认购）`, '债券');
@@ -1115,37 +1494,130 @@ export function underwriteBond(state, issuer) {
   return issueBond(state, issuer, decisions);
 }
 
-/** 每圈结束时的债券付息与到期兑付 */
-export function processBonds(state) {
+/**
+ * 每圈结束时的债券付息与到期兑付。
+ *
+ * ================== 违约口径（F3）=================
+ * 债券是**有信用风险**的融资工具，否则「发债」就等于无风险套利：
+ *   1. **发行方破产** → 该笔债券**停止付息、到期跳过兑付**，
+ *      债权人（认购方）**损失全部本金**（已收的票息不退）；
+ *      该债券从发行方的 `bonds` 中移除，并从每个认购方的
+ *      `subscribedBonds` 中移除（债一笔勾销）。
+ *   2. **认购方破产** → 跳过该认购方的票息收入与本金回款
+ *      （钱付给谁？付给一个已清算的玩家毫无意义），
+ *      但**发行方仍需向其他未破产的认购方足额兑付**。
+ *      破产认购方的认购记录同样被清除。
+ *   3. 发行方**现金不足以付息/兑付**时 → 不足部分计入欠息
+ *      （不凭空扣成负数），到期兑付时按实际现金兑付。
+ *
+ * 破产方在 `liquidate()` 中已被清空 `bonds` / `subscribedBonds`，
+ * 因此这里主要处理「发行方在付息环节刚刚破产」的边界情况。
+ *
+ * @param {object} state
+ * @param {number} [currentLap] 当前中位圈数（到期判定基准；缺省用 state.round）
+ * @returns {string[]} 播报文案
+ */
+export function processBonds(state, currentLap = null) {
   const notes = [];
-  // 发行方付息
+  const findPlayer = (id) => state.players.find((x) => x.id === id);
+  // 到期判定基准：中位圈数优先（公平），缺省回落到 state.round（旧调用方兼容）
+  const lap = (currentLap == null) ? (state.round || 0) : currentLap;
+
   for (const p of state.players) {
+    // ===== 发行方已破产：该笔债券直接勾销（债权人损失本金）=====
+    if (p.bankrupt) {
+      for (const b of (p.bonds || [])) {
+        const lost = b.face * (b.subscribers ? b.subscribers.length : 0);
+        for (const sid of (b.subscribers || [])) {
+          const buyer = findPlayer(sid);
+          if (!buyer) continue;
+          buyer.subscribedBonds = buyer.subscribedBonds.filter((x) => x.id !== b.id);
+        }
+        notes.push(`${p.name} 已破产，其发行的债券违约，认购方损失本金 ￥${lost}`);
+      }
+      p.bonds = [];
+      continue;
+    }
+
+    // ===== 发行方付息 =====
     for (const b of (p.bonds || [])) {
-      const due = Math.round(b.couponPer * b.subscribers.length);
-      recordCash(state, p, -due, `债券票息（${b.subscribers.length} 家）`, '付息');
-      for (const sid of b.subscribers) {
-        const buyer = state.players.find((x) => x.id === sid);
+      const aliveSubs = (b.subscribers || []).filter((sid) => {
+        const buyer = findPlayer(sid);
+        return buyer && !buyer.bankrupt;
+      });
+      if (!aliveSubs.length) {
+        // 全部认购方都已破产 → 无人可付、无人可收，直接勾销
+        for (const sid of (b.subscribers || [])) {
+          const buyer = findPlayer(sid);
+          if (!buyer) continue;
+          buyer.subscribedBonds = buyer.subscribedBonds.filter((x) => x.id !== b.id);
+        }
+        notes.push(`${p.name} 的债券已无存续认购方，予以注销`);
+        continue;
+      }
+      const due = Math.round(b.couponPer * aliveSubs.length);
+      // 现金不足 → 只付得起多少付多少，差额计入欠息（不扣成负数）
+      const paid = Math.min(due, Math.max(0, p.cash || 0));
+      if (paid > 0) {
+        recordCash(state, p, -paid, `债券票息（${aliveSubs.length} 家）`, '付息');
+      }
+      const unpaid = due - paid;
+      if (unpaid > 0) {
+        b.accruedInterest = (b.accruedInterest || 0) + unpaid;
+        notes.push(`${p.name} 现金不足，债券票息 ￥${unpaid} 转为欠息`);
+      }
+      for (const sid of aliveSubs) {
+        const buyer = findPlayer(sid);
         if (!buyer) continue;
         recordCash(state, buyer, b.couponPer, '债券票息收入', '收益');
-        const held = buyer.subscribedBonds.find((x) => x.id === b.id);
+        const held = (buyer.subscribedBonds || []).find((x) => x.id === b.id);
         if (held) held.couponsPaid += 1;
       }
       b.couponsPaid += 1;
-      notes.push(`${p.name} 支付债券票息 ￥${due}`);
+      notes.push(`${p.name} 支付债券票息 ￥${paid}`);
     }
-    // 到期兑付本金
-    const matured = (p.bonds || []).filter((b) => state.round >= b.dueRound);
+
+    // ===== 到期兑付本金 =====
+    // 到期判定优先用 dueLap（中位圈数口径）；旧存档没有该字段时回落到 dueRound。
+    const matured = (p.bonds || []).filter((b) => {
+      const due = (b.dueLap != null) ? b.dueLap : b.dueRound;
+      return lap >= due;
+    });
     for (const b of matured) {
-      const total = b.face * b.subscribers.length;
-      recordCash(state, p, -total, `债券到期兑付（${b.subscribers.length} 家）`, '还款');
-      for (const sid of b.subscribers) {
-        const buyer = state.players.find((x) => x.id === sid);
+      const aliveSubs = (b.subscribers || []).filter((sid) => {
+        const buyer = findPlayer(sid);
+        return buyer && !buyer.bankrupt;
+      });
+      const total = b.face * aliveSubs.length;
+      // 兑付口径（m2）：本金按**发行时实际认购人数**的存活部分兑付，
+      // 票息在到期当期照付（与到期同时结算）。
+      const paid = Math.min(total, Math.max(0, p.cash || 0));
+      if (paid > 0) {
+        recordCash(state, p, -paid, `债券到期兑付（${aliveSubs.length} 家）`, '还款');
+      }
+      const shortfall = total - paid;
+      if (shortfall > 0) {
+        notes.push(`${p.name} 债券到期兑付缺口 ￥${shortfall}（现金不足，部分兑付）`);
+      }
+      for (const sid of aliveSubs) {
+        const buyer = findPlayer(sid);
         if (!buyer) continue;
-        recordCash(state, buyer, b.face, '债券本金回款', '收益');
-        buyer.subscribedBonds = buyer.subscribedBonds.filter((x) => x.id !== b.id);
+        // 按「实际兑付比例」分配，避免兑付不足时多发
+        const ratio = total > 0 ? paid / total : 0;
+        const back = Math.round(b.face * ratio);
+        if (back > 0) {
+          recordCash(state, buyer, back, '债券本金回款', '收益');
+        }
+        buyer.subscribedBonds = (buyer.subscribedBonds || []).filter((x) => x.id !== b.id);
+      }
+      // 破产认购方的记录一并清除（他们拿不到钱）
+      for (const sid of (b.subscribers || [])) {
+        const buyer = findPlayer(sid);
+        if (!buyer) continue;
+        buyer.subscribedBonds = (buyer.subscribedBonds || []).filter((x) => x.id !== b.id);
       }
       p.bonds = p.bonds.filter((x) => x.id !== b.id);
-      notes.push(`${p.name} 债券到期兑付 ￥${total}`);
+      notes.push(`${p.name} 债券到期兑付 ￥${paid}`);
     }
   }
   return notes;
@@ -1211,8 +1683,20 @@ export function upgradeInstitution(state, player, cellIndex, opts = {}) {
   if (inst.level >= cell.maxLevel) return { ok: false, reason: '已达最高等级' };
 
   // 必须先踩到该地块才有升级许可
-  if (!opts.force && !player.upgradePermits?.[cellIndex]) {
-    return { ok: false, reason: '需再次踏足该机构才能升级' };
+  // ⚠ P2（m5）：许可带**时效** —— 过期后即使踩过也不能升级
+  //   （防止「踩一次 → 攒着 → 随时用」的无限期许可能力）。
+  if (!opts.force) {
+    const permit = player.upgradePermits?.[cellIndex];
+    if (!permit) {
+      return { ok: false, reason: '需再次踏足该机构才能升级' };
+    }
+    if (permit !== true) {
+      const expires = typeof permit.expiresTurn === 'number' ? permit.expiresTurn : null;
+      if (expires != null && state.turnNumber > expires) {
+        delete player.upgradePermits[cellIndex];
+        return { ok: false, reason: '升级许可已过期，请再次踏足该机构' };
+      }
+    }
   }
 
   const regEff = globalRegulatorEffects(state);
@@ -1328,9 +1812,25 @@ export function endTurn(state) {
     player.lastAction.passedStart = false;
     // 「每圈最多贷一次」只对该玩家自己的圈生效
     player.loanCountThisRound = 0;
-    // 「交易员」职业的择时奖励同样每圈只发一次
-    player._marketBonusRound = 0;
+    // ⚠ P1：**玩家自己的圈数**（player.laps）与全局圈数（state.round）分离。
+    //   旧逻辑把 state.round 当作「全局推进的圈数」，谁先绕圈谁加 1，
+    //   于是：
+    //     · 债券到期（dueRound）按“谁先绕圈”结算 —— 同一个 dueRound
+    //       在不同对局里对应的真实时长完全不同；
+    //     · 牛熊切换按 state.round % 3 —— 同样受“谁先绕圈”影响，
+    //       一个跑得快的玩家就能把全场的牛熊节奏带偏；
+    //     · 贷款「每圈一次」的重置时机（见上）与实际圈数脱节。
+    //   现在 player.laps 记录「该玩家自己绕了多少圈」，
+    //   state.round 仍表示「全局已发生几次绕圈事件」（用于 HUD 展示），
+    //   而**周期与债券到期一律按玩家自己的圈数（中位数）判定**。
+    player.laps = (player.laps || 0) + 1;
     state.round += 1;
+    // 「交易员」职业的择时奖励**每玩家每圈只发一次** ——
+    // 去重键用的是 `player.laps`，所以必须**先加 laps 再重置标记**，
+    // 否则本圈刚发过奖励就会被清掉，下一次切换又能再发（可被反复刷）。
+    player._marketBonusLap = null;
+    // 起点补贴的去重标记同样按**圈号**记录（见 grantStartPass），
+    // 圈号推进后自然解锁下一圈，无需在这里手动清标志。
     onRoundComplete(state);
   }
 
@@ -1351,21 +1851,129 @@ export function endTurn(state) {
   return currentPlayer(state);
 }
 
-/** 每圈结束 —— 触发牛熊周期切换、债券付息、贷款到期 */
+/**
+ * 取全桌玩家的「中位圈数」—— 周期与债券到期的统一时间基准（P1）。
+ *
+ * 为什么要中位数而不是 state.round：
+ *   · `state.round` 是「全局发生过几次绕圈事件」，谁先跑完谁贡献 1，
+ *     一个跑得快的玩家就能把全场的节奏带偏；
+ *   · `player.laps` 是每个玩家**自己**绕的圈数；
+ *   · 中位数对「跑得快 / 跑得慢 / 已破产」的个体差异不敏感，
+ *     是最接近「全场真实进度」的度量。
+ *
+ * @param {object} state
+ * @returns {number} 中位圈数（至少 0）
+ */
+export function medianLaps(state) {
+  const vals = (state.players || [])
+    .filter((p) => !p.bankrupt)
+    .map((p) => p.laps || 0)
+    .sort((a, b) => a - b);
+  if (!vals.length) return 0;
+  const mid = Math.floor(vals.length / 2);
+  return vals.length % 2 ? vals[mid] : Math.round((vals[mid - 1] + vals[mid]) / 2);
+}
+
+/**
+ * 结算每位玩家的**维持成本**（每圈一次的持有侧固定支出）。
+ *
+ * ⚠ 这是「破产机制可触发」与「不存在必赢策略」的关键一环。
+ *   旧版没有持有侧成本 —— 铺满机构后每圈只进不出，
+ *   形成「正现金流永动机」，破产几乎不会发生。
+ *
+ * 规则：
+ *   · 按各机构的**等级**计费（高级位更贵，见 CONFIG.maintenanceCostPerLevel）；
+ *   · 监管机构不收维持成本（它们的价值在全局效果上）；
+ *   · 现金不足以支付时：先扣到 0（不产生负数），
+ *     剩余部分转为**欠费**，并立即触发追保 / 破产检查；
+ *   · 欠费累计超过**市值的 50%** → 强制清算（资不抵债）。
+ *
+ * @param {object} state
+ * @returns {string[]} 播报文案
+ */
+export function chargeMaintenanceCosts(state) {
+  const notes = [];
+  for (const p of state.players) {
+    if (p.bankrupt) continue;
+    const insts = (p.institutions || []);
+    if (!insts.length) continue;
+
+    let due = 0;
+    for (const inst of insts) {
+      const cell = BOARD_CELLS[inst.cellIndex];
+      if (!cell) continue;
+      due += maintenanceCost(cell, inst.level);
+    }
+    if (due <= 0) continue;
+
+    const paid = Math.min(due, Math.max(0, p.cash || 0));
+    if (paid > 0) {
+      recordCash(state, p, -paid, '机构维持成本', '维持成本');
+    }
+    const unpaid = due - paid;
+    if (unpaid > 0) {
+      p.maintenanceDebt = (p.maintenanceDebt || 0) + unpaid;
+      notes.push(`${p.name} 维持成本 ￥${due}，现金仅够支付 ￥${paid}，欠费 ￥${unpaid}`);
+      // 欠费 → 追保 → 仍不足则破产
+      if (p.cash < 0) {
+        const raised = raiseFundsForDeficit(state, p);
+        if (raised.length) {
+          const total = raised.reduce((s, r) => s + r.amount, 0);
+          notes.push(`${p.name} 维持成本缺口触发追缴保证金，追加质押 ${raised.length} 家机构补足 ￥${total}`);
+        }
+      }
+      checkBankruptcy(state, p);
+      // 欠费超过资产 50% → 强制清算
+      const assets = totalAssets(p, state);
+      if (!p.bankrupt && p.maintenanceDebt > assets * 0.5) {
+        notes.push(`${p.name} 维持成本欠费 ￥${p.maintenanceDebt} 超过资产 50%，强制清算`);
+        checkBankruptcy(state, p);
+      }
+    } else {
+      notes.push(`${p.name} 支付机构维持成本 ￥${paid}`);
+    }
+  }
+  return notes;
+}
+
+/**
+ * 每圈结束 —— 触发牛熊周期切换、债券付息、贷款到期
+ *
+ * ⚠ P1：牛熊周期与债券到期一律按**中位圈数**（medianLaps）判定，
+ *   而非 state.round —— 保证不同座位速度不同也能公平对齐。
+ */
 function onRoundComplete(state) {
-  // 牛熊周期切换
-  if (state.round % CONFIG.marketCycleRounds === 0) {
+  const lap = medianLaps(state);
+
+  // 限时全局状态递减（P1：事件卡的全场租金系数到期自动恢复）
+  tickGlobalBuffs(state);
+
+  // 维持成本结算（持有侧固定支出）—— 破产机制的关键一环
+  const maintNotes = chargeMaintenanceCosts(state);
+  for (const n of maintNotes) log(state, 'bad', n, '维持成本');
+
+  // 牛熊周期切换（按中位圈数）
+  if (lap > 0 && lap % CONFIG.marketCycleRounds === 0) {
     const next = state.market === 'bull' ? 'bear' : 'bull';
     state.market = next;
     const label = next === 'bull' ? '牛市' : '熊市';
     log(state, next === 'bull' ? 'good' : 'bad',
       `行情切换：进入${label}，全市场租金系数调整为 ${next === 'bull' ? '+20%' : '-20%'}`,
       '周期');
-    emit(state, 'market-shift', { market: next, round: state.round });
+    emit(state, 'market-shift', { market: next, round: state.round, laps: lap });
+    // 「交易员」职业：自动切换行情时同样发放择时价差收益
+    // （与转盘抽到「牛熊切换」共用同一套逻辑，每玩家每圈只发一次）
+    for (const p of state.players) {
+      if (p.bankrupt) continue;
+      const b = grantMarketTimingBonus(state, p);
+      if (b) {
+        log(state, 'good', `${p.name} 择时价差收益 +￥${b.amount}`, '职业');
+      }
+    }
   }
 
-  // 债券付息与到期兑付
-  const bondNotes = processBonds(state);
+  // 债券付息与到期兑付（到期判定同样按中位圈数）
+  const bondNotes = processBonds(state, lap);
   for (const n of bondNotes) log(state, 'sys', n, '债券');
 }
 

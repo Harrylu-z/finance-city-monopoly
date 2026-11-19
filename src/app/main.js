@@ -1152,11 +1152,11 @@ class Game {
     const passedOverStart = path.length > 0 && path.some((idx) => idx === 0) && !landedOnStart;
 
     if (landedOnStart || passedOverStart || passedStart) {
-      // 跨过 / 恰好落在起点（新的一圈开始）→ 重置发放标记。
-      // 「落在起点」同样要重置，否则上一圈刚发过的标记会把本圈补贴挡掉。
-      if (passedStart) {
-        player._startBonusGranted = false;
-      }
+      // ⚠ P2（m6）：起点补贴的去重改为**按圈号**记录（见 rules.grantStartPass），
+      //   不再在这里手动复位 `_startBonusGranted` ——
+      //   旧写法只在 passedStart 时复位，「恰好落在起点」的路径不复位，
+      //   导致该玩家此后永远拿不到补贴。
+      //   现在由 player.laps 推进自然解锁下一圈，三条触发路径语义一致。
       const startCell = state.board[0];
       const results = [];
 
@@ -1217,6 +1217,17 @@ class Game {
    *   · 即使遮罩被绕过（比如直接调 API），本守卫也会拦下：
    *     当前回合不是人类玩家 → 拒绝。
    *
+   * ⚠ P2（m8）：**禁止「跳过移动直触转盘」**。
+   *   旧实现 `cur.position = index;` 直接把玩家瞬移到转盘格 ——
+   *   这等于给玩家一个「随时免费转到任意转盘」的作弊入口：
+   *     · 无需掷骰、无需走完格子，落到哪个转盘全凭玩家点击；
+   *     · 转盘的候选里包含「牛熊切换」「大额事件卡」等强力效果，
+   *       白嫖等于破坏了回合推进与位置博弈；
+   *     · 也绕过了「经过起点」的次数判定（可反复刷起点附近的转盘）。
+   *   现在必须**真的落在**该格（棋子移动后的落点）才能触发转盘：
+   *     · 玩家正常掷骰走到转盘格 → 由 afterMove 走转盘结算（正常路径）；
+   *     · 点击棋盘上的转盘格 → 只弹**详情卡**（不结算、不转盘）。
+   *
    * @returns {boolean} true = 已触发转盘（调用方应中止后续处理）
    */
   triggerWheelCell(index) {
@@ -1234,8 +1245,11 @@ class Game {
     if (!document.getElementById('modal-root').hidden) return false;
     if (!document.getElementById('rank-root').hidden) return false;
 
-    // 触发：把玩家「移动」到该格并走转盘结算
-    cur.position = index;
+    // ⚠ P2（m8）：守卫 ③ —— 玩家必须**已经落在**该转盘格上。
+    //   点击任意转盘格不再触发转盘（那会变成「跳过移动的作弊入口」）；
+    //   正常流程由「掷骰 → 移动 → 落点即转盘格」自动触发。
+    if (cur.position !== index) return false;
+
     this.spinWheelThenSettle(cur, cell);
     return true;
   }
@@ -1291,6 +1305,8 @@ class Game {
       autoSpin: isAI,
       readonly: isAI,
       playerName: player.name,
+      // ⚠ P1：转盘抽签必须走对局随机源 —— 保证同 seed 可复现
+      rng: state.rng,
       onSpin: (r) => {
         if (isAI) {
           // AI 只读转盘：让结果停留片刻再自动收起并继续回合，

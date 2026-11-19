@@ -79,14 +79,28 @@ def main():
                     const mk = (id) => ({ ...st.players[0], id: 999, careerId: id, career: id });
                     const mult = (id, key) => rules.playerCostMult(mk(id), key);
 
-                    // 交易员：市场周期格 +￥120
+                    // 交易员：行情切换时 +￥120
+                    // ⚠ 34 格棋盘上没有独立的「牛熊切换格」——
+                    //   行情切换有两条来源：转盘抽到「牛熊切换」效果、
+                    //   或每 3 圈按中位圈数自动切换。两条路径共用同一套发放逻辑。
                     const tSt = JSON.parse(JSON.stringify(st));
                     tSt.players[0].careerId = 'trader';
                     tSt.players[0].career = 'trader';
-                    const marketCell = st.board.find(c => c.type === 'special' && c.special && c.special.id === 'market');
                     const before = tSt.players[0].cash;
-                    if (marketCell) rules.settleOnCell(tSt, tSt.players[0], marketCell.index);
-                    const traderDelta = tSt.players[0].cash - before;
+                    const marketCell = tSt.board.find(
+                        c => c.type === 'special' && c.special && c.special.id === 'market');
+                    let traderDelta = 0;
+                    if (marketCell) {
+                        rules.settleOnCell(tSt, tSt.players[0], marketCell.index);
+                        traderDelta = tSt.players[0].cash - before;
+                    } else {
+                        // 棋盘上没有 market 格 → 直接走「行情切换」发放入口
+                        const r = rules.grantMarketTimingBonus(tSt, tSt.players[0]);
+                        traderDelta = tSt.players[0].cash - before;
+                        // 同一圈内不得重复发放
+                        const r2 = rules.grantMarketTimingBonus(tSt, tSt.players[0]);
+                        if (r2) traderDelta = -1;
+                    }
 
                     // 赌王：德扑 3 张底牌 + 牌库 ≤52
                     const pSt = JSON.parse(JSON.stringify(st));

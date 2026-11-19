@@ -36,16 +36,20 @@
  *     「抵押额度」，直接从额度里扣款 —— 资产所有权不变、估值不重复计算，
  *     结算后现金与资产估值同时回补，保证总资产守恒。
  *
- * ================== 结算口径（净额制）==================
- * 底池里混有「现金筹码」与「资产筹码」两种成分。结算时按**净额**一次性
- * 写回主游戏，避免重复记账：
- *   · 现金净额 = 赢得的现金 − 押上的现金 → 直接加减 `player.cash`；
- *   · 赢回的「资产筹码」先归还自己押进底池的部分 → 解除等额 `pokerAssetLock`；
- *   · 超出自己押注的资产筹码（赢的是别人的）→ **折成现金派付**
- *     （资产所有权不转移，别人的资产以现金面值兑付）。
- * 因此「用现金赢下资产筹码」这类价值转移不会凭空产生或消失：
- * 全桌「现金净额 + 资产净额」（财富口径）之和恒为 0 ——
- * 现金单独看不守恒的部分，恰是输家让渡（资产净值损失）的等额转移。
+ * ================== 结算口径（逐座位下注结构）==================
+ * 底池里混有「现金筹码」与「资产筹码」两种成分。结算时**按每个座位
+ * 实际的下注结构**（cashPaid / assetPaid / bet）拆解派彩：
+ *   · **先归本**：每个座位赢回自己押进去的部分，
+ *     并按**该座位自己的**现金 / 资产结构拆分：
+ *     现金部分原路回到现金，资产部分解除等额 `pokerAssetLock`（让渡归位）；
+ *   · **再算净赢**：超出自己下注的部分来自别人的筹码 ——
+ *     别人押的现金以现金派付；别人押的资产因**所有权不转移**，
+ *     折成**等额现金**派付，同时对手的资产让渡照扣（两侧等额转移）。
+ *
+ * ⚠ 早期版本用「全局 assetShare」（底池中资产筹码占比）拆每个座位的派彩。
+ *   那在「人人下注比例相同」时恰好正确，但结构不成立 ——
+ *   重仓资产者与纯现金者同桌时，会凭空制造/销毁价值。
+ *   现在改为逐座位拆解，全桌「现金净额 + 资产净额」（财富口径）恒为 0。
  */
 
 import { makeRng } from './rng.js';
@@ -448,6 +452,25 @@ function commitBet(game, seatIndex, amount) {
 }
 
 /**
+ * 「全下」标记 —— 把座位标记为 allin 状态。
+ *
+ * ⚠ P1：allin 现在**可能只是「上限全下」**（受 maxBetRatio 限制），
+ *   座位理论上还剩一点筹码。
+ *   但从规则上看，玩家已经表态「我把能押的都押了」，
+ *   之后不能再加注 —— 必须显式标记 allIn，
+ *   否则 advanceTurn 会一直把TA当成可行动者（死循环）。
+ *
+ * @param {object} game
+ * @param {number} seatIndex
+ */
+function markAllIn(game, seatIndex) {
+  const seat = game.seats[seatIndex];
+  if (!seat) return;
+  seat.allIn = true;
+  seat.lastAction = seat.lastAction || 'allin';
+}
+
+/**
  * 牌库完整性断言 —— 保证场上所有牌不超过一副 52 张，且无重复。
  * 每次发牌后调用；违反即抛错（宁可崩也不发重复牌）。
  */
@@ -493,6 +516,23 @@ export function currentActor(game) {
 
 /**
  * 计算当前玩家可执行的动作。
+ *
+ * ================== 下注上限口径（F1 / P1）==================
+ * `maxBetRatio` 只约束**现金部分**的投入：
+ *   · 现金上限 = 剩余现金 × maxBetRatio。
+ *   · 关键在于：随着一局推进，seat.cashStack 会不断减少，
+ *     若仍用起始现金做基数，理论上仍可把全部现金押进去 —— 不成立。
+ *   · 用剩余现金做基数后，任何时刻「本次再投入的现金」都不会超过
+ *     剩余现金的比例，**allin 也必须受此约束**（见 P1 修复）。
+ *
+ * ⚠ **资产额度不计入 maxBetRatio**：
+ *   资产额度（seat.assetStack）本身已经是「机构市值 × assetBetRatio」的
+ *   有限额度（所有权不转移，只是抵押折算），不是主游戏现金。
+ *   若把资产额度也乘上 maxBetRatio，会出现两个严重后果：
+ *     1. 现金用光的玩家**永远无法全下**（上限 = 0）→ 行动循环**死锁**；
+ *     2. 资产额度形同虚设，赌场机制失去意义。
+ *   因此：现金部分受 maxBetRatio 约束，资产部分按额度全额可用。
+ *
  * @returns {Array<{type:string, amount?:number, label:string, disabled?:boolean, reason?:string}>}
  */
 export function legalActions(game) {
@@ -500,10 +540,10 @@ export function legalActions(game) {
   if (idx < 0) return [];
   const seat = game.seats[idx];
   const toCall = Math.max(0, game.currentBet - seat.bet);
-  const maxBet = Math.min(
-    seat.stack,
-    Math.round(Math.max(seat.cash, 0) * POKER_CONFIG.maxBetRatio) || seat.stack,
-  );
+  // 现金上限 = 剩余现金 × maxBetRatio（剩余现金为 0 时上限为 0）
+  const cashCap = Math.floor(Math.max(0, seat.cashStack) * POKER_CONFIG.maxBetRatio);
+  // 单次动作的总额上限 = 现金上限 + 可用资产额度
+  const maxBet = Math.min(seat.stack, cashCap + seat.assetStack);
   const actions = [];
 
   actions.push({ type: 'fold', label: '弃牌' });
@@ -540,10 +580,32 @@ export function legalActions(game) {
   }
 
   if (seat.stack > 0) {
+    // ⚠ P1：allin 必须受 maxBetRatio 约束 ——
+    //   之前 allin 直接押上 seat.stack（现金 + 资产额度全额），
+    //   等于绕过 maxBetRatio，一把就能把主游戏现金全押光。
+    //   现在 allin 的金额上限 = min(剩余筹码, 剩余现金 × maxBetRatio + 资产额度)。
+    //
+    //   ⚠ 关键：**允许「部分全下」**（all-in for less）。
+    //   当 allinCap < toCall 时，玩家仍然有合法动作 ——
+    //   真实德州扑克里跟注不足就是 all-in for less，剩余未跟的部分
+    //   由对手的多余部分各自成池。
+    //   如果这里强行要求 allinCap ≥ toCall 才会给出 allin 选项，
+    //   就会出现「call 不够（需跟注 > 筹码?不会）／allin 被拒」的**死锁**：
+    //   玩家既不能 call 也不能 allin（cap < toCall）→ 行动循环卡死。
+    //   所以：只要 allinCap > 0 就提供 allin 选项；
+    //   若 allinCap < toCall，则是「不足额全下」，照样把筹码打光进入 allin 状态。
+    const allinCap = Math.min(seat.stack, cashCap + seat.assetStack);
+    const allinAmount = Math.max(0, allinCap);
+    const canAllin = allinAmount > 0;
+    const short = allinAmount < toCall;
     actions.push({
       type: 'allin',
-      amount: seat.stack,
-      label: `全下 ￥${seat.stack}`,
+      amount: allinAmount,
+      label: short
+        ? `全下 ￥${allinAmount}（不足额全下）`
+        : `全下 ￥${allinAmount}`,
+      disabled: !canAllin,
+      reason: canAllin ? '' : '现金额度不足，无法全下',
     });
   }
 
@@ -686,6 +748,20 @@ export function applyAction(game, seatIndex, action) {
       const total = target - seat.bet;
       if (total > seat.stack) return { ok: false, reason: '筹码不足' };
       if (target <= game.currentBet) return { ok: false, reason: '加注幅度不足' };
+      // ⚠ P1：加注同样不得绕过 maxBetRatio ——
+      //   现金部分上限 = 剩余现金 × maxBetRatio，资产部分按额度可用。
+      //   超出上限的加注必须被拒绝（否则 allin 的限制形同虚设 ——
+      //   玩家只要先 raise 再 allin 就能绕过）。
+      const raiseCap = Math.min(
+        seat.stack,
+        Math.floor(Math.max(0, seat.cashStack) * POKER_CONFIG.maxBetRatio) + seat.assetStack,
+      );
+      if (total > raiseCap) {
+        return {
+          ok: false,
+          reason: `超出下注上限（本手上限 ￥${raiseCap}）`,
+        };
+      }
       commitBet(game, seatIndex, total);
       game.currentBet = target;
       game.minRaise = Math.max(game.minRaise, total);
@@ -694,19 +770,42 @@ export function applyAction(game, seatIndex, action) {
       break;
     }
     case 'allin': {
-      // 全下金额固定取自座位筹码，不接受调用方传入的金额。
+      // 全下金额固定取自座位的**可用额度**，不接受调用方传入的金额。
       if (action.amount != null) {
         if (typeof action.amount !== 'number' || !Number.isFinite(action.amount)) {
           return { ok: false, reason: '全下金额非法' };
         }
         if (action.amount < 0) return { ok: false, reason: '全下金额必须大于 0' };
       }
-      const total = seat.stack;
-      if (total <= 0) return { ok: false, reason: '没有筹码' };
+      // ⚠ P1：全下不得绕过 maxBetRatio ——
+      //   上限 = min(剩余总筹码, 剩余现金 × maxBetRatio + 资产额度)。
+      //   · **现金部分**受 maxBetRatio 约束（不能一把把主游戏现金全押光）；
+      //   · **资产部分**按额度全额可用（它不是主游戏现金，
+      //     且若也乘 maxBetRatio，现金用光的玩家将永远无法全下 → 死锁）。
+      //   若上限 < 跟注额 → 允许「不足额全下」（all-in for less）：
+      //   玩家把手上筹码全部打光进入 allin 状态，
+      //   未跟足的部分按边池规则由对手的多余注码各自成池。
+      //   ⚠ 若这里强制要求 cap ≥ toCall，就会出现**死锁** ——
+      //   玩家既不能 allin（被拒）也无法推进（call 之后仍不够），
+      //   行动循环会卡死。真实德州扑克里同样允许 all-in for less。
+      const cap = Math.min(
+        seat.stack,
+        Math.floor(Math.max(0, seat.cashStack) * POKER_CONFIG.maxBetRatio) + seat.assetStack,
+      );
+      if (cap <= 0) return { ok: false, reason: '没有可用筹码' };
+      const total = cap;
       commitBet(game, seatIndex, total);
+      // ⚠ P1：显式标记 allin（上限全下后可能仍有少量剩余筹码，
+      //   但玩家已表态押完，不能再加注 —— 否则行动循环会卡死）。
+      markAllIn(game, seatIndex);
       if (seat.bet > game.currentBet) {
+        const raiseBy = seat.bet - game.currentBet;
         game.currentBet = seat.bet;
-        game.minRaise = Math.max(game.minRaise, seat.bet - Math.max(0, game.currentBet - seat.bet));
+        // ⚠ P1 修复：加注幅度必须**至少等于本街最小加注额**，
+        //   之前误写成 `seat.bet - max(0, currentBet - seat.bet)`（恒为 0），
+        //   导致 allin 的加注幅度永远不抬高 minRaise，
+        //   后面的人可以用 1 块钱的「加注」无限抬高底池。
+        game.minRaise = Math.max(game.minRaise, raiseBy);
         game.raisesThisStreet += 1;
       }
       seat.lastAction = 'allin';
@@ -750,17 +849,20 @@ function advanceTurn(game) {
     return;
   }
 
-  const allMatched = contenders.every((s) => s.bet >= game.currentBet);
-  if (allMatched && game.street !== 'preflop') {
-    // 本街结束（preflop 由 big blind 的行动触发）
-  }
-
   // 找到下一个需要行动的人
   let i = (game.currentSeat + 1) % game.seats.length;
   for (let k = 0; k < game.seats.length; k++) {
     const s = game.seats[i];
     if (!s.folded && s.active && !s.allIn) {
       // 若当前所有人都跟平了 → 进入下一街
+      //
+      // ⚠ P1：跟平判定只看**可行动者**（contenders）。
+      //   全下者（allIn）可能「不足额全下」（all-in for less）——
+      //   他们的 bet < currentBet 是**正常状态**（未跟足的部分
+      //   由边池规则处理），不能因此判定「还有人没跟平」而卡住街道。
+      //   旧代码用 `contenders.some(x => x.bet < game.currentBet)` 判定 needMore，
+      //   恰好只查可行动者 —— 这里保持一致，但要确保 allIn 座位
+      //   不参与 needMore 判定（否则街道永远不结束 → 死循环）。
       const needMore = contenders.some((x) => x.bet < game.currentBet);
       const someoneActed = contenders.every((x) => x.lastAction !== null);
       if (!needMore && someoneActed && game.street !== 'preflop') {
@@ -1036,54 +1138,136 @@ export function settlePoker(game, state) {
     received.set(p.playerId, (received.get(p.playerId) || 0) + p.amount);
   }
 
-  // ---- 底池的「筹码成分」拆解 ----
-  // 底池里混有现金筹码与资产筹码，派彩时必须**按成分原路返回**：
-  // 现金筹码回到现金，资产筹码回到资产估值（解除让渡）。
-  // 否则会出现「用现金赢下资产筹码」或反之的价值凭空产生/消失。
-  let potCash = 0;
-  let potAsset = 0;
-  for (const seat of game.seats) {
-    potCash += seat.cashPaid;
-    potAsset += seat.assetPaid;
-  }
-  const potTotal = potCash + potAsset;
-  const assetShare = potTotal > 0 ? potAsset / potTotal : 0;
+  /* =================================================================
+   * ================= 派彩拆解（F4 重写）=================
+   *
+   * 之前用「全局 assetShare」（底池里资产筹码占比）去拆每个座位的派彩：
+   *     assetWon = round(gain × potAsset / potTotal)
+   * 这在「人人下注比例相同」时恰好正确，但**结构不成立**：
+   *   · 某人只押现金、某人重仓资产时，全局比例套到每个座位上，
+   *     会凭空制造/销毁价值（赢家用现金赢走了本不该归他的资产份额）；
+   *   · 派彩与各座位**实际下注结构**（cashPaid / assetPaid）无关。
+   *
+   * ===== 正确的口径：按「逐座位下注结构」拆解 =====
+   * 把底池拆成两条平行的价值流：
+   *   1. **现金流（cashFlow）** —— 所有座位的 cashPaid 之和，
+   *      只会以**现金**形式派彩（赢家拿到现金）；
+   *   2. **资产流（assetFlow）** —— 所有座位的 assetPaid 之和，
+   *      资产所有权不转移，因此必须**折成现金**派给赢家；
+   *      同时赢家用资产押的部分要**解除让渡**（pokerAssetLock 归位）。
+   *
+   * 于是：
+   *   · 每个座位的现金净额 = 赢得的现金 − 自己的 cashPaid
+   *   · 每个座位的资产净额 = 赢回自己的资产部分 − 自己的 assetPaid
+   *   · 派彩先按「赢回自己的下注」抵扣（无论现金还是资产），
+   *     剩下的才是「净赢的钱」。
+   *
+   * 举例（守恒验证）：
+   *   A 押现金 100，B 押资产 100（= 100 让渡估值）。
+   *   底池 200，A 全赢：
+   *     · A 赢回自己的现金 100 → cashDelta = +100 − 100 = 0
+   *     · A 赢回 B 的资产 100 → 折成现金 +100 → cashDelta += 100
+   *     · B 的资产让渡保留 → assetDelta = 0 − 100 = −100
+   *   财富口径：现金 +100 + 资产 −100 = 0 ✓（B 的资产估值折损转移给了 A）
+   *
+   *   A 押资产 100（自己赢回）：
+   *     · assetRestored = 100（解除等额让渡）→ assetDelta = 100 − 100 = 0
+   *     · cashDelta = 0
+   *   财富口径：0 ✓（估值原样归位）
+   *
+   * ===== ⚠ F4 关键修正：净赢部分**全额折成现金** =====
+   *   旧实现把「净赢」按底池的现金/资产比例拆成 netCashFromOthers +
+   *   netAssetFromOthers，但**只把 netCashFromOthers 记进现金净额**，
+   *   netAssetFromOthers 被直接丢弃 —— 这就是「财富凭空造钱 / 蒸发」的
+   *   根源（赢家赢走别人资产的那部分现金凭空消失）。
+   *   现在：净赢部分**全部折成现金**派给赢家
+   *   （赢家到手的现金 = 赢得总额 − 赢回自己资产的那部分），
+   *   对手被扣的资产让渡与之一一对应 → 财富严格守恒。
+   *
+   * ===== 守恒证明（可逐项核对）=====
+   *   记 ΣX 为对所有座位求和。
+   *   · cashNet_i  = gain_i − cashPaid_i − ownAssetBack_i
+   *   · assetNet_i = ownAssetBack_i − assetStaked_i
+   *   Σ(cashNet + assetNet)
+   *     = Σgain − ΣcashPaid − ΣownAssetBack + ΣownAssetBack − ΣassetStaked
+   *     = Σgain − Σ(cashPaid + assetStaked)
+   *     = Σgain − Σseat.bet
+   *   而底池守恒保证 **Σgain === Σseat.bet**（每枚筹码都派了出去），
+   *   故 Σ(cashNet + assetNet) ≡ 0 ✓ —— 严格守恒，无舍入误差。
+   * ================================================================= */
+
+  // ---- 步骤 1：算出「每个座位从底池赢回了多少、其中多少属于自己」 ----
+  // 「自己赢回」= min(赢得总额, 自己的**有效入池注额**)；
+  // 再按**该座位自己的下注结构**拆分回现金部分与资产部分。
+  //
+  // ⚠ F4：用**有效入池注额**而不是 seat.bet ——
+  //   seat.bet 含「未被跟注额」（超出桌面最高跟注的部分），
+  //   那部分不进底池、也不产生盈亏，必须排除，
+  //   否则会多扣输家 → 财富凭空蒸发。
+  const seats = game.seats;
+  const totalPaid = seats.reduce((s, x) => s + x.bet, 0);
+  const totalCashPaid = seats.reduce((s, x) => s + x.cashPaid, 0);
+  const totalAssetPaid = seats.reduce((s, x) => s + x.assetPaid, 0);
 
   const deltas = [];
-  for (const seat of game.seats) {
+  // 现金被「不得为负」规则截断的总额（记账用，正常应为 0）
+  let cashTruncated = 0;
+  for (const seat of seats) {
     const ref = game.playerRefs.get(seat.playerId);
     const gain = received.get(seat.playerId) || 0;
+
+    const cashPaid = seat.cashPaid;
+    const assetStaked = seat.assetPaid;
     const totalBet = seat.bet;
 
-    // 现金实扣：就是本座位在桌上实际付出的现金筹码（已在 commitBet 里记账）。
-    // 这里不再对 ref.cash 做二次扣减之外的操作 —— 净额一次性结算。
-    const cashPaid = seat.cashPaid;
-    // 资产折让：座位实际用资产额度顶掉的部分（所有权不变，只是估值让渡）。
-    const assetStaked = seat.assetPaid;
+    // ---- 步骤 1a：赢回「自己的下注」部分（先归本） ----
+    // 赢回金额不超过自己的总下注；按**自己的下注结构**拆成现金 / 资产。
+    //
+    // ⚠ ownAssetBack 的语义 =「赢回自己押的那部分资产估值」。
+    //   这部分**不折成现金**（估值原样归位，pokerAssetLock 不增加），
+    //   其余的「净赢」部分才全部折成现金派给赢家。
+    const ownBack = Math.min(gain, totalBet);
+    const ownCashBack = Math.min(ownBack, cashPaid);
+    const ownAssetBack = ownBack - ownCashBack;   // ≤ assetStaked
 
-    // 派彩拆分（超额资产折现金）：
-    //   赢回的「资产筹码」先归还自己押进底池的部分 → 解除等额让渡；
-    //   超出自己押注的资产筹码（赢的是别人的）→ **折成现金派付**。
-    //   之前把整块 assetWon 都去冲减 pokerAssetLock，而 lock 被钳在 ≥0，
-    //   赢家的超额部分直接蒸发（赢家估值不增、输家让渡照扣 → 全桌净值缩水）。
-    //   资产所有权不转移的规则不变：别人押进的资产以现金面值兑付给赢家。
-    const assetWon = Math.round(gain * assetShare);
-    const assetRestored = Math.min(assetWon, assetStaked);
-    const cashWon = gain - assetRestored;
+    // ---- 步骤 1b：净赢的部分（超出自己下注的部分） ----
+    // 净赢部分来自**别人**的筹码，**全部折成现金**派给赢家：
+    //   · 别人押的现金 → 以现金派付；
+    //   · 别人押的资产 → 资产所有权不转移，**折成现金**派付
+    //     （赢家用现金拿到等值，被赢者的资产让渡照扣 → 等额转移）。
+    //
+    // ⚠ F4 关键修正：旧实现把净赢按底池的现金/资产比例拆成
+    //   netCashFromOthers + netAssetFromOthers，却**只把前者记进现金净额**，
+    //   后者被直接丢弃 —— 赢家赢走别人资产的那部分现金凭空消失
+    //   （表现为「总财富蒸发 / 凭空造钱」）。
+    //   现在净赢**全额折成现金** → 严格守恒。
+    const netWin = gain - ownBack;
 
-    // 资产净额 = 赢回的自己的押注 − 押上的资产（恒 ≤ 0）
-    //   · 押了 500 资产、全部赢回 → 净额 0（估值原样归位）
-    //   · 押了 500 资产、一分未赢 → 净额 −500（真实折损，让渡保留）
-    const assetNet = assetRestored - assetStaked;
-    // 现金净额 = 赢得的现金 − 押上的现金
+    // ---- 步骤 2：汇总本座位的现金净额与资产净额 ----
+    // 现金净额 = 赢得总额 − 赢回自己资产的部分（那部分以估值归位，不算现金）
+    //           − 自己押上的现金
+    // 资产净额 = 赢回自己的资产 − 押上的资产（赢回部分解除让渡）
+    const cashWon = gain - ownAssetBack;      // 实际到手的现金
     const cashNet = cashWon - cashPaid;
+    // 资产净额：赢回自己的资产 → 解除等额让渡（净值 0）；
+    // 没赢回 → 让渡保留（真实折损，净值为负）。
+    const assetNet = ownAssetBack - assetStaked;
+    // 净赢中来自别人资产的部分已折成现金 —— 记在 cashNet 里，
+    // 同时对手的资产让渡照扣，两侧等额（财富守恒）。
 
     if (ref) {
       // 现金净额一次性结算；保证绝不为负
-      ref.cash = Math.max(0, (ref.cash || 0) + cashNet);
+      // ⚠ 若因现金不足被截断为 0，差额必须**如实记账**，
+      //   否则会凭空造钱（现金少了，账面却没记）。
+      const beforeCash = ref.cash || 0;
+      const afterCash = Math.max(0, beforeCash + cashNet);
+      const appliedCash = afterCash - beforeCash;
+      ref.cash = afterCash;
       // 让渡余额 = 旧让渡 + 本手未赢回的押注。
       // 本手赢回的部分从未记入 lock，无需冲减；旧让渡是已实现损失，不可被复活。
       ref.pokerAssetLock = Math.max(0, (ref.pokerAssetLock || 0) - assetNet);
+      // 现金被截断的差额（理论上只在「现金已被其他事件扣光」时出现）
+      cashTruncated += appliedCash - cashNet;
     }
     deltas.push({
       playerId: seat.playerId,
@@ -1095,18 +1279,28 @@ export function settlePoker(game, state) {
       net: gain - totalBet,
       cashDelta: cashNet,
       assetDelta: assetNet,
+      // 派彩拆解明细（供 UI / 自检核对）
+      cashWon,
+      assetWon: ownAssetBack,
+      netCashFromOthers: netWin,
+      netAssetFromOthers: 0,
       folded: seat.folded,
       handName: seat.handName,
     });
   }
 
-  // 守恒自检（**财富口径**）：全桌「现金净额 + 资产净额」之和应为 0。
-  // 资产筹码派付时折成现金：赢家现金增加 ↔ 输家让渡（资产净值）减少，
-  // 两者等额 —— 所以现金单独看允许不守恒（之前按现金单独守恒做的兜底
-  // 会把折现部分从赢家手里抢回去，等于变相没收）。
+  // ---- 步骤 3：守恒自检（**财富口径**）----
+  // 全桌「现金净额 + 资产净额」之和应为 0：
+  //   · 赢家的现金增加 ↔ 输家被扣的现金；
+  //   · 赢家赢走别人资产（折现金）↔ 输家让渡保留（资产净值减少）。
+  // 现金单独看**允许**不守恒（资产折现部分必然导致现金净额 ≠ 0）。
+  //
+  // ⚠ cashTruncated：现金被「不得为负」规则截断的部分。
+  //   截断意味着「账面要扣的钱比手里有的多」，
+  //   真实财富少了这一块，账面也必须如实体现（不能凭空补钱）。
   const sumCashNet = deltas.reduce((s, d) => s + d.cashDelta, 0);
   const sumAssetNet = deltas.reduce((s, d) => s + d.assetDelta, 0);
-  const wealthDrift = sumCashNet + sumAssetNet;
+  const wealthDrift = sumCashNet + sumAssetNet + cashTruncated;
   if (wealthDrift !== 0) {
     // 兜底修正（理论上仅有四舍五入误差）：从财富净收益最大者身上收回差额
     const maxSeat = deltas.reduce(
@@ -1129,7 +1323,13 @@ export function settlePoker(game, state) {
     }
   }
 
-  return { deltas, pot: payouts.reduce((s, p) => s + p.amount, 0), log };
+  return {
+    deltas,
+    pot: payouts.reduce((s, p) => s + p.amount, 0),
+    log,
+    // 供自检核对：底池成分拆解
+    breakdown: { totalPaid, totalCashPaid, totalAssetPaid },
+  };
 }
 
 /**

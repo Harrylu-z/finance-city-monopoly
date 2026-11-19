@@ -138,67 +138,86 @@ export const REGULATORS = {
 };
 
 /**
- * 每个集团 11~12 格，级别递进：
- *   0~3  低价小型机构（网点级 / 区域级）
- *   4~7  中型机构（区域总部）
- *   8~9  大型机构（全国性总部）
- *   10   行业标杆（地标级）
+ * 每个集团 6 家机构（1 个 3 星 + 2 个 2 星 + 3 个 1 星），级别递进：
+ *   0~1  低价小型机构（网点级 / 区域级）
+ *   2~3  中型机构（区域总部）
+ *   4    大型机构（全国性总部 / 地标级）
  *   监管格插在末尾，不可升级
  *
  * price[5] / rent[5] 对应 level 0..4。
  * tier 字段表示初始可经营等级上限；landmark 的格子初始即为地标级。
+ *
+ * ================== 租金 / 价格比例（经济平衡）=================
+ * 「回本圈数」= price[lv] ÷ rent[lv]（按**实际到手租金**计，
+ * 即已含集团租金系数 groupRentMult）。
+ *
+ * 本表的回本圈数（level 0，买下即回本）是刻意设计的：
+ *   · **1 星 ≈ 7 圈**（目标带 6~8）—— 小额资产回本快，鼓励「先铺盘」；
+ *   · **2 星 ≈ 9 圈**（中间层）；
+ *   · **3 星 ≈ 12 圈**（目标带 10~14）—— 核心资产回本慢，
+ *     必须靠**多张卡**（集团 Buff）+ **升级**才能回本，
+ *     避免「开局梭哈 3 星 = 必赢」。
+ *
+ * 升级后回本圈数**递增**（+0.5 / +1 / +1.5 / +2 圈）：
+ * 高级位租金绝对值更高（值得升），但单位资金效率递减 ——
+ * 这样「无脑升到顶」不是最优解，「铺盘 vs 深耕」才有取舍。
+ *
+ * 另配 **维持成本**（见 economy.CONFIG.maintenanceCostPerLevel）：
+ * 每持有 1 家机构，每圈都要付一笔维持费（按等级递增）。
+ * 这让「铺很多家小机构」有真实的持有成本 ——
+ * 是破产机制能被触发、且不存在必赢策略的关键一环。
  */
 const GROUPS = {
   bank: {
     entries: [
       // ---- 3 星 ×1（地标 —— 内环核心）----
-      { name: '中国工商银行', code: 'ICBC', price: [1240, 2133, 3373, 4898, 6758], rent: [124, 223, 350, 508, 701], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '金融街塔' },
+      { name: '中国工商银行', code: 'ICBC', price: [1240, 2133, 3373, 4898, 6758], rent: [111, 164, 230, 300, 370], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '金融街塔' },
       // ---- 2 星 ×2 ----
-      { name: '招商银行',     code: 'CMB',  price: [640, 1101, 1741, 2528, 3488], rent: [64, 115, 180, 262, 362], kind: 'branch', tier: 0, star: 2 },
-      { name: '中国建设银行', code: 'CCB',  price: [749, 1288, 2037, 2958, 4081], rent: [74, 132, 208, 302, 416], kind: 'branch', tier: 0, star: 2 },
+      { name: '招商银行',     code: 'CMB',  price: [640, 1101, 1741, 2528, 3488], rent: [79, 118, 168, 221, 275], kind: 'branch', tier: 0, star: 2 },
+      { name: '中国建设银行', code: 'CCB',  price: [749, 1288, 2037, 2958, 4081], rent: [91, 135, 191, 251, 311], kind: 'branch', tier: 0, star: 2 },
       // ---- 1 星 ×3 ----
-      { name: '城东银行',     code: 'CDBK', price: [300, 516, 816, 1185, 1635], rent: [30, 54, 85, 123, 170], kind: 'branch', tier: 0, star: 1 },
-      { name: '浦江银行',     code: 'PJBK', price: [348, 599, 947, 1375, 1897], rent: [34, 62, 96, 140, 193], kind: 'branch', tier: 0, star: 1 },
-      { name: '华夏银行',     code: 'HXBK', price: [402, 691, 1093, 1588, 2191], rent: [39, 70, 110, 160, 220], kind: 'branch', tier: 0, star: 1 },
+      { name: '城东银行',     code: 'CDBK', price: [300, 516, 816, 1185, 1635], rent: [51, 78, 114, 152, 192], kind: 'branch', tier: 0, star: 1 },
+      { name: '浦江银行',     code: 'PJBK', price: [348, 599, 947, 1375, 1897], rent: [58, 88, 127, 169, 212], kind: 'branch', tier: 0, star: 1 },
+      { name: '华夏银行',     code: 'HXBK', price: [402, 691, 1093, 1588, 2191], rent: [65, 99, 142, 188, 235], kind: 'branch', tier: 0, star: 1 },
     ],
   },
   broker: {
     entries: [
       // ---- 3 星 ×1（地标 —— 内环核心）----
-      { name: '华泰证券', code: 'HTZQ', price: [1160, 1995, 3155, 4582, 6322], rent: [120, 216, 338, 492, 678], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '交易塔' },
+      { name: '华泰证券', code: 'HTZQ', price: [1160, 1995, 3155, 4582, 6322], rent: [105, 154, 217, 284, 351], kind: 'landmark', tier: 0, star: 3, landmark: true, landmarkName: '交易塔' },
       // ---- 2 星 ×2 ----
-      { name: '中金公司', code: 'CICC', price: [560, 963, 1523, 2212, 3052], rent: [58, 104, 164, 238, 328], kind: 'tower', tier: 0, star: 2 },
-      { name: '广发证券', code: 'GFZQ', price: [655, 1127, 1782, 2588, 3571], rent: [67, 120, 188, 273, 377], kind: 'tower', tier: 0, star: 2 },
+      { name: '中金公司', code: 'CICC', price: [560, 963, 1523, 2212, 3052], rent: [70, 106, 151, 200, 249], kind: 'tower', tier: 0, star: 2 },
+      { name: '广发证券', code: 'GFZQ', price: [655, 1127, 1782, 2588, 3571], rent: [81, 121, 171, 226, 280], kind: 'tower', tier: 0, star: 2 },
       // ---- 1 星 ×3 ----
-      { name: '华瑞证券', code: 'HRZQ', price: [260, 447, 707, 1027, 1417], rent: [28, 50, 79, 115, 158], kind: 'tower', tier: 0, star: 1 },
-      { name: '国泰海通', code: 'GTHT', price: [302, 519, 820, 1191, 1644], rent: [32, 57, 90, 131, 180], kind: 'tower', tier: 0, star: 1 },
-      { name: '中信证券', code: 'ZXZQ', price: [348, 599, 948, 1376, 1899], rent: [36, 66, 103, 149, 206], kind: 'tower', tier: 0, star: 1 },
+      { name: '华瑞证券', code: 'HRZQ', price: [260, 447, 707, 1027, 1417], rent: [45, 70, 103, 139, 175], kind: 'tower', tier: 0, star: 1 },
+      { name: '国泰海通', code: 'GTHT', price: [302, 519, 820, 1191, 1644], rent: [51, 79, 114, 153, 193], kind: 'tower', tier: 0, star: 1 },
+      { name: '中信证券', code: 'ZXZQ', price: [348, 599, 948, 1376, 1899], rent: [58, 88, 127, 169, 213], kind: 'tower', tier: 0, star: 1 },
     ],
   },
   insurer: {
     entries: [
       // ---- 3 星 ×1（地标 —— 内环核心）----
-      { name: '中国人保', code: 'PICC', price: [1200, 2064, 3264, 4740, 6540], rent: [121, 218, 341, 496, 684], kind: 'midrise', tier: 0, star: 3 },
+      { name: '中国人保', code: 'PICC', price: [1200, 2064, 3264, 4740, 6540], rent: [108, 159, 224, 292, 361], kind: 'midrise', tier: 0, star: 3 },
       // ---- 2 星 ×2 ----
-      { name: '中国平安',   code: 'PA',   price: [600, 1032, 1632, 2370, 3270], rent: [59, 106, 166, 242, 333], kind: 'midrise', tier: 0, star: 2 },
-      { name: '太平洋保险', code: 'CPIC', price: [702, 1207, 1909, 2773, 3826], rent: [68, 122, 191, 278, 383], kind: 'midrise', tier: 0, star: 2 },
+      { name: '中国平安',   code: 'PA',   price: [600, 1032, 1632, 2370, 3270], rent: [75, 112, 160, 211, 262], kind: 'midrise', tier: 0, star: 2 },
+      { name: '太平洋保险', code: 'CPIC', price: [702, 1207, 1909, 2773, 3826], rent: [86, 128, 181, 238, 296], kind: 'midrise', tier: 0, star: 2 },
       // ---- 1 星 ×3 ----
-      { name: '太保产险', code: 'CPICP', price: [280, 482, 762, 1106, 1526], rent: [27, 49, 76, 111, 153], kind: 'midrise', tier: 0, star: 1 },
-      { name: '平安财险', code: 'PAP',   price: [325, 559, 883, 1283, 1770], rent: [31, 55, 87, 126, 174], kind: 'midrise', tier: 0, star: 1 },
-      { name: '中国人寿', code: 'CHL',   price: [375, 645, 1021, 1482, 2045], rent: [35, 63, 99, 144, 198], kind: 'midrise', tier: 0, star: 1 },
+      { name: '太保产险', code: 'CPICP', price: [280, 482, 762, 1106, 1526], rent: [48, 74, 109, 146, 184], kind: 'midrise', tier: 0, star: 1 },
+      { name: '平安财险', code: 'PAP',   price: [325, 559, 883, 1283, 1770], rent: [54, 83, 121, 161, 203], kind: 'midrise', tier: 0, star: 1 },
+      { name: '中国人寿', code: 'CHL',   price: [375, 645, 1021, 1482, 2045], rent: [62, 94, 135, 179, 224], kind: 'midrise', tier: 0, star: 1 },
     ],
   },
   asset: {
     entries: [
       // ---- 3 星 ×1（地标 —— 内环核心）----
-      { name: '上海证券交易所', code: 'SSE', price: [1320, 2270, 3590, 5214, 7194], rent: [135, 243, 381, 554, 763], kind: 'modern', tier: 0, star: 3 },
+      { name: '上海证券交易所', code: 'SSE', price: [1320, 2270, 3590, 5214, 7194], rent: [118, 173, 243, 316, 390], kind: 'modern', tier: 0, star: 3 },
       // ---- 2 星 ×2 ----
-      { name: '中信信托', code: 'CIT',   price: [680, 1170, 1850, 2686, 3706], rent: [69, 124, 195, 283, 390], kind: 'modern', tier: 0, star: 2 },
-      { name: '工银瑞信', code: 'ICBCX', price: [796, 1368, 2164, 3143, 4336], rent: [79, 143, 224, 325, 448], kind: 'modern', tier: 0, star: 2 },
+      { name: '中信信托', code: 'CIT',   price: [680, 1170, 1850, 2686, 3706], rent: [84, 125, 177, 232, 289], kind: 'modern', tier: 0, star: 2 },
+      { name: '工银瑞信', code: 'ICBCX', price: [796, 1368, 2164, 3143, 4336], rent: [96, 143, 201, 264, 326], kind: 'modern', tier: 0, star: 2 },
       // ---- 1 星 ×3 ----
-      { name: '华夏基金', code: 'CHINA', price: [320, 550, 870, 1264, 1744], rent: [33, 59, 93, 135, 186], kind: 'modern', tier: 0, star: 1 },
-      { name: '易方达基金', code: 'EFD',  price: [371, 638, 1010, 1466, 2023], rent: [38, 68, 106, 154, 213], kind: 'modern', tier: 0, star: 1 },
-      { name: '南方基金', code: 'NF',    price: [429, 738, 1166, 1694, 2337], rent: [43, 77, 121, 176, 242], kind: 'modern', tier: 0, star: 1 },
+      { name: '华夏基金', code: 'CHINA', price: [320, 550, 870, 1264, 1744], rent: [54, 82, 120, 159, 201], kind: 'modern', tier: 0, star: 1 },
+      { name: '易方达基金', code: 'EFD',  price: [371, 638, 1010, 1466, 2023], rent: [61, 93, 134, 177, 222], kind: 'modern', tier: 0, star: 1 },
+      { name: '南方基金', code: 'NF',    price: [429, 738, 1166, 1694, 2337], rent: [69, 104, 149, 197, 246], kind: 'modern', tier: 0, star: 1 },
     ],
   },
 };

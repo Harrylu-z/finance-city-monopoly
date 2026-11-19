@@ -161,6 +161,8 @@ export function pointerSector(rotation, n) {
  * @param {boolean}  opts.readonly 只读模式（AI 触发时玩家不能转）
  * @param {number}   opts.maxSpins 最大连续转盘次数（默认 5）
  * @param {string}   opts.playerName 转动者名字（显示用）
+ * @param {object}   opts.rng 对局随机源（state.rng）—— **必须**传入，
+ *                     否则转盘结果不可复现（破坏分享还原）
  */
 export function showWheelDialog(wheel, opts = {}) {
   // 候选数据的三种可能来源（按优先级）：
@@ -322,7 +324,17 @@ export function showWheelDialog(wheel, opts = {}) {
 
     const n = outcomes.length;
     const slice = 360 / n;
-    const chosen = (pick == null) ? Math.floor(Math.random() * n) : (pick % n + n) % n;
+    // ⚠ P1：扇区选取必须用**对局随机源**（state.rng），
+    //   不能用 Math.random()。
+    //   原因：分享链接还原对局时，整局必须由 seed 决定 ——
+    //   Math.random() 会让转盘结果**无法复现**，同一 seed 的两局
+    //   会出现不同的转盘效果，破坏「分享即复现」的承诺，
+    //   也会让自动化回归测试无法确定性地验证落点一致性。
+    //   rng 由调用方（main.js）从 state.rng 传入；缺省时退化为 Math.random。
+    const rng = opts.rng || null;
+    const chosen = (pick == null)
+      ? (rng ? rng.int(0, n - 1) : Math.floor(Math.random() * n))
+      : (pick % n + n) % n;
     const current = parseFloat(svg.dataset.rot || '0');
     const target = spinTarget(chosen, n, current);
     svg.dataset.rot = String(target);

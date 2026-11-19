@@ -21,7 +21,7 @@
 import { BOARD_CELLS, GROUP_META } from './board.js';
 import {
   calculateRent, upgradeCost, mortgageValue, purchasePrice, totalAssets,
-  globalRegulatorEffects, groupBuffTier, CONFIG,
+  globalRegulatorEffects, groupBuffTier, CONFIG, maintenanceCost,
 } from './economy.js';
 import { institutionCount } from './rules.js';
 import {
@@ -190,8 +190,13 @@ function decideUpgrade(state, player, p, diff) {
     if (!isFinite(cost) || cost <= 0) continue;
     const curRent = calculateRent(c, inst.level, { market: state.market, eventMult: state.eventMult, buffMult });
     const nextRent = calculateRent(c, inst.level + 1, { market: state.market, eventMult: state.eventMult, buffMult });
-    // 性价比指数 = 每投入 1 元换来的年租金增量（再按性格的收益导向加权）
-    const score = ((nextRent - curRent) / cost) * p.upgradeBias * p.rentFocus;
+    // ⚠ 维护成本随等级递增 —— 升级的**净**收益要减去维持成本增量，
+    //   否则 AI 会高估高级位的性价比（以为升级是纯增益）。
+    const curMaint = maintenanceCost(c, inst.level);
+    const nextMaint = maintenanceCost(c, inst.level + 1);
+    const netDelta = (nextRent - curRent) - (nextMaint - curMaint);
+    // 性价比指数 = 每投入 1 元换来的净租金增量（再按性格的收益导向加权）
+    const score = (netDelta / cost) * p.upgradeBias * p.rentFocus;
     if (score > bestScore) {
       bestScore = score;
       best = { inst, cost, c };

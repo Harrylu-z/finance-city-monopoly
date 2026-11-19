@@ -17,10 +17,11 @@ import {
 import {
   BOARD_CELLS, BOARD_SIZE, SPECIAL,
 } from './board.js';
-import { CONFIG, totalAssets } from './economy.js';
+import { CONFIG, totalAssets, liquidate, institutionValue, bondRedeemValue } from './economy.js';
 import {
   createState, settleOnCell, resolvePurchase, upgradeInstitution,
   applyTrapCard, startCasinoGame, finishCasinoGame, playerCostMult,
+  processBonds, underwriteBond, grantMarketTimingBonus,
 } from './rules.js';
 import {
   buildDeck, evaluateHand, compareHands, createPokerGame, assertDeckIntegrity,
@@ -631,6 +632,11 @@ export function runCasinoChecks() {
     // 回归用例：曾经出现过「下注记一次 + 结算再记一次」导致资产折让翻倍。
     // 资产筹码派付时超额部分折现金（赢家现金 ↔ 输家让渡等额转移），
     // 所以现金与资产**各自**不要求守恒，两者之和（财富）必须恒为 0。
+    //
+    // ⚠ 财富口径说明：
+    //   `totalAssets(p, state)` 已经包含现金（= 现金 + 机构市值 − 资产让渡），
+    //   所以**不能再加一次 p.cash**（那会把现金算两遍）。
+    //   正确写法就是直接对 totalAssets 求和。
     for (let i = 0; i < 12; i++) {
       const state = makeCasinoState();
       // 给每人加资产，制造资产额度下注场景
@@ -639,7 +645,7 @@ export function runCasinoChecks() {
       }
       const game = startCasinoGame(state);
       assert(game, '赌场应能开局');
-      const wealthBefore = state.players.reduce((s, p) => s + p.cash + totalAssets(p, state), 0);
+      const wealthBefore = state.players.reduce((s, p) => s + totalAssets(p, state), 0);
       let guard = 0;
       while (!game.over && guard++ < 300) {
         const idx = currentActor(game);
@@ -654,8 +660,8 @@ export function runCasinoChecks() {
       const sumAssetNet = out.deltas.reduce((s, d) => s + (d.assetDelta || 0), 0);
       assert(sumCashNet + sumAssetNet === 0,
         `第 ${i + 1} 局财富净额之和 ${sumCashNet + sumAssetNet}（应为 0；现金 ${sumCashNet} / 资产 ${sumAssetNet}）`);
-      // 全桌总财富（现金 + 总资产 − 让渡）结算前后必须相等 —— 防止价值蒸发
-      const wealthAfter = state.players.reduce((s, p) => s + p.cash + totalAssets(p, state), 0);
+      // 全桌总财富（现金 + 机构市值 − 资产让渡）结算前后必须相等 —— 防止价值蒸发
+      const wealthAfter = state.players.reduce((s, p) => s + totalAssets(p, state), 0);
       assert(wealthAfter === wealthBefore,
         `第 ${i + 1} 局总财富蒸发：结算前 ￥${wealthBefore} → 结算后 ￥${wealthAfter}`);
       // 每人的资产折让不得为负
@@ -673,16 +679,41 @@ export function runCasinoChecks() {
       p.institutions.push({ cellIndex: 4, level: 4, mortgaged: false, mortgageAmount: 0 });
     }
     const game = startCasinoGame(state);
-    // 全员全下 → 直接摊牌
+    // ⚠ P1：allin 现在受 maxBetRatio 约束（不能一次押光全部现金），
+    //   因此「一轮 allin 就打光」不再成立 ——
+    //   改为**反复 raise + allin** 直到引擎自动摊牌（game.over）。
     let guard = 0;
-    while (!game.over && guard++ < 300) {
+    while (!game.over && guard++ < 400) {
       const idx = currentActor(game);
       if (idx < 0) break;
-      applyAction(game, idx, { type: 'allin' });
+      const seat = game.seats[idx];
+      if (!seat.allIn) {
+        // 先 raise 抬高底池，再 allin 逼其他人跟
+        const acts = legalActions(game);
+        const raiseAct = acts.find((a) => a.type === 'raise');
+        if (raiseAct && !raiseAct.disabled) {
+          applyAction(game, idx, { type: 'raise', amount: raiseAct.max });
+        }
+        const ar = applyAction(game, idx, { type: 'allin' });
+        if (!ar.ok) {
+          // allin 不可用（额度为 0）→ 退而求其次跟注 / 过牌 / 弃牌
+          const again = legalActions(game);
+          const alt = again.find((a) => a.type === 'call' && !a.disabled)
+            || again.find((a) => a.type === 'check' && !a.disabled)
+            || again.find((a) => a.type === 'fold' && !a.disabled);
+          if (!alt) break;
+          applyAction(game, idx, { type: alt.type, amount: alt.amount });
+        }
+      }
     }
     const winners = (game.result && game.result.winners) || [];
     assert(winners.length > 0, '未产生赢家');
-    finishCasinoGame(state, game);
+    const out = finishCasinoGame(state, game);
+    // 财富守恒：现金净额 + 资产净额之和必须为 0
+    const sumCashNet = out.deltas.reduce((s, d) => s + (d.cashDelta || 0), 0);
+    const sumAssetNet = out.deltas.reduce((s, d) => s + (d.assetDelta || 0), 0);
+    assert(sumCashNet + sumAssetNet === 0,
+      `财富不守恒：现金 ${sumCashNet} + 资产 ${sumAssetNet} = ${sumCashNet + sumAssetNet}`);
     for (const seat of game.seats) {
       const p = state.players.find((x) => x.id === seat.playerId);
       if (!p) continue;
@@ -750,6 +781,244 @@ export function runCasinoChecks() {
     }
     assert(maxDeck === 52, `总牌数应为 52，实际 ${maxDeck}`);
     return `20 局累计 · 单局最多用牌 ${maxTotal} 张 · 总牌数恒为 52`;
+  });
+
+  // ===================================================================
+  // ================= P2 新增：破产清算 / 债券违约 / 赌场额度 =================
+  // ===================================================================
+
+  check(results, '破产清算：loans/bonds/subscribedBonds/pokerAssetLock 全部清空', () => {
+    // 回归用例（F2）：破产玩家若仍保留贷款 / 债券 / 资产抵押，
+    //   就会在清算后继续负债、继续吃票息、继续被资产折损 —— 破产形同虚设。
+    const p = {
+      id: 99, name: '破产测试', cash: 100, bankrupt: false,
+      institutions: [{ cellIndex: 4, level: 2, mortgaged: false, mortgageAmount: 0 }],
+      loans: [{ id: 'L1', amount: 500, rate: 0.06, dueLap: 5, remaining: 3 }],
+      bonds: [{ id: 'B1', face: 300, couponPer: 18, subscribers: [1, 2] }],
+      subscribedBonds: [{ id: 'B2', face: 300, couponPer: 18, couponsPaid: 2 }],
+      pokerAssetLock: 480,
+      buffs: [{ id: 'buff-1', remaining: 3 }],
+      upgradePermits: { 4: { turn: 1, expiresTurn: 3 } },
+      loanCountThisRound: 2,
+    };
+    const res = liquidate(p);
+    assert(p.bankrupt === true, '清算后应标记破产');
+    assert(p.cash === 0, `清算后现金应为 0，实际 ${p.cash}`);
+    assert(Array.isArray(p.loans) && p.loans.length === 0, '清算后贷款应清空');
+    assert(Array.isArray(p.bonds) && p.bonds.length === 0, '清算后发行的债券应清空');
+    assert(Array.isArray(p.subscribedBonds) && p.subscribedBonds.length === 0,
+      '清算后认购的债券应清空');
+    assert((p.pokerAssetLock || 0) === 0, `清算后资产折让应归零，实际 ${p.pokerAssetLock}`);
+    assert(Array.isArray(p.buffs) && p.buffs.length === 0, '清算后 Buff 应清空');
+    assert(Object.keys(p.upgradePermits || {}).length === 0, '清算后升级许可应清空');
+    assert((p.loanCountThisRound || 0) === 0, '清算后本轮贷款计数应归零');
+    assert(res.debts.loans === 1, `清算记录应含 1 笔贷款，实际 ${res.debts.loans}`);
+    assert(res.debts.bonds === 1, `清算记录应含 1 笔债券，实际 ${res.debts.bonds}`);
+    assert(res.debts.subscribedBonds === 1,
+      `清算记录应含 1 笔认购债券，实际 ${res.debts.subscribedBonds}`);
+    return `贷款/债券/认购/资产折让/Buff/升级许可全部清空 · 免除债务 ${JSON.stringify(res.debts)}`;
+  });
+
+  check(results, '债券违约：发行方破产则债权人损失本金（跳过兑付）', () => {
+    // 回归用例（F3）：发行方破产后，债券必须停止付息、到期不得兑付，
+    //   认购方**损失全部本金**（否则「发债」是无风险套利）。
+    const state = makeCasinoState();
+    const issuer = state.players[1];
+    const buyer = state.players[2];
+    // 发行方破产
+    issuer.bankrupt = true;
+    issuer.bonds = [{
+      id: 9001, issuerId: issuer.id, face: CONFIG.bondFace, couponPer: 18,
+      subscribers: [buyer.id], dueLap: 0, dueRound: 0, couponsPaid: 0,
+    }];
+    buyer.subscribedBonds = [{
+      id: 9001, issuerId: issuer.id, face: CONFIG.bondFace,
+      couponPer: 18, couponsPaid: 0, boughtLap: 0,
+    }];
+    const cashBefore = buyer.cash;
+    const issuerCashBefore = issuer.cash;
+    // 到期兑付
+    processBonds(state, 99);
+    // 发行方不得付出任何现金（跳过兑付）
+    assert(issuer.cash === issuerCashBefore,
+      `发行方破产后现金不应变动：${issuerCashBefore} → ${issuer.cash}`);
+    // 认购方不得收到任何本金回款（损失本金）
+    assert(buyer.cash === cashBefore,
+      `债券违约时认购方不应收到回款：${cashBefore} → ${buyer.cash}`);
+    // 该债券应从双方账上移除
+    assert((issuer.bonds || []).length === 0, '发行方破产后其债券应被勾销');
+    assert((buyer.subscribedBonds || []).length === 0, '违约后认购方持有记录应被清除');
+    return `发行人 ${issuer.name} 破产 → 债权人 ${buyer.name} 损失本金 ￥${CONFIG.bondFace} · 无兑付`;
+  });
+
+  check(results, '债券违约：认购方破产则跳过其回款（不影响他人）', () => {
+    // 回归用例（F3）：认购方破产时，其应收回款必须跳过，
+    //   但**不影响其他认购方**的正常回款。
+    const state = makeCasinoState();
+    const issuer = state.players[1];
+    const deadBuyer = state.players[2];
+    const liveBuyer = state.players[3];
+    const face = CONFIG.bondFace;
+    issuer.bonds = [{
+      id: 9002, issuerId: issuer.id, face, couponPer: Math.round(face * CONFIG.bondCoupon),
+      subscribers: [deadBuyer.id, liveBuyer.id], dueLap: 0, dueRound: 0, couponsPaid: 0,
+    }];
+    deadBuyer.bankrupt = true;
+    deadBuyer.subscribedBonds = [{ id: 9002, issuerId: issuer.id, face, couponPer: Math.round(face * CONFIG.bondCoupon), couponsPaid: 0 }];
+    liveBuyer.subscribedBonds = [{ id: 9002, issuerId: issuer.id, face, couponPer: Math.round(face * CONFIG.bondCoupon), couponsPaid: 0 }];
+    const deadCashBefore = deadBuyer.cash;
+    const liveCashBefore = liveBuyer.cash;
+    const issuerCashBefore = issuer.cash;
+    processBonds(state, 99);
+    // 破产认购方不得收到回款
+    assert(deadBuyer.cash === deadCashBefore,
+      `破产认购方不应收到回款：${deadCashBefore} → ${deadBuyer.cash}`);
+    // 存活认购方照常回款
+    assert(liveBuyer.cash > liveCashBefore,
+      `存活认购方应收到本金回款：${liveCashBefore} → ${liveBuyer.cash}`);
+    // 发行方只为存活认购人兑付（本金 face + 当期票息 couponPer）
+    const couponPer = Math.round(face * CONFIG.bondCoupon);
+    const expectedPay = face + couponPer;
+    assert(issuerCashBefore - issuer.cash === expectedPay,
+      `发行方应只兑付 1 份（本金 ￥${face} + 票息 ￥${couponPer}），实际付出 ￥${issuerCashBefore - issuer.cash}`);
+    return `破产认购方回款被跳过 · 存活认购方收回 ￥${liveBuyer.cash - liveCashBefore} · 发行方仅付 1 份 ￥${expectedPay}`;
+  });
+
+  check(results, '债券兑付口径统一：bondRedeemValue 等于面值', () => {
+    // 回归用例（m2）：兑付口径必须与 bondRedeemValue 一致（按面值兑付）。
+    const bond = { id: 1, face: 300, price: 280, premium: 0.1 };
+    assert(bondRedeemValue(bond) === 300,
+      `bondRedeemValue 应等于面值 300，实际 ${bondRedeemValue(bond)}`);
+    const bond2 = { id: 2, face: 500 };
+    assert(bondRedeemValue(bond2) === 500,
+      `bondRedeemValue 应等于面值 500，实际 ${bondRedeemValue(bond2)}`);
+    const bond3 = { id: 3 };
+    assert(bondRedeemValue(bond3) === 0,
+      `无面值的债券应返回 0，实际 ${bondRedeemValue(bond3)}`);
+    return '面值 300 / 500 / 无面值 0 —— 兑付口径统一为面值';
+  });
+
+  check(results, '赌场资产额度只按机构市值算（现金不重复计入）', () => {
+    // 回归用例（F1）：赌场折算额度若用 totalAssets（= 现金 + 机构市值），
+    //   现金会被算两遍（既进 cashStack 又进 assetStack），
+    //   玩家可凭空拿到 1.5 倍桌上面值。
+    const state = makeCasinoState();
+    const p = state.players[0];
+    p.institutions = [{ cellIndex: 4, level: 3, mortgaged: false, mortgageAmount: 0 }];
+    p.cash = 2400;
+    const instValue = institutionValue(p, state);
+    const total = totalAssets(p, state);
+    // totalAssets = 现金 + 机构市值（应当比机构市值多出全部现金）
+    assert(total === p.cash + instValue,
+      `totalAssets 应等于 现金 + 机构市值：${total} ≠ ${p.cash} + ${instValue}`);
+    // 机构市值必须显著小于 totalAssets（说明现金没有被重复算进资产额度）
+    assert(instValue < total, '机构市值应小于总资产（现金不得计入资产额度）');
+    const game = startCasinoGame(state);
+    assert(game, '赌场应能开局');
+    const seat = game.seats[0];
+    // 资产额度 = 机构市值 × assetBetRatio（不含现金）
+    const expected = Math.round(instValue * POKER_CONFIG.assetBetRatio);
+    assert(seat.assetStack === expected,
+      `资产额度应为 ${expected}（机构市值 ${instValue} × ${POKER_CONFIG.assetBetRatio}），实际 ${seat.assetStack}`);
+    // 桌上面值 = 现金 + 资产额度
+    assert(seat.stack === seat.cashStack + seat.assetStack,
+      '桌上面值应等于 现金筹码 + 资产额度');
+    return `机构市值 ￥${instValue} → 资产额度 ￥${seat.assetStack}（现金 ￥${p.cash} 未计入）`;
+  });
+
+  check(results, '赌场 allin 受 maxBetRatio 约束且不产生死锁', () => {
+    // 回归用例（P1）：allin 不得绕过 maxBetRatio（一次押光主游戏现金）。
+    const state = makeCasinoState();
+    const game = startCasinoGame(state);
+    const seat = game.seats[0];
+    // 让 0 号成为当前行动者
+    game.currentSeat = 0;
+    const acts = legalActions(game);
+    const allin = acts.find((a) => a.type === 'allin');
+    assert(allin, '应提供 allin 选项');
+    assert(!allin.disabled, 'allin 不应被禁用');
+    const cashCap = Math.floor(seat.cashStack * POKER_CONFIG.maxBetRatio);
+    assert(allin.amount <= cashCap + seat.assetStack,
+      `allin 金额 ${allin.amount} 超出上限 ${cashCap + seat.assetStack}`);
+    // 连续 allin 不应死锁：连续执行直到分池或结束
+    let guard = 0;
+    while (!game.over && guard++ < 120) {
+      const idx = currentActor(game);
+      if (idx < 0) break;
+      const list = legalActions(game);
+      if (!list.length) break;
+      const a = list.find((x) => x.type === 'allin' && !x.disabled)
+        || list.find((x) => x.type === 'call' && !x.disabled)
+        || list.find((x) => x.type === 'check' && !x.disabled)
+        || list.find((x) => x.type === 'fold' && !x.disabled);
+      if (!a) break;
+      const r = applyAction(game, idx, { type: a.type, amount: a.amount });
+      if (!r.ok) {
+        const fb = list.find((x) => x.type === 'fold');
+        if (!fb) break;
+        applyAction(game, idx, { type: 'fold' });
+      }
+    }
+    assert(guard < 120, 'allin 循环出现死锁（超过 120 步仍未结束）');
+    return `allin 上限 ￥${allin.amount} ≤ ￥${cashCap + seat.assetStack} · ${guard} 步内正常结束`;
+  });
+
+  check(results, '资产额度可被全下（现金耗尽时不产生死锁）', () => {
+    // 回归用例：玩家现金用光后只剩资产额度时，
+    //   若 allin 也按 maxBetRatio 封顶（现金为 0 → 上限 0），
+    //   玩家将永远无法全下 → 行动循环死锁。
+    const state = makeCasinoState();
+    const p = state.players[0];
+    p.institutions = [{ cellIndex: 4, level: 4, mortgaged: false, mortgageAmount: 0 }];
+    const game = startCasinoGame(state);
+    const seat = game.seats[0];
+    // 人为把现金筹码清零，只留资产额度
+    seat.cashStack = 0;
+    seat.cashPaid = 0;
+    seat.stack = seat.assetStack;
+    game.currentSeat = 0;
+    const acts = legalActions(game);
+    const allin = acts.find((a) => a.type === 'allin');
+    assert(allin && !allin.disabled, '现金耗尽后 allin 仍应可用（只剩资产额度）');
+    assert(allin.amount > 0, 'allin 金额必须为正');
+    const r = applyAction(game, 0, { type: 'allin' });
+    assert(r.ok, `allin 应成功：${r.reason || ''}`);
+    assert(seat.allIn === true, 'allin 后应标记为全下状态');
+    return `现金 0 / 资产额度 ￥${seat.assetStack + seat.assetPaid} → 仍可全下 ￥${allin.amount}`;
+  });
+
+  check(results, '交易员择时奖励：行情切换时发放且每圈只发一次', () => {
+    // 回归用例：34 格棋盘上没有独立的「牛熊切换格」，
+    //   行情切换改由「转盘抽到牛熊切换」与「每 3 圈自动切换」两条路径触发。
+    //   旧实现只挂在 `case 'market'` 上 → 自动切换路径完全漏发，
+    //   职业被动事实上失效。
+    const state = makeCasinoState();
+    const p = state.players[0];
+    p.careerId = 'trader';
+    p.career = 'trader';
+    const before = p.cash;
+    const r1 = grantMarketTimingBonus(state, p);
+    assert(r1, '行情切换时应发放择时价差收益');
+    assert(p.cash === before + 120, `应加 ￥120，实际 ${p.cash - before}`);
+    // 同一圈内不得重复发放
+    const r2 = grantMarketTimingBonus(state, p);
+    assert(!r2, '同一圈内不得重复发放择时奖励');
+    assert(p.cash === before + 120, '重复调用不得改变现金');
+    // 圈号推进后允许再次发放
+    p.laps = (p.laps || 0) + 1;
+    const r3 = grantMarketTimingBonus(state, p);
+    assert(r3, '圈号推进后应允许再次发放');
+    assert(p.cash === before + 240, `应累计 ￥240，实际 ${p.cash - before}`);
+    // 非交易员不得发放
+    const state2 = makeCasinoState();
+    const p2 = state2.players[0];
+    p2.careerId = 'ib';
+    p2.career = 'ib';
+    const b2 = p2.cash;
+    const r4 = grantMarketTimingBonus(state2, p2);
+    assert(!r4, '非交易员不应发放择时奖励');
+    assert(p2.cash === b2, '非交易员现金不得变动');
+    return '交易员行情切换 +￥120 · 每圈一次 · 非交易员不发';
   });
 
   return results;

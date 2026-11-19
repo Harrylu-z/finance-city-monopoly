@@ -21,7 +21,7 @@ import {
   resolvePurchase, upgradeInstitution, mortgageInstitution, redeemInstitution,
   endTurn, checkBankruptcy, rankPlayers, currentPlayer,
   applyTrapCard, takeCentralLoan, repayLoan, issueBond, processBonds,
-  underwriteBond, addBuff,
+  underwriteBond, addBuff, selfRentMultFor, medianLaps,
 } from './rules.js';
 import {
   decide, planTurn, wantsReroll, assignPersonalities,
@@ -581,9 +581,13 @@ export function runAll() {
     assert(p.institutions[0].level === 0, '等级不应变化');
 
     // 踏足后 —— 获得升级许可
+    // ⚠ P2（m5）：许可记录现在是 `{ turn, expiresTurn }`（带时效 + 数量上限），
+    //   不再是简单的 `true`。
     p.position = idx;
     settleOnCell(state, p, idx);
-    assert(p.upgradePermits[idx] === true, '踏足后应获得升级许可');
+    assert(!!p.upgradePermits[idx], '踏足后应获得升级许可');
+    assert(p.upgradePermits[idx].expiresTurn > state.turnNumber,
+      '升级许可应带有效期（expiresTurn > 当前回合）');
 
     res = upgradeInstitution(state, p, idx);
     assert(res.ok, '踏足后应允许升级');
@@ -1064,7 +1068,7 @@ export function runAll() {
   });
 
   /* ---------- 自身租金系数（评级展望）---------- */
-  check(results, '自身租金系数 selfRentMult 应生效', () => {
+  check(results, '自身租金系数：限时 Buff 生效 + 旧永久系数可恢复', () => {
     const state = makeTestState();
     const owner = state.players[0];
     const payer = state.players[1];
@@ -1076,12 +1080,39 @@ export function runAll() {
     const base = results2.find((r) => r.kind === 'rent-paid');
     assert(!!base, '应产生租金');
 
-    owner.selfRentMult = 1.12;   // 评级上调
-    payer.position = idx;        // 重置位置，再次结算
+    // ⚠ P1：正面调整现在由**限时 Buff**承担（不是永久写进 selfRentMult）。
+    //   给归属人挂一个 1.12 的限时 rentMult Buff → 租金应 ×1.12
+    owner.buffs = [{
+      id: 'test-rating', group: null, name: '评级上调', desc: '',
+      kind: 'good', remaining: 3, total: 3, startedTurn: state.turnNumber,
+      effect: { rentMult: 1.12 },
+    }];
+    payer.position = idx;
     const results3 = settleOnCell(state, payer, idx);
     const up = results3.find((r) => r.kind === 'rent-paid');
-    assert(up.rent === Math.round(base.rent * 1.12), `评级上调后租金应 ×1.12：${base.rent} → ${up.rent}`);
-    return `基础 ￥${base.rent} → 上调后 ￥${up.rent}`;
+    assert(up.rent === Math.round(base.rent * 1.12),
+      `限时 Buff 下租金应 ×1.12：${base.rent} → ${up.rent}`);
+
+    // Buff 过期后自动恢复（不再有永久痕迹）
+    owner.buffs = [];
+    payer.position = idx;
+    const results4 = settleOnCell(state, payer, idx);
+    const back = results4.find((r) => r.kind === 'rent-paid');
+    assert(back.rent === base.rent,
+      `Buff 过期后应恢复基准租金：${base.rent} → ${back.rent}`);
+
+    // 旧存档的永久 selfRentMult：按「下限 + 恢复」处理 —— 不再永久生效
+    owner.selfRentMult = 0.9;
+    owner.selfRentMultTurns = 2;
+    const m1 = selfRentMultFor(owner);
+    assert(m1 >= CONFIG.selfRentFloorMult,
+      `自身系数不得低于下限 ${CONFIG.selfRentFloorMult}，实为 ${m1}`);
+    assert(m1 !== 0.9, '旧永久系数应向 1 恢复（不再是固定值）');
+    // 恢复完毕 → 归 1
+    owner.selfRentMultTurns = 1;
+    selfRentMultFor(owner);
+    assert(owner.selfRentMult === 1, '恢复完毕后应归 1');
+    return `限时 Buff ×1.12 生效且到期恢复 · 旧永久系数自动回归 1`;
   });
 
   /* ---------- 破产判定 ---------- */
