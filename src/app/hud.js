@@ -5,12 +5,11 @@
 import { PLAYER_COLORS, PALETTE } from '../core/palette.js';
 import { getAvatarIcon } from '../art/avatars.js';
 import {
-  totalAssets, financialMetrics, levelLabel, allGroupBuffs,
-  groupBuffTier, outstandingLoan, bondRedeemValue, holdingTier,
+  totalAssets, financialMetrics, levelLabel,
+  outstandingLoan, bondRedeemValue,
   calculateRent, buffMultiplierFor, buffEffectMult,
 } from '../core/economy.js';
 import { institutionCount } from '../core/rules.js';
-import { GROUP_META } from '../core/board.js';
 
 /** 渲染玩家卡片 */
 export function renderPlayerCards(el, state, onClick) {
@@ -408,8 +407,8 @@ export function drawKline(canvas, state, elapsed) {
  *
  * 数据全部取自 `state`（与 openPlayerDetail / 排行面板同一数据源）：
  *   · 我的机构 —— 机构列表 + 每圈管理费 + 资金流水（player.cashFlow）
- *   · Buff      —— player.buffs + allGroupBuffs(player)（经营生态加成）
- *   · 融资      —— player.loans / bonds / subscribedBonds + 质押融资 + 监管牌照
+ *   · Buff      —— player.buffs（仅限时状态）
+ *   · 融资      —— player.loans / bonds / subscribedBonds（仅融资工具明细）
  *
  * ⚠ 原「净值」tab 已删除：资产 / 净资产 / 负债率等汇总由右侧
  *   「财务对比表」与玩家卡片常驻展示，点击排行榜玩家可看完整下钻明细。
@@ -544,6 +543,20 @@ export function renderTabInstitutions(el, player, state) {
     el.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
   }
 
+  // ===== 「生态总览」入口 —— 经营生态加成完全由持有机构决定，
+  //   总览入口放在机构 tab（Buff tab 只显示限时状态）。
+  //   派发 DOM 事件由 main.js 打开 showBuffPanel
+  //   （hud.js 不直接 import dialogs.js，保持展示层单向依赖）。
+  const overviewBtn = document.createElement('button');
+  overviewBtn.className = 'tab-eco-btn';
+  overviewBtn.type = 'button';
+  overviewBtn.textContent = '查看生态总览 ≫';
+  overviewBtn.title = '打开经营生态四层加成总览（纵深 × 精耕 × 特色 × 控股）';
+  overviewBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('open-buff-panel'));
+  });
+  el.appendChild(overviewBtn);
+
   // ===== 下半段：资金流水（并入本 tab，一屏对照「资产 ↔ 现金流」）=====
   renderCashFlowInto(el, player, state);
 }
@@ -624,7 +637,14 @@ export function renderTabCashFlow(el, player, state) {
 const CASHFLOW_SHOW_MAX = 30;
 
 /**
- * 渲染「Buff」tab —— 限时状态 + 集团牌照加成。
+ * 渲染「Buff」tab —— **只显示限时状态**。
+ *
+ * ⚠ 唯一性（2026-11）：「经营生态加成」板块整体移出 ——
+ *   它完全由持有机构的状态决定（分组家数 / 等级 / 控股数），
+ *   属于"持有机构"信息；总览入口移到「我的机构」tab，
+ *   生态乘数本身已体现在机构 tab 的每行租金与交租弹窗里。
+ *
+ * @param {HTMLElement} el Buff tabpanel 元素
  */
 export function renderTabBuffs(el, player, state) {
   el.replaceChildren();
@@ -667,76 +687,7 @@ export function renderTabBuffs(el, player, state) {
       el.appendChild(row);
     }
   }
-
-  // ===== 经营生态加成（四层叠乘：纵深 × 精耕 × 特色 × 控股）=====
-  const gb = allGroupBuffs(player);
-  /** 乘数展示：去掉多余的尾零（×1.15 / ×1.335） */
-  const fmtMult = (m) => `×${Number(Number(m).toFixed(3))}`;
-  const anyActive = Object.keys(gb).some((k) => {
-    const g = gb[k];
-    return (g.tier || 0) > 0 || (g.depth?.mult || 1) > 1 || g.special?.active;
-  });
-
-  // 「生态总览」入口 —— 派发 DOM 事件，由 main.js 打开 showBuffPanel
-  // （hud.js 不直接 import dialogs.js，保持展示层单向依赖）
-  const overviewBtn = document.createElement('button');
-  overviewBtn.className = 'tab-eco-btn';
-  overviewBtn.type = 'button';
-  overviewBtn.textContent = '查看生态总览 ≫';
-  overviewBtn.title = '打开经营生态四层加成总览';
-  overviewBtn.addEventListener('click', () => {
-    document.dispatchEvent(new CustomEvent('open-buff-panel'));
-  });
-
-  el.appendChild(tabSection('经营生态加成', anyActive ? '' : '未触发'));
-  el.appendChild(overviewBtn);
-  if (!anyActive) {
-    el.appendChild(tabEmpty('同类机构 ≥2 家 → 集团纵深\n升级机构 → 精耕加成\n总控股 ≥6 家 → 金融控股\n全部叠乘'));
-  } else {
-    for (const k of Object.keys(gb)) {
-      const g = gb[k];
-      const meta = GROUP_META[k];
-      const label = (meta && meta.name) || k;
-      if ((g.count || 0) <= 0) continue;
-      // 该集团租金合计 = 纵深（数量档）× 精耕（等级档）
-      const groupMult = (g.mult || 1) * (g.depth?.mult || 1);
-      const bits = [];
-      if (g.tier > 0) bits.push(g.name);
-      for (const d of (g.depth?.items || [])) bits.push(d.name);
-      // ⚠ 唯一性（2026-11）：不在 Buff tab 显示持有机构家数 ——
-      //   持有机构信息只在「我的机构」tab 展示，这里只给加成乘数与档位名。
-      el.appendChild(tabRow(
-        label,
-        fmtMult(groupMult),
-        groupMult > 1 ? 'is-green' : 'is-dim',
-      ));
-      if (bits.length) {
-        el.appendChild(tabRow(`└ ${bits.join(' / ')}`, '', 'is-dim'));
-      }
-      if (g.special?.active) {
-        el.appendChild(tabRow(`└ ${g.special.name}`, '已解锁', 'is-green'));
-      }
-    }
-    // 层 4 金融控股（跨集团总持有）—— 不展示家数（持有机构信息只在「我的机构」tab）
-    const holding = holdingTier(player);
-    if (holding.tier > 0) {
-      el.appendChild(tabSection('金融控股', holding.names.join(' / ')));
-      el.appendChild(tabRow(
-        '全局收租',
-        fmtMult(holding.rentMult),
-        'is-green',
-      ));
-      if (holding.upgradeCostMult < 1) {
-        el.appendChild(tabRow('└ 升级费', `−${Math.round((1 - holding.upgradeCostMult) * 100)}%`, 'is-green'));
-      }
-      if (holding.roundBonus > 0) {
-        el.appendChild(tabRow('└ 每圈补贴', `￥${holding.roundBonus}`, 'is-green'));
-      }
-      if (holding.loanRateMult < 1) {
-        el.appendChild(tabRow('└ 贷款利率', `${(holding.loanRateMult * 10).toFixed(1).replace(/\.0$/, '')} 折`, 'is-green'));
-      }
-    }
-  }}
+}
 
 /* ===================================================================
  * 「融资」tab —— 央行贷款 + 债券（发行与持有）合一
@@ -840,21 +791,20 @@ function renderBondsInto(el, player, state) {
  *
  * @param {HTMLElement} el 融资 tabpanel 元素
  */
+/**
+ * 渲染「融资」tab —— **只放融资工具明细**：央行贷款 + 债券（发行与持有）。
+ *
+ * ⚠ 唯一性（2026-11）：质押融资段 / 监管牌照段已移除 ——
+ *   质押状态在「我的机构」tab 的机构行有「质押」标记，
+ *   牌照资产在棋盘上一眼可见，玩家详情弹窗有完整数据。
+ *
+ * @param {HTMLElement} el 融资 tabpanel 元素
+ */
 export function renderTabFinance(el, player, state) {
   el.replaceChildren();
   if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
   renderLoansInto(el, player);
   renderBondsInto(el, player, state);
-
-  // ===== 质押融资（从已删除的「净值」tab 并入 —— 质押是融资工具之一）
-  // ⚠ 唯一性：不展示质押机构数（持有机构信息只在「我的机构」tab）
-  const m = financialMetrics(player, state);
-  const pledged = m.mortgagedAmount || 0;
-  el.appendChild(tabSection('质押融资'));
-  el.appendChild(tabRow('已质押金额', `￥${fmtNum(pledged)}`));
-
-  // ===== 监管牌照（持有人独享效果的资产，归入融资 tab）=====
-  el.appendChild(tabSection('监管牌照', `${m.regulatorCount} 张`));
 }
 
 /**
