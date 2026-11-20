@@ -1998,11 +1998,11 @@ export function chargeMaintenanceCosts(state, target = null) {
         }
       }
       checkBankruptcy(state, p);
-      // 欠费超过资产 50% → 强制清算
+      // 欠费超过资产 50% → 强制清算（资不抵债式清算，不走流动性判定）
       const assets = totalAssets(p, state);
       if (!p.bankrupt && p.maintenanceDebt > assets * 0.5) {
         notes.push(`${p.name} 维持成本欠费 ￥${p.maintenanceDebt} 超过资产 50%，强制清算`);
-        checkBankruptcy(state, p);
+        checkBankruptcy(state, p, { force: true, reason: '维持成本欠费超过资产 50%' });
       }
     } else {
       notes.push(`${p.name} 支付机构维持成本 ￥${paid}`);
@@ -2141,10 +2141,10 @@ export function raiseFundsForDeficit(state, player) {
   return raised;
 }
 
-/** 破产检测与清算 */
-export function checkBankruptcy(state, player) {
+/** 破产检测与清算（force=true 时跳过流动性判定，直接强制清算） */
+export function checkBankruptcy(state, player, opts = {}) {
   if (player.bankrupt) return false;
-  if (!isBankrupt(player, state)) return false;
+  if (!opts.force && !isBankrupt(player, state)) return false;
 
   // 清算前先记一笔 —— liquidate() 会把现金清零，账本要留下「被清零」这一笔。
   // ⚠️ 用 noteCash（只写账本）而不是 recordCash（会同时改现金）：
@@ -2154,10 +2154,11 @@ export function checkBankruptcy(state, player) {
     noteCash(state, player, -before, '破产清算', '破产');
   }
   const res = liquidate(player);
+  const why = opts.reason ? `（${opts.reason}）` : '';
   log(state, 'bad',
-    `${player.name} 爆仓清算！${res.actions.join('；')}，最终清算金额 ￥${res.settlement}`,
+    `${player.name} 爆仓清算${why}！${res.actions.join('；')}，最终清算金额 ￥${res.settlement}`,
     '破产');
-  emit(state, 'bankrupt', { playerId: player.id, settlement: res.settlement, actions: res.actions });
+  emit(state, 'bankrupt', { playerId: player.id, settlement: res.settlement, actions: res.actions, reason: opts.reason || null });
   return true;
 }
 

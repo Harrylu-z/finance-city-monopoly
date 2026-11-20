@@ -567,6 +567,7 @@ export function liquidate(player) {
   player.buffs = [];
   player.upgradePermits = {};
   player.loanCountThisRound = 0;
+  player.maintenanceDebt = 0;
 
   return { settlement: Math.max(0, Math.round(proceeds)), actions, debts };
 }
