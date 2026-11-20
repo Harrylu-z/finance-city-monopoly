@@ -1103,13 +1103,6 @@ body.theme-light .turn-bar-owner-name { color: #fdf8ec; }
   text-overflow: ellipsis;
   transition: color .16s ease, background .16s ease, border-color .16s ease;
 }
-/* 6 个 tab（我的机构 / Buff / 贷款 / 债券 / 净值 / 资金流水）挤在 264px 左栏里，
-   需要收紧字距与内边距，否则「资金流水」会被 ellipsis 截断。 */
-.tab-btn[data-tab="cashflow"] {
-  font-size: 10px;
-  letter-spacing: 0;
-  padding: 5px 1px;
-}
 .tab-btn:hover { color: var(--ink); background: rgba(255,255,255,.6); }
 .tab-btn[aria-selected="true"] {
   color: var(--c-gold-dk);
@@ -1318,31 +1311,25 @@ body.theme-light .turn-bar-owner-name { color: #fdf8ec; }
 }
 
 /* ============================================================
-   「我的机构」/「资金流水」tab
+   「我的机构」tab（含资金流水）
   ------------------------------------------------------------
-   「资金流水」已从「我的机构」里**拆成独立 tab**：
-     · 原先两者共用 #tab-panel-inst，靠上下两段
-       （.tab-split-top / .tab-split-bottom）分隔；
-     · 现在各自独占一个 tabpanel，横向 tab 位增至 6 个。
-
+   布局（2026-11）：上半段机构列表、下半段资金流水合一展示，
+   一屏对照「资产 ↔ 现金流」。
    高度策略：
-     · 两个面板都自己滚动（.tab-panel 已是 overflow-y:auto），
-       机构多 / 流水多都不会撑破左栏；
-     · 「资金流水」面板给 .cf-list 留出完整高度，
-       新的流水永远可见。
+     · 整个面板自己滚动（.tab-panel 已是 overflow-y:auto）；
+     · .cf-list 限制最大高度并独立滚动 —— 机构很多时流水
+       不会被顶出视野，新流水永远可见。
    ============================================================ */
-#tab-panel-inst,
-#tab-panel-cashflow {
+#tab-panel-inst {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
 }
 
 /* ---------- 资金流水条目 ---------- */
 .cf-list {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: none;
+  max-height: 220px;
   overflow-y: auto;
   /* 流水是「近期动态」，视觉上要比机构列表更轻 */
   padding-right: 2px;

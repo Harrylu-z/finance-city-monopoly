@@ -210,9 +210,9 @@ class Game {
       // 左上：当前玩家紧凑单条
       'active-player-card', 'active-avatar', 'active-player-name',
       'active-player-cash', 'active-player-sub', 'active-status',
-      // 左侧：Tab 面板（我的机构 / Buff / 贷款 / 债券 / 净值 / 资金流水）
-      'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-loan',
-      'tab-panel-bond', 'tab-panel-net', 'tab-panel-cashflow',
+      // 左侧：Tab 面板（我的机构+流水 / Buff / 融资 / 净值）
+      'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-finance',
+      'tab-panel-net',
       // 右上：回合徽章 + 按钮
       'hud-round', 'hud-market', 'btn-rank', 'btn-settings',
       // 顶部全宽回合归属条（P1-1）
@@ -2779,10 +2779,8 @@ class Game {
       renderTabPanels({
         inst: this.el['tab-panel-inst'],
         buff: this.el['tab-panel-buff'],
-        loan: this.el['tab-panel-loan'],
-        bond: this.el['tab-panel-bond'],
+        finance: this.el['tab-panel-finance'],
         net: this.el['tab-panel-net'],
-        cashflow: this.el['tab-panel-cashflow'],
       }, me, state);
     }
 
