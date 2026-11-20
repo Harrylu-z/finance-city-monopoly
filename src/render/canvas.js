@@ -30,12 +30,15 @@ const FONT_NUM = '"Consolas", "Menlo", monospace';
 /**
  * 四大监管机构的专属视觉身份（沿用 D+ 地块方案）。
  * 每个监管机构有自己的主色 + 徽章造型 + 效果读数。
+ *
+ * ⚠ 效果为**持有人独享**型（见 economy.js 的 CONFIG.regulatorEffects）：
+ *   读数只描述持有人获得的增益，不描述全局光环。
  */
 const REGULATOR_VISUAL = {
-  pbc:  { color: '#c0392b', lt: '#e4604d', dk: '#8d2419', role: '货币政策', badge: 'coin',  big: '+￥80', unit: '每圈开始' },
-  csrc: { color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88', role: '发行审核', badge: 'shield', big: '-12%', unit: '全体升级费' },
-  nfra: { color: '#4f9d55', lt: '#7ac77f', dk: '#336b38', role: '审慎监管', badge: 'scale', big: '-8%',  unit: '全体租金收入' },
-  fsc:  { color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86', role: '风险处置', badge: 'castle',big: '-50%', unit: '陷阱罚金' },
+  pbc:  { color: '#c0392b', lt: '#e4604d', dk: '#8d2419', role: '货币政策', badge: 'coin',  big: '+￥350', unit: '每圈开始' },
+  csrc: { color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88', role: '发行审核', badge: 'shield', big: '-30%', unit: '持有人升级费' },
+  nfra: { color: '#4f9d55', lt: '#7ac77f', dk: '#336b38', role: '审慎监管', badge: 'scale', big: '+25%', unit: '持有人收租' },
+  fsc:  { color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86', role: '风险处置', badge: 'castle',big: '全免', unit: '持有人罚金' },
 };
 
 /**
@@ -107,9 +110,9 @@ const REG_SIGN = {
 };
 
 /** 监管效果语义 —— 与 REGULATOR_VISUAL 配套 */
-const REG_SIGN_OF = { pbc: 'benefit', csrc: 'relief', nfra: 'restraint', fsc: 'shield' };
+const REG_SIGN_OF = { pbc: 'benefit', csrc: 'relief', nfra: 'benefit', fsc: 'shield' };
 
-/** 监管效果名（D+ 底栏「效果名 · 全体玩家生效」） */
+/** 监管效果名（D+ 底栏「效果名 · 持有人独享」） */
 const REG_EFFECT_NAME = {
   pbc: '流动性投放', csrc: '注册制便利', nfra: '审慎约束', fsc: '风险缓冲',
 };

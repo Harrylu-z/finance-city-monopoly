@@ -97,25 +97,25 @@ export const REGULATORS = {
     short: '央行', name: '中国人民银行',
     color: '#c0392b', lt: '#e4604d', dk: '#8d2419',
     role: '货币政策', effectName: '流动性投放',
-    big: '+￥80', unit: '每圈', badge: 'coin', sign: 'benefit',
+    big: '+￥350', unit: '每圈', badge: 'coin', sign: 'benefit',
   },
   csrc: {
     short: '证监会', name: '中国证监会',
     color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88',
     role: '发行审核', effectName: '注册制便利',
-    big: '-12%', unit: '升级费', badge: 'shield', sign: 'relief',
+    big: '-30%', unit: '升级费', badge: 'shield', sign: 'relief',
   },
   nfra: {
     short: '银保监', name: '金融监管总局',
     color: '#4f9d55', lt: '#7ac77f', dk: '#336b38',
     role: '审慎监管', effectName: '审慎约束',
-    big: '-8%', unit: '租金', badge: 'scale', sign: 'restraint',
+    big: '+25%', unit: '收租', badge: 'scale', sign: 'benefit',
   },
   fsc: {
     short: '金稳会', name: '金融稳定委员会',
     color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86',
     role: '风险处置', effectName: '风险缓冲',
-    big: '-50%', unit: '罚金', badge: 'castle', sign: 'shield',
+    big: '全免', unit: '罚金', badge: 'castle', sign: 'shield',
   },
 };
 

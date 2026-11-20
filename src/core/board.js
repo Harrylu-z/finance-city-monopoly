@@ -99,8 +99,13 @@ export const GROUP_META = {
 };
 
 /**
- * 四大监管机构 —— 可被持有，持有后提供全局特殊效果。
+ * 四大监管机构 —— 可被持有，持有后提供**持有人独享**的特殊效果。
  * regulatorId 决定效果；监管格不可升级。
+ *
+ * ⚠ 效果口径（economy.js 的 CONFIG.regulatorEffects 为准）：
+ *   牌照为**独享型**资产 —— 只有持有者享受增益，
+ *   未持有者反而吃到对应的压制（victim*）。
+ *   例如金融监管总局：持有人收租 ×1.25，他人收租 ×0.9。
  */
 export const REGULATORS = {
   pbc: {
@@ -108,7 +113,7 @@ export const REGULATORS = {
     group: 'bank', kind: BUILDING_KINDS.regulator,
     price: 3200, rent: 0, tier: 0, maxLevel: 0, regulator: true,
     regulatorId: 'pbc',
-    effect: '货币政策 —— 每圈开始获得额外 ￥50 流动性投放',
+    effect: '货币发行权 —— 持有人每圈获得 ￥350 流动性投放，贷款 5 折且每圈可贷 2 次',
     effectName: '流动性投放',
   },
   csrc: {
@@ -116,7 +121,7 @@ export const REGULATORS = {
     group: 'broker', kind: BUILDING_KINDS.regulator,
     price: 3400, rent: 0, tier: 0, maxLevel: 0, regulator: true,
     regulatorId: 'csrc',
-    effect: '发行审核 —— 全体玩家升级费用降低 12%',
+    effect: '注册制定价权 —— 持有人升级费 7 折、收购价 9 折；他人升级费 +10%',
     effectName: '注册制便利',
   },
   nfra: {
@@ -124,7 +129,7 @@ export const REGULATORS = {
     group: 'insurer', kind: BUILDING_KINDS.regulator,
     price: 3000, rent: 0, tier: 0, maxLevel: 0, regulator: true,
     regulatorId: 'nfra',
-    effect: '审慎监管 —— 全体玩家租金收入降低 8%（稳健但保守）',
+    effect: '审慎监管红利 —— 持有人收租 +25%；他人收租 -10%',
     effectName: '审慎约束',
   },
   fsc: {
@@ -132,7 +137,7 @@ export const REGULATORS = {
     group: 'asset', kind: BUILDING_KINDS.regulator,
     price: 3600, rent: 0, tier: 0, maxLevel: 0, regulator: true,
     regulatorId: 'fsc',
-    effect: '风险处置 —— 每次触发陷阱格时，罚金减免 50%',
+    effect: '风险兜底 —— 持有人陷阱罚金全免、维持成本 5 折、质押 +30%；他人罚金 +25%',
     effectName: '风险缓冲',
   },
 };

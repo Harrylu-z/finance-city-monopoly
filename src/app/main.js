@@ -5,7 +5,7 @@
 import { BOARD_CELLS, BOARD_SIZE, EVENT_CARDS, TRAP_CARDS, GROUP_META, WHEEL_BY_ID } from '../core/board.js';
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
-  totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects,
+  totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects, playerRegulatorEffects,
   groupBuffTier, outstandingLoan, bondRedeemValue, bondCouponFor, financialMetrics,
 } from '../core/economy.js';
 import {
@@ -1358,15 +1358,17 @@ class Game {
       const bonusResults = grantStartPass(state, player, startCell);
       results.push(...bonusResults);
 
-      // 2) 持有央行 → 每圈流动性投放
-      const regBonus = globalRegulatorEffects(state).roundBonus || 0;
+      // 2) 持有央行 → 每圈流动性投放（持有人独享）
+      const regEff = playerRegulatorEffects(state, player);
+      const regBonus = regEff.roundBonus || 0;
       if (regBonus > 0) {
         recordCash(state, player, regBonus, '央行流动性投放', '央行');
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell: startCell });
       }
 
-      // 3) 贷款机会（每圈限一次）
-      if (player.loanCountThisRound < CONFIG.maxLoansPerRound) {
+      // 3) 贷款机会（央行牌照持有人每圈可多贷一次）
+      const loanLimit = CONFIG.maxLoansPerRound + (regEff.loanLimitBonus || 0);
+      if (player.loanCountThisRound < loanLimit) {
         results.push({ kind: 'loan-offer', cell: startCell, tiers: CONFIG.loanTiers });
       }
 
@@ -1768,7 +1770,7 @@ class Game {
               () => {
                 this.busy = true;
                 this.continueAfterSettlement(player);
-              });
+              }, this.state);
             return;
           }
           break;

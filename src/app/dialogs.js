@@ -7,7 +7,7 @@ import { getInstitutionSprite } from '../art/buildings.js';
 import { makePlayerSpriteCanvas } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
-  groupBuffTier, globalRegulatorEffects, CONFIG, allGroupBuffs,
+  groupBuffTier, globalRegulatorEffects, playerRegulatorEffects, CONFIG, allGroupBuffs,
   financialMetrics, loanRepayAmount, loanInterestPerTurn, bondCouponFor,
   outstandingLoan,
 } from '../core/economy.js';
@@ -349,7 +349,7 @@ export function showInstitutionDialog(player, state, onUpgrade, onMortgage, onRe
       market: state.market, eventMult: state.eventMult,
       buffMult: groupBuffTier(player, cell.group).mult,
     });
-    const regEff = globalRegulatorEffects(state);
+    const regEff = playerRegulatorEffects(state, player);
     const upCost = upgradeCost(cell, inst.level, { regulatorCostMult: regEff.upgradeCostMult });
     if (cell.regulator) {
       meta.textContent = `监管机构 · 不可升级 · ${cell.code}`;
@@ -882,9 +882,22 @@ export function showMenuDialog(items) {
  * 新增机制弹窗 —— 央行贷款 / 债券发行 / 监管陷阱 / Buff 总览
  * =================================================================== */
 
-/** 央行贷款选择弹窗 —— 可选利率与额度 */
-export function showLoanDialog(player, tiers, onPick, onCancel) {
+/**
+ * 央行贷款选择弹窗 —— 可选利率与额度。
+ *
+ * @param {object} player 借款人
+ * @param {Array} tiers 贷款档位
+ * @param {Function} onPick 选中回调
+ * @param {Function} onCancel 取消回调
+ * @param {object} [state] 当前对局状态 —— 用于展示央行牌照的利率折扣
+ */
+export function showLoanDialog(player, tiers, onPick, onCancel, state = null) {
   const body = document.createElement('div');
+
+  // 央行牌照：持有人享直营利率折扣 + 每圈多贷一次
+  const regEff = state ? playerRegulatorEffects(state, player) : null;
+  const rateMult = regEff?.loanRateMult ?? 1;
+  const loanLimitBonus = regEff?.loanLimitBonus ?? 0;
 
   const intro = document.createElement('div');
   intro.className = 'modal-text';
@@ -893,6 +906,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
     贷款用于<span class="hl">经营性周转</span>（收购地标级机构等）：
     <span class="hl-red">每回合从现金中扣除当期利息，到期归还本金</span>。<br>
     <span class="dim">期限按你自己的回合数计算（不受他人绕圈影响）；现金不足时当期利息转为「欠息」，到期连同本金一并结清。</span>
+    ${rateMult < 1
+      ? `<br><span class="hl">持有央行牌照 —— 直营利率 ×${rateMult}，每圈可申请 ${1 + loanLimitBonus} 次</span>`
+      : ''}
   `;
   body.appendChild(intro);
 
@@ -911,9 +927,9 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
     card.innerHTML = `
       <div class="loan-name">${t.name}</div>
       <div class="loan-amt">￥${t.amount}</div>
-      <div class="loan-rate">每回合付息 ￥${loanInterestPerTurn(t)}</div>
+      <div class="loan-rate">每回合付息 ￥${loanInterestPerTurn(t, rateMult)}</div>
       <div class="loan-term">期限 ${t.term} 回合 · 到期还本 ￥${t.amount}</div>
-      <div class="loan-repay">本息合计 ￥${loanRepayAmount(t.id)}</div>
+      <div class="loan-repay">本息合计 ￥${loanRepayAmount(t.id, rateMult)}</div>
       <div class="loan-desc">${t.desc}</div>
     `;
     card.addEventListener('click', () => {
@@ -927,7 +943,7 @@ export function showLoanDialog(player, tiers, onPick, onCancel) {
   const note = document.createElement('div');
   note.className = 'modal-text dim';
   note.style.marginTop = '10px';
-  note.textContent = '每圈最多申请一次；利息按回合从现金中扣除，现金不足则计入欠息；到期自动归还本金与欠息，未足额还款将触发强制平仓。';
+  note.textContent = `每圈最多申请 ${1 + loanLimitBonus} 次；利息按回合从现金中扣除，现金不足则计入欠息；到期自动归还本金与欠息，未足额还款将触发强制平仓。`;
   body.appendChild(note);
 
   return openModal({
@@ -1128,14 +1144,14 @@ export function showBuffPanel(player, state) {
 
   const sec2 = document.createElement('div');
   sec2.className = 'modal-text';
-  sec2.innerHTML = '<span class="hl">监管牌照</span>（持有即全局生效，不可升级）';
+  sec2.innerHTML = '<span class="hl">监管牌照</span>（<b>独享型</b>：只有持有人享受增益，未持有者反受压制 · 不可升级）';
   body.appendChild(sec2);
 
   const owned = player.institutions.filter((i) => state.board[i.cellIndex] && state.board[i.cellIndex].regulator);
   if (!owned.length) {
     const t = document.createElement('div');
     t.className = 'modal-text dim';
-    t.textContent = '你尚未持有任何监管机构。人民银行 / 证监会 / 金融监管总局 / 金稳会 均为可收购的牌照资产。';
+    t.textContent = '你尚未持有任何监管机构。人民银行 / 证监会 / 金融监管总局 / 金稳会 均为可收购的牌照资产 —— 但注意：牌照一旦被他人买走，你反而会吃到对应的压制。';
     body.appendChild(t);
   } else {
     const rlist = document.createElement('div');
@@ -1164,6 +1180,37 @@ export function showBuffPanel(player, state) {
       rlist.appendChild(item);
     }
     body.appendChild(rlist);
+  }
+
+  // ===== 被他人牌照压制的提示 =====
+  // 监管牌照是「独享型」资产：别人买走某张牌照时，
+  // 玩家会吃到对应的 victim 压制 —— 这里明确列出来，避免被暗中惩罚。
+  const pressed = [];
+  const regEff = playerRegulatorEffects(state, player);
+  if (regEff.upgradeCostMult > 1) {
+    pressed.push(`证监会注册审核（他人持有）→ 你的升级费 ×${regEff.upgradeCostMult.toFixed(2)}`);
+  }
+  if (regEff.rentMult < 1) {
+    pressed.push(`金融监管总局审慎约束（他人持有）→ 你的收租 ×${regEff.rentMult.toFixed(2)}`);
+  }
+  if (regEff.trapMult > 1) {
+    pressed.push(`金稳会风险处置（他人持有）→ 你的陷阱罚金 ×${regEff.trapMult.toFixed(2)}`);
+  }
+  if (pressed.length) {
+    const pt = document.createElement('div');
+    pt.className = 'modal-text';
+    pt.style.marginTop = '8px';
+    pt.innerHTML = '<span class="hl-red">你正受到以下压制：</span>';
+    body.appendChild(pt);
+    const pl = document.createElement('ul');
+    pl.style.margin = '4px 0 0 18px';
+    for (const line of pressed) {
+      const li = document.createElement('li');
+      li.className = 'modal-text dim';
+      li.textContent = line;
+      pl.appendChild(li);
+    }
+    body.appendChild(pl);
   }
 
   // 限时状态（特殊格赋予的 Buff）

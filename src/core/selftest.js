@@ -12,7 +12,7 @@ import {
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   isBankrupt, liquidate, purchasePrice, totalAssets,
-  groupBuffTier, allGroupBuffs, globalRegulatorEffects, ownsRegulator,
+  groupBuffTier, allGroupBuffs, globalRegulatorEffects, playerRegulatorEffects, ownsRegulator,
   loanRepayAmount, bondRedeemValue, buffMultiplierFor, financialMetrics,
   bondCouponFor, buffEffectMult,
 } from './economy.js';
@@ -733,49 +733,103 @@ export function runAll() {
     return `${cell.name} 五级净现金流均为正`;
   });
 
-  /* ---------- 监管机构效果 ---------- */
-  check(results, '监管机构全局效果生效', () => {
+  /* ---------- 监管机构效果（持有人独享 + 对他人压制）---------- */
+  check(results, '监管机构效果：持有人独享且压制他人', () => {
     const state = makeTestState();
     const owner = state.players[1];
+    const rival = state.players[0];
 
-    // 初始 —— 无效果
-    let eff = globalRegulatorEffects(state);
+    const csrcIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'csrc');
+    const pbcIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'pbc');
+    const fscIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'fsc');
+    const nfraIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'nfra');
+
+    // 初始 —— 双方都无效果
+    let eff = playerRegulatorEffects(state, owner);
     assert(eff.roundBonus === 0, '初始不应有流动性投放');
     assert(eff.upgradeCostMult === 1, '初始升级费系数应为 1');
+    assert(eff.rentMult === 1, '初始租金系数应为 1');
 
-    // 持有证监会 —— 升级费 -12%
-    const csrcIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'csrc');
+    // 持有证监会 —— 升级费 7 折 + 收购价 9 折；他人升级费 +10%
     owner.institutions.push({ cellIndex: csrcIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
-    eff = globalRegulatorEffects(state);
-    assert(Math.abs(eff.upgradeCostMult - 0.88) < 1e-9, `升级费系数应为 0.88，实际 ${eff.upgradeCostMult}`);
+    eff = playerRegulatorEffects(state, owner);
+    assert(Math.abs(eff.upgradeCostMult - 0.7) < 1e-9, `持有人升级费系数应为 0.7，实际 ${eff.upgradeCostMult}`);
+    assert(Math.abs(eff.buyCostMult - 0.9) < 1e-9, `持有人收购价系数应为 0.9，实际 ${eff.buyCostMult}`);
     assert(ownsRegulator(owner, 'csrc'), '应识别出持有证监会');
+    const rivalEff = playerRegulatorEffects(state, rival);
+    assert(Math.abs(rivalEff.upgradeCostMult - 1.1) < 1e-9,
+      `他人升级费系数应为 1.1，实际 ${rivalEff.upgradeCostMult}`);
 
-    // 持有央行 —— 每圈 +50
-    const pbcIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'pbc');
+    // 持有央行 —— 每圈 +350，贷款 5 折，每圈多贷 1 次
     owner.institutions.push({ cellIndex: pbcIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
-    eff = globalRegulatorEffects(state);
+    eff = playerRegulatorEffects(state, owner);
     assert(eff.roundBonus === CONFIG.regulatorEffects.pbc.roundBonus,
       `流动性投放应为 ${CONFIG.regulatorEffects.pbc.roundBonus}，实际 ${eff.roundBonus}`);
+    assert(Math.abs(eff.loanRateMult - 0.5) < 1e-9, `贷款利率系数应为 0.5，实际 ${eff.loanRateMult}`);
+    assert(eff.loanLimitBonus === 1, `贷款次数加成应为 1，实际 ${eff.loanLimitBonus}`);
 
-    // 持有金稳会 —— 陷阱罚金减免 50%
-    const fscIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'fsc');
+    // 持有金稳会 —— 陷阱罚金全免 + 维持成本 5 折；他人罚金 +25%
     owner.institutions.push({ cellIndex: fscIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
-    eff = globalRegulatorEffects(state);
-    assert(Math.abs(eff.trapRelief - 0.5) < 1e-9, `罚金减免应为 0.5，实际 ${eff.trapRelief}`);
+    eff = playerRegulatorEffects(state, owner);
+    assert(Math.abs(eff.trapRelief - 1) < 1e-9, `罚金减免应为 1（全免），实际 ${eff.trapRelief}`);
+    assert(Math.abs(eff.maintenanceMult - 0.5) < 1e-9, `维持成本系数应为 0.5，实际 ${eff.maintenanceMult}`);
+    const rivalFsc = playerRegulatorEffects(state, rival);
+    assert(Math.abs(rivalFsc.trapMult - 1.25) < 1e-9, `他人罚金系数应为 1.25，实际 ${rivalFsc.trapMult}`);
 
-    // 持有银保监 —— 全体租金 -8%
-    const nfraIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'nfra');
+    // 持有银保监 —— 持有人收租 +25%；他人收租 -10%
     owner.institutions.push({ cellIndex: nfraIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
-    eff = globalRegulatorEffects(state);
-    assert(Math.abs(eff.rentMult - 0.92) < 1e-9, `租金系数应为 0.92，实际 ${eff.rentMult}`);
+    eff = playerRegulatorEffects(state, owner);
+    assert(Math.abs(eff.rentMult - 1.25) < 1e-9, `持有人租金系数应为 1.25，实际 ${eff.rentMult}`);
+    const rivalNfra = playerRegulatorEffects(state, rival);
+    assert(Math.abs(rivalNfra.rentMult - 0.9) < 1e-9, `他人租金系数应为 0.9，实际 ${rivalNfra.rentMult}`);
 
-    return '央行投放 / 证监会降费 / 银保监降租 / 金稳会减免 全部生效';
+    return '央行投放+贷款折扣 / 证监会降费 / 银保监加租 / 金稳会全免+半费，全部持有人独享并压制他人';
+  });
+
+  /* ---------- 监管机构 · 收租端到端 ---------- */
+  check(results, '金融监管总局：收租按归属人判定（持有人+25% / 他人-10%）', () => {
+    // 三种情形各起一局，结算同一块地的收租，验证金额差异。
+    const rentOf = (setup) => {
+      const state = makeTestState();
+      const owner = state.players[1];
+      const payer = state.players[0];
+      // 归属人必须是 owner（收租方），payer 无关牌照
+      const idx = firstInstitution(state);
+      owner.institutions.push({ cellIndex: idx, level: 0, mortgaged: false, mortgageAmount: 0 });
+      setup(state, owner);
+      payer.cash = 10000;
+      owner.cash = 0;
+      const before = owner.cash;
+      settleOnCell(state, payer, idx);
+      return owner.cash - before;
+    };
+
+    const base = rentOf(() => {});
+    const holder = rentOf((state, owner) => {
+      const nfraIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'nfra');
+      owner.institutions.push({ cellIndex: nfraIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
+    });
+    const rivalHolds = rentOf((state) => {
+      const nfraIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'nfra');
+      state.players[2].institutions.push({ cellIndex: nfraIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
+    });
+
+    assert(base > 0, `基准收租应为正，实际 ${base}`);
+    assert(holder === Math.round(base * 1.25),
+      `持牌收租应为 ${Math.round(base * 1.25)}（基准 ${base}），实际 ${holder}`);
+    assert(rivalHolds === Math.round(base * 0.9),
+      `他人持牌收租应为 ${Math.round(base * 0.9)}（基准 ${base}），实际 ${rivalHolds}`);
+
+    return `基准 ￥${base} → 持牌 ￥${holder} / 他人持牌 ￥${rivalHolds}`;
   });
 
   /* ---------- 陷阱格 ---------- */
   check(results, '陷阱格触发处罚且受金稳会减免', () => {
     const state = makeTestState();
     const p = state.players[0];
+    // ⚠ 显式清空职业 —— 否则随机分配到「风控总监」（减免 30%）
+    //   会让「受压 ×1.25」的断言不稳定。
+    p.career = null;
     const card = TRAP_CARDS.find((c) => c.effect.cash < 0);
 
     // 无金稳会 —— 全额罚款
@@ -784,16 +838,27 @@ export function runAll() {
     assert(res.cash === card.effect.cash, `罚款应为 ${card.effect.cash}，实际 ${res.cash}`);
     assert(p.cash === 1000 + card.effect.cash, '现金扣减错误');
 
-    // 有金稳会 —— 罚金减半
-    const owner = state.players[1];
+    // 他人持有金稳会 —— 罚金 ×1.25（压制）
+    const rival = state.players[1];
     const fscIdx = REGULATOR_CELLS.find((i) => BOARD_CELLS[i].regulatorId === 'fsc');
-    owner.institutions.push({ cellIndex: fscIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
+    rival.institutions.push({ cellIndex: fscIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
     p.cash = 1000;
     res = applyTrapCard(state, p, card);
-    assert(res.relief === 0.5, '减免比例应为 0.5');
-    assert(res.cash === Math.round(card.effect.cash * 0.5), `减免后罚金应为 ${Math.round(card.effect.cash * 0.5)}，实际 ${res.cash}`);
+    const punished = Math.round(card.effect.cash * 1.25);
+    assert(res.cash === punished, `受压后罚金应为 ${punished}，实际 ${res.cash}`);
 
-    return `基础罚款 ￥${card.effect.cash}，金稳会减免至 ￥${res.cash}`;
+    // 自己持有金稳会 —— 罚金全免
+    // ⚠ 金稳会必须挂在**受罚玩家自己**身上（效果是持有人独享的）。
+    //   测试玩家可能被随机分配「风控总监」职业（减免 30%），
+    //   但金稳会豁免更强（100%），故减免取 max 后必然是 1。
+    p.institutions.push({ cellIndex: fscIdx, level: 0, mortgaged: false, mortgageAmount: 0 });
+    p.cash = 1000;
+    res = applyTrapCard(state, p, card);
+    assert(res.relief === 1, `减免比例应为 1（全免），实际 ${res.relief}`);
+    assert(res.cash === 0, `全免后罚金应为 0，实际 ${res.cash}`);
+    assert(p.cash === 1000, `全免后现金不应变动，实际 ${p.cash}`);
+
+    return `基础罚款 ￥${card.effect.cash}，他人持有时 ￥${Math.round(card.effect.cash * 1.25)}，自己持有时全免`;
   });
 
   /* ---------- 央行贷款 ---------- */
