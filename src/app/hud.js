@@ -703,8 +703,10 @@ export function renderTabBuffs(el, player, state) {
       const bits = [];
       if (g.tier > 0) bits.push(g.name);
       for (const d of (g.depth?.items || [])) bits.push(d.name);
+      // ⚠ 唯一性（2026-11）：不在 Buff tab 显示持有机构家数 ——
+      //   持有机构信息只在「我的机构」tab 展示，这里只给加成乘数与档位名。
       el.appendChild(tabRow(
-        `${label} · ${g.count} 家`,
+        label,
         fmtMult(groupMult),
         groupMult > 1 ? 'is-green' : 'is-dim',
       ));
@@ -715,13 +717,13 @@ export function renderTabBuffs(el, player, state) {
         el.appendChild(tabRow(`└ ${g.special.name}`, '已解锁', 'is-green'));
       }
     }
-    // 层 4 金融控股（跨集团总持有）
+    // 层 4 金融控股（跨集团总持有）—— 不展示家数（持有机构信息只在「我的机构」tab）
     const holding = holdingTier(player);
     if (holding.tier > 0) {
-      el.appendChild(tabSection('金融控股', `${holding.count} 家`));
+      el.appendChild(tabSection('金融控股', holding.names.join(' / ')));
       el.appendChild(tabRow(
-        holding.names.join(' / '),
-        `收租 ${fmtMult(holding.rentMult)}`,
+        '全局收租',
+        fmtMult(holding.rentMult),
         'is-green',
       ));
       if (holding.upgradeCostMult < 1) {
@@ -844,13 +846,12 @@ export function renderTabFinance(el, player, state) {
   renderLoansInto(el, player);
   renderBondsInto(el, player, state);
 
-  // ===== 质押融资（从已删除的「净值」tab 并入 —— 质押是融资工具之一）=====
+  // ===== 质押融资（从已删除的「净值」tab 并入 —— 质押是融资工具之一）
+  // ⚠ 唯一性：不展示质押机构数（持有机构信息只在「我的机构」tab）
   const m = financialMetrics(player, state);
   const pledged = m.mortgagedAmount || 0;
   el.appendChild(tabSection('质押融资'));
   el.appendChild(tabRow('已质押金额', `￥${fmtNum(pledged)}`));
-  const mortgaged = (player.institutions || []).filter((i) => i.mortgaged);
-  el.appendChild(tabRow('质押机构数', `${mortgaged.length} 家`));
 
   // ===== 监管牌照（持有人独享效果的资产，归入融资 tab）=====
   el.appendChild(tabSection('监管牌照', `${m.regulatorCount} 张`));
