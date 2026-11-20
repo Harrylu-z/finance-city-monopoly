@@ -192,16 +192,23 @@ export const CONFIG = {
   // 可按「该地块当前等级买入价 × 本倍率」强行收购（含建筑等级）
   forcedTakeoverMult: 2,
 
-  // ===== 监管机构持有效果 =====
+  // ===== 监管机构持有效果（持有人独享 + 对他人压制）=====
+  // 设计原则：花 ￥3000+ 买断的牌照必须「只利己、能压人」——
+  //   旧版是全局光环（谁买大家一起蹭，银保监甚至连自己一起扣），所以不值。
+  //   新版全部按「持有人 / 未持有人」双轨结算：
+  //   · 央行 pbc：持有人每圈 +￥350，直营贷款 5 折且每圈可贷 2 次
+  //   · 证监会 csrc：持有人升级费 7 折 + 收购价 9 折；未持有人升级费 +10%
+  //   · 金融监管总局 nfra：持有人收租 +25%；未持有人收租 -10%
+  //   · 金稳会 fsc：持有人陷阱全免 + 维持成本 5 折；未持有人陷阱罚金 +25%
   regulatorEffects: {
-    // 人民银行：每圈开始额外流动性投放
-    pbc: { roundBonus: 50 },
-    // 证监会：全体升级费用降低
-    csrc: { upgradeCostMult: 0.88 },
-    // 银保监：全体租金降低（审慎约束）
-    nfra: { rentMult: 0.92 },
-    // 金稳会：陷阱罚金减免
-    fsc: { trapRelief: 0.5 },
+    // 人民银行：货币发行权（持有人独享）
+    pbc: { roundBonus: 350, loanRateMult: 0.5, loanLimitBonus: 1 },
+    // 证监会：注册制定价权（持有人降费，他人加费）
+    csrc: { upgradeCostMult: 0.7, buyCostMult: 0.9, victimUpgradeCostMult: 1.1 },
+    // 金融监管总局：审慎监管（持有人加租，他人减租）
+    nfra: { rentMult: 1.25, victimRentMult: 0.9 },
+    // 金稳会：风险兜底（持有人全免+半费+质押加成，他人加罚）
+    fsc: { trapRelief: 1.0, maintenanceMult: 0.5, victimTrapMult: 1.25, mortgageMult: 1.3 },
   },
 
   // 难度系数（影响 AI，不影响玩家）
@@ -391,7 +398,7 @@ export function financialMetrics(player, state) {
   let maintenance = 0;
 
   const market = state ? state.market : 'normal';
-  const regEff = globalRegulatorEffects(state || { players: [] });
+  const regEff = playerRegulatorEffects(state || { players: [] }, player);
 
   for (const inst of (player.institutions || [])) {
     const cell = BOARD_CELLS[inst.cellIndex];
@@ -403,7 +410,8 @@ export function financialMetrics(player, state) {
     levelCount += 1;
     if (inst.level > maxLevel) maxLevel = inst.level;
     // 维持成本：所有机构（含已质押）都要付 —— 机构还在你名下就要养
-    maintenance += maintenanceCost(cell, inst.level);
+    // 持有人享金稳会 5 折（监管牌照本身免维持费，见 maintenanceCost）
+    maintenance += maintenanceCost(cell, inst.level) * (regEff.maintenanceMult ?? 1);
 
     if (cell.regulator) {
       regulatorCount += 1;
@@ -416,8 +424,10 @@ export function financialMetrics(player, state) {
       mortgagedValue += assetValue(cell, inst.level, true);
     } else {
       activeCount += 1;
-      // 管理费收入按当前市场周期 + 集团 Buff + 限时状态计算
-      const buff = groupBuffTier(player, cell.group).mult * buffEffectMult(player, 'rentMult');
+      // 管理费收入按当前市场周期 + 集团 Buff + 限时状态 + 监管牌照（持有人独享）计算
+      const buff = groupBuffTier(player, cell.group).mult
+        * buffEffectMult(player, 'rentMult')
+        * (regEff.rentMult ?? 1);
       rentIncome += calculateRent(cell, inst.level, {
         market,
         eventMult: state ? state.eventMult : 1,
@@ -622,22 +632,75 @@ export function allGroupBuffs(player) {
 }
 
 /**
- * 玩家在指定集团上应享受的租金系数（含全局监管效果）。
+ * 玩家在指定集团上应享受的租金系数（含持有人独享的监管效果）。
+ * 持有金融监管总局：自身收租 ×1.25；未持有但他人持有：自身收租 ×0.9。
  */
 export function buffMultiplierFor(player, groupId, state) {
   let mult = groupBuffTier(player, groupId).mult;
-  // 银保监：全体租金下调（审慎约束）
-  const reg = globalRegulatorEffects(state);
+  const reg = playerRegulatorEffects(state, player);
   if (reg.rentMult) mult *= reg.rentMult;
   return mult;
 }
 
+/**
+ * 某位玩家的监管牌照效果（持有人独享 + 被他人压制双轨）。
+ *
+ * 规则：
+ *   · 持有什么就享受什么（只看自己名下的牌照）；
+ *   · 没持有的牌照一旦被他人持有，就吃到对应的 victim 压制；
+ *   · 多张同类压制不叠加（取最严的一档即可，当前每种牌照全场最多 1 张）。
+ *
+ * @param {object} state
+ * @param {object} player
+ * @returns {{roundBonus:number, upgradeCostMult:number, buyCostMult:number, rentMult:number, trapRelief:number, trapMult:number, maintenanceMult:number, mortgageMult:number, loanRateMult:number, loanLimitBonus:number}}
+ */
+export function playerRegulatorEffects(state, player) {
+  const eff = {
+    roundBonus: 0,
+    upgradeCostMult: 1, buyCostMult: 1, rentMult: 1,
+    trapRelief: 0, trapMult: 1, maintenanceMult: 1, mortgageMult: 1,
+    loanRateMult: 1, loanLimitBonus: 0,
+  };
+  if (!state || !player) return eff;
+  const cfg = CONFIG.regulatorEffects || {};
+  const holds = (id) => ownsRegulator(player, id);
+  const rivalHolds = (id) => (state.players || []).some((p) =>
+    p && p.id !== player.id && !p.bankrupt && ownsRegulator(p, id));
+
+  if (holds('pbc') && cfg.pbc) {
+    eff.roundBonus += cfg.pbc.roundBonus || 0;
+    if (cfg.pbc.loanRateMult) eff.loanRateMult *= cfg.pbc.loanRateMult;
+    eff.loanLimitBonus += cfg.pbc.loanLimitBonus || 0;
+  }
+  if (holds('csrc') && cfg.csrc) {
+    if (cfg.csrc.upgradeCostMult) eff.upgradeCostMult *= cfg.csrc.upgradeCostMult;
+    if (cfg.csrc.buyCostMult) eff.buyCostMult *= cfg.csrc.buyCostMult;
+  } else if (rivalHolds('csrc') && cfg.csrc?.victimUpgradeCostMult) {
+    eff.upgradeCostMult *= cfg.csrc.victimUpgradeCostMult;
+  }
+  if (holds('nfra') && cfg.nfra) {
+    if (cfg.nfra.rentMult) eff.rentMult *= cfg.nfra.rentMult;
+  } else if (rivalHolds('nfra') && cfg.nfra?.victimRentMult) {
+    eff.rentMult *= cfg.nfra.victimRentMult;
+  }
+  if (holds('fsc') && cfg.fsc) {
+    if (cfg.fsc.trapRelief) eff.trapRelief = Math.max(eff.trapRelief, cfg.fsc.trapRelief);
+    if (cfg.fsc.maintenanceMult) eff.maintenanceMult *= cfg.fsc.maintenanceMult;
+    if (cfg.fsc.mortgageMult) eff.mortgageMult *= cfg.fsc.mortgageMult;
+  } else if (rivalHolds('fsc') && cfg.fsc?.victimTrapMult) {
+    eff.trapMult *= cfg.fsc.victimTrapMult;
+  }
+  return eff;
+}
+
 /* ===================================================================
- * 监管机构 —— 全局效果聚合
+ * 监管机构 —— 全局效果聚合（兼容旧调用：仅聚合「持有人增益」部分）
  * =================================================================== */
 
 /**
  * 汇总全局监管效果（只统计当前存在的监管机构持有者）。
+ * ⚠ 新版监管以「持有人独享」为准，本函数仅作兼容保留；
+ *   租金 / 升级 / 陷阱等结算一律走 playerRegulatorEffects(state, player)。
  * @returns {{roundBonus:number, upgradeCostMult:number, rentMult:number, trapRelief:number}}
  */
 export function globalRegulatorEffects(state) {
@@ -645,16 +708,12 @@ export function globalRegulatorEffects(state) {
   if (!state || !state.players) return eff;
   for (const p of state.players) {
     if (p.bankrupt) continue;
-    for (const inst of (p.institutions || [])) {
-      const cell = BOARD_CELLS[inst.cellIndex];
-      if (!cell || !cell.regulator) continue;
-      const e = CONFIG.regulatorEffects[cell.regulatorId];
-      if (!e) continue;
-      if (e.roundBonus) eff.roundBonus += e.roundBonus;
-      if (e.upgradeCostMult) eff.upgradeCostMult *= e.upgradeCostMult;
-      if (e.rentMult) eff.rentMult *= e.rentMult;
-      if (e.trapRelief) eff.trapRelief = Math.max(eff.trapRelief, e.trapRelief);
-    }
+    const pe = playerRegulatorEffects(state, p);
+    // 兼容口径：只聚合「增益」部分（压制不进全局）
+    eff.roundBonus += pe.roundBonus || 0;
+    if (pe.upgradeCostMult < 1) eff.upgradeCostMult *= pe.upgradeCostMult;
+    if (pe.rentMult > 1) eff.rentMult *= pe.rentMult;
+    if (pe.trapRelief) eff.trapRelief = Math.max(eff.trapRelief, pe.trapRelief);
   }
   return eff;
 }
@@ -671,17 +730,17 @@ export function ownsRegulator(player, regulatorId) {
  * 央行贷款 —— 起点绕圈后可申请
  * =================================================================== */
 
-/** 某档贷款每回合应付利息（单利，按本金计） */
-export function loanInterestPerTurn(loanOrTier) {
+/** 某档贷款每回合应付利息（单利，按本金计）—— 传入 mult 可享央行牌照 5 折 */
+export function loanInterestPerTurn(loanOrTier, mult = 1) {
   const amount = loanOrTier.amount;
   const rate = loanOrTier.rate;
-  return Math.round(amount * rate);
+  return Math.round(amount * rate * (mult ?? 1));
 }
 
-/** 某档贷款到期应还的「本息合计」（本金 + 单利 × 期限） */
-export function loanRepayAmount(tier) {
+/** 某档贷款到期应还的「本息合计」（本金 + 单利 × 期限）—— mult 为央行牌照利率折扣 */
+export function loanRepayAmount(tier, mult = 1) {
   const t = CONFIG.loanTiers.find((x) => x.id === tier) || CONFIG.loanTiers[0];
-  return Math.round(t.amount * (1 + t.rate * t.term) * CONFIG.loanRepayMultiplier);
+  return Math.round(t.amount * (1 + t.rate * (mult ?? 1) * t.term) * CONFIG.loanRepayMultiplier);
 }
 
 /** 单笔贷款当前未偿金额 = 本金 + 尚未支付的欠息 */

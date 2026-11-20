@@ -14,7 +14,7 @@ import {
 import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   assetValue, totalAssets, institutionValue, isBankrupt, liquidate, purchasePrice, levelLabel,
-  globalRegulatorEffects, groupBuffTier, buffMultiplierFor, loanRepayAmount,
+  globalRegulatorEffects, playerRegulatorEffects, groupBuffTier, buffMultiplierFor, loanRepayAmount,
   loanInterestPerTurn, loanOutstandingAmount,
   outstandingLoan, bondRedeemValue, bondMinSubscribers, bondCouponFor,
   buffEffectMult, maintenanceCost, totalMaintenanceCost,
@@ -457,9 +457,11 @@ export function settleOnCell(state, player, cellIndex) {
       //   board.js 里所有机构的 `tier` 恒为 0，因此这里取到的恒是 0 ——
       //   但为了语义明确，这里不再依赖 `cell.tier` 的数据巧合，
       //   而是显式写死 INITIAL_LEVEL = 0（网点级）。
+      // 证监会牌照：持有人收购价 9 折（注册制定价权）。
       const level = 0;
       const basePrice = purchasePrice(cell, level, state.market);
-      const price = Math.round(basePrice * playerCostMult(player, 'buyCostMult'));
+      const regEff = playerRegulatorEffects(state, player);
+      const price = Math.round(basePrice * playerCostMult(player, 'buyCostMult') * (regEff.buyCostMult ?? 1));
       results.push({ kind: 'purchase-offer', cellIndex, price, level, cell });
       state.pending = { kind: 'purchase', cellIndex, price, level, playerId: player.id };
     } else if (owner.id === player.id) {
@@ -517,6 +519,10 @@ export function settleOnCell(state, player, cellIndex) {
         const selfMult = selfRentMultFor(owner);
         // 精算师职业：自己收取的管理费 +12%（温和加成，不改写胜负）
         const careerMult = careerEffectMult(owner, 'rentMult');
+        // 金融监管总局牌照：持有人收租 +25%；他人持有时收租 -10%
+        //   —— 牌照是「独享型」资产，效果按**归属人**判定，而非交租方。
+        //   ⚠ 注意：buffMultiplierFor(owner, ...) 内已包含该牌照的 rentMult，
+        //     此处不可再乘一次，否则会变成 1.25² 的平方加成。
         const rent = Math.round(calculateRent(cell, inst.level, {
           market: state.market, eventMult: state.eventMult, buffMult,
         }) * selfMult * careerMult);
@@ -946,14 +952,16 @@ function settleSpecial(state, player, cell, cellIndex = cell.index ?? 0) {
       // 起点补贴由 grantStartPass 统一发放（带去重标记），避免重复计息
       const granted = grantStartPass(state, player, cell);
       if (granted) results.push(...granted);
-      // 持有中国人民银行 —— 每圈开始获得额外流动性投放
-      const regBonus = globalRegulatorEffects(state).roundBonus || 0;
+      // 持有中国人民银行 —— 每圈开始获得独享流动性投放（￥350）
+      const regBonus = playerRegulatorEffects(state, player).roundBonus || 0;
       if (regBonus > 0) {
         recordCash(state, player, regBonus, '央行流动性投放', '央行');
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell });
       }
-      // 经过起点后可申请央行贷款（每圈限一次）
-      if (player.loanCountThisRound < CONFIG.maxLoansPerRound) {
+      // 经过起点后可申请央行贷款（持有人每圈可贷 2 次，直营利率 5 折）
+      // 贷款额度上限 = 基础次数 + 央行牌照加成
+      const loanLimit = CONFIG.maxLoansPerRound + (playerRegulatorEffects(state, player).loanLimitBonus || 0);
+      if (player.loanCountThisRound < loanLimit) {
         results.push({ kind: 'loan-offer', cell, tiers: CONFIG.loanTiers });
       }
       break;
@@ -1214,13 +1222,18 @@ export function applyEventCard(state, player, card) {
 export function applyTrapCard(state, player, card) {
   const e = card.effect;
   let cash = e.cash || 0;
-  const regRelief = globalRegulatorEffects(state).trapRelief || 0;
+  // 双重压制：
+  //   · 持有金稳会 → 罚金全免（trapRelief = 1）
+  //   · 他人持有金稳会 → 罚金 ×1.25（victimTrapMult）
+  const regEff = playerRegulatorEffects(state, player);
+  const regRelief = regEff.trapRelief || 0;
+  const victimMult = regEff.trapMult ?? 1;
   // 风控总监职业被动：温和的 30% 罚金缓冲
   const careerRelief = careerEffectValue(player, 'trapRelief');
   const relief = Math.max(regRelief, careerRelief);
   const fromCareer = careerRelief > regRelief;
-  if (cash < 0 && relief > 0) {
-    cash = Math.round(cash * (1 - relief));
+  if (cash < 0) {
+    cash = Math.round(cash * (1 - relief) * victimMult);
   }
   if (cash) recordCash(state, player, cash, `监管卡「${card.title}」`, cash > 0 ? '收益' : '成本');
   if (e.rentMult && e.scope === 'self') {
@@ -1359,17 +1372,21 @@ export function takeCentralLoan(state, player, tierId) {
   if (!state || !player) return { ok: false, reason: '状态无效' };
   const tier = CONFIG.loanTiers.find((t) => t.id === tierId);
   if (!tier) return { ok: false, reason: '未知的贷款档位' };
-  if (player.loanCountThisRound >= CONFIG.maxLoansPerRound) {
+  // 央行牌照：持有人每圈可多贷一次（loanLimitBonus）+ 直营利率折扣
+  const regEff = playerRegulatorEffects(state, player);
+  const loanLimit = CONFIG.maxLoansPerRound + (regEff.loanLimitBonus || 0);
+  if (player.loanCountThisRound >= loanLimit) {
     return { ok: false, reason: '本圈已申请过贷款' };
   }
-  const interestPerTurn = loanInterestPerTurn(tier);
-  const repay = loanRepayAmount(tier.id);
+  const rateMult = regEff.loanRateMult ?? 1;
+  const interestPerTurn = loanInterestPerTurn(tier, rateMult);
+  const repay = loanRepayAmount(tier.id, rateMult);
   const loan = {
     id: `loan${state.turnNumber}_${player.id}`,
     tier: tier.id,
     name: tier.name,
     amount: tier.amount,
-    rate: tier.rate,
+    rate: tier.rate * rateMult,
     term: tier.term,
     interestPerTurn,
     accruedInterest: 0,   // 现金不足时未付的利息（欠息）
@@ -1769,7 +1786,7 @@ export function upgradeInstitution(state, player, cellIndex, opts = {}) {
     }
   }
 
-  const regEff = globalRegulatorEffects(state);
+  const regEff = playerRegulatorEffects(state, player);
   const baseCost = upgradeCost(cell, inst.level, { regulatorCostMult: regEff.upgradeCostMult });
   // 路演等限时状态 + 基金经理职业（-6%）可降低扩表成本
   const cost = Math.round(baseCost * playerCostMult(player, 'upgradeCostMult'));
@@ -1797,7 +1814,9 @@ export function mortgageInstitution(state, player, cellIndex) {
   if (inst.mortgaged) return { ok: false, reason: '该机构已质押' };
 
   const cell = BOARD_CELLS[cellIndex];
-  const amount = mortgageValue(cell, inst.level);
+  // 金稳会牌照：质押融资可得金额 +30%（风险处置通道畅通）
+  const regEff = playerRegulatorEffects(state, player);
+  const amount = Math.round(mortgageValue(cell, inst.level) * (regEff.mortgageMult ?? 1));
   recordCash(state, player, amount, `质押 ${cell.name}`, '质押');
   inst.mortgaged = true;
   inst.mortgageAmount = amount;
@@ -1974,12 +1993,15 @@ export function chargeMaintenanceCosts(state, target = null) {
     if (!insts.length) continue;
 
     let due = 0;
+    // 金稳会牌照：维持成本 5 折（风险处置基金补贴）
+    const maintMult = playerRegulatorEffects(state, p).maintenanceMult ?? 1;
     for (const inst of insts) {
       const cell = BOARD_CELLS[inst.cellIndex];
       if (!cell) continue;
       due += maintenanceCost(cell, inst.level);
     }
     if (due <= 0) continue;
+    due = Math.round(due * maintMult);
 
     const paid = Math.min(due, Math.max(0, p.cash || 0));
     if (paid > 0) {

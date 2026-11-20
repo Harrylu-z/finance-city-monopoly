@@ -21,7 +21,7 @@
 import { BOARD_CELLS, GROUP_META } from './board.js';
 import {
   calculateRent, upgradeCost, mortgageValue, purchasePrice, totalAssets,
-  globalRegulatorEffects, groupBuffTier, CONFIG, maintenanceCost,
+  globalRegulatorEffects, playerRegulatorEffects, groupBuffTier, CONFIG, maintenanceCost,
 } from './economy.js';
 import { institutionCount } from './rules.js';
 import {
@@ -182,8 +182,9 @@ function decideUpgrade(state, player, p, diff) {
   });
   if (!candidates.length) return { action: 'idle', reason: '没有获得升级许可的机构' };
 
-  const regEff = globalRegulatorEffects(state);
-  const buffMult = groupBuffTier(player, candidates[0] ? BOARD_CELLS[candidates[0].cellIndex].group : 'bank').mult;
+  const regEff = playerRegulatorEffects(state, player);
+  const buffMult = groupBuffTier(player, candidates[0] ? BOARD_CELLS[candidates[0].cellIndex].group : 'bank').mult
+    * (regEff.rentMult ?? 1);
 
   let best = null;
   let bestScore = -Infinity;

@@ -284,7 +284,7 @@ function tileRegulator(cell, st) {
         <span class="mt-d2-lv" style="color:${info.dk}">不可升级</span>
         <span class="mt-d2-price">${yuan(cell.price[0])}</span>
       </div>
-      <div class="mt-reg-effectname">${esc(info.effectName)} · 全体玩家生效</div>
+      <div class="mt-reg-effectname">${esc(info.effectName)} · 持有人独享</div>
       ${!held && st.affordable ? `<div class="mt-d2-afford">可收购</div>` : ''}
       ${st.mortgaged ? `<div class="mt-mort-stripe"></div><div class="mt-mort-stamp">已质押</div>` : ''}
     </div>`;
