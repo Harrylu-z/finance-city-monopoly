@@ -761,18 +761,131 @@ body.board-3d #board-stage { display: none; }
 .hud-market.is-bear { background: var(--c-green); color: var(--c-ink); }
 
 /* ============================================================
-   转盘「跳过动画」按钮（P1-14）
-   —— 次要样式，与主行动「转 盘」按钮拉开层级
+   翻牌弹窗（2026-11：转盘 → 翻牌改版）
+   ------------------------------------------------------------
+   机会池 8 个候选挤在圆转盘上扇区极窄、文字看不清；
+   翻牌把候选收进暗牌，翻开后再展示完整牌面。
+   3D 翻转用 preserve-3d + backface-visibility 实现正面/背面切换。
    ============================================================ */
-.wheel-skip {
-  display: block;
+.fate-result {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--c-paper);
+  min-height: 24px;
+  text-align: center;
+  margin-bottom: 10px;
+}
+.fate-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
   margin: 0 auto 10px;
-  font-family: var(--font-ui);
-  font-size: var(--fs-sm);
+  max-width: 480px;
+  perspective: 700px;
+}
+/* 3 张（风险/命运）→ 大卡；8 张（机会）→ 小卡双行 */
+.fate-row.is-n3 .fcard, .fate-row.is-n2 .fcard { width: 104px; height: 148px; }
+.fate-row.is-n8 .fcard { width: 88px; height: 122px; }
+.fate-row.is-n8 { max-width: 440px; }
+
+.fcard {
+  perspective: 600px;
+  cursor: pointer;
+  transition: opacity .2s ease, transform .12s ease;
+}
+.fcard:hover:not(.is-flipped) { transform: translateY(-4px); }
+.fcard:focus-visible { outline: 2px solid var(--c-gold-dk); outline-offset: 2px; }
+.fate-row.is-exhausted .fcard:not(.is-flipped) { opacity: .35; cursor: default; }
+
+.fcard-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 520ms cubic-bezier(.3, .8, .3, 1);
+}
+.fcard.is-flipped .fcard-inner { transform: rotateY(180deg); }
+
+.fcard-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border: 3px solid #0f172a;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, .28);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* 卡背 —— 类别色渐变 + 类别签名 + 大问号 */
+.fcard-back { color: #fff; }
+.fcard-sign {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
   opacity: .85;
 }
-.wheel-skip:hover:not(:disabled) { opacity: 1; }
-.wheel-skip:disabled { opacity: .4; cursor: default; }
+.fcard-q {
+  font-size: 40px;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: 0 2px 0 rgba(15, 23, 42, .3);
+}
+/* 卡面 —— 翻开后的完整元数据 */
+.fcard-front { transform: rotateY(180deg); color: #0f172a; padding: 8px 6px; gap: 4px; }
+.fcard.is-trap .fcard-front { border-color: #dc2626; box-shadow: 0 0 0 2px #dc262655, 0 3px 10px rgba(15,23,42,.28); }
+.fcard-name {
+  font-size: 13px;
+  font-weight: 900;
+  text-align: center;
+  line-height: 1.2;
+}
+.fcard-big {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--c-gold-dk);
+}
+.fcard-lbl {
+  font-size: 10px;
+  color: #475569;
+  text-align: center;
+  line-height: 1.3;
+}
+.fcard-trap {
+  font-size: 10px;
+  font-weight: 900;
+  color: #fff;
+  background: #dc2626;
+  padding: 1px 8px;
+  margin-top: 2px;
+}
+
+.fate-counter {
+  font-size: 12px;
+  color: var(--ink-3);
+  text-align: center;
+  margin-bottom: 8px;
+}
+.fate-readonly {
+  margin: 0 auto 10px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--c-panel-dk);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.fate-desc {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  line-height: 1.7;
+  margin: 8px 0 14px;
+  text-align: center;
+}
 
 /* ============================================================
    顶部全宽回合归属条（P1-1）
@@ -990,6 +1103,13 @@ body.theme-light .turn-bar-owner-name { color: #fdf8ec; }
   text-overflow: ellipsis;
   transition: color .16s ease, background .16s ease, border-color .16s ease;
 }
+/* 6 个 tab（我的机构 / Buff / 贷款 / 债券 / 净值 / 资金流水）挤在 264px 左栏里，
+   需要收紧字距与内边距，否则「资金流水」会被 ellipsis 截断。 */
+.tab-btn[data-tab="cashflow"] {
+  font-size: 10px;
+  letter-spacing: 0;
+  padding: 5px 1px;
+}
 .tab-btn:hover { color: var(--ink); background: rgba(255,255,255,.6); }
 .tab-btn[aria-selected="true"] {
   color: var(--c-gold-dk);
@@ -1175,43 +1295,48 @@ body.theme-light .turn-bar-owner-name { color: #fdf8ec; }
   line-height: 1.7;
 }
 
+/* ---------- 「生态总览」入口按钮（Buff tab）---------- */
+.tab-eco-btn {
+  appearance: none;
+  border: var(--border-w) solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ink-2);
+  font-size: 10px;
+  font-family: inherit;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  margin: 0 0 var(--sp-1);
+  text-align: left;
+  width: fit-content;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+.tab-eco-btn:hover {
+  color: var(--c-gold-dk);
+  border-color: var(--c-gold-dk);
+  background: rgba(255, 255, 255, 0.85);
+}
+
 /* ============================================================
-   「我的机构」tab —— 上下拆分（持有机构 / 资金流水）
-   ------------------------------------------------------------
-   为什么要拆而不是加第 6 个 tab？
-     · 横向 tab 位已经 5 个（机构 / Buff / 贷款 / 债券 / 净值），
-       再加一个会把 tab 挤到 236px 窄栏里读不清；
-     · 「持有机构」与「资金流水」本来就是同一条主线（资产 ↔ 现金流），
-       上下对照看更顺手。
+   「我的机构」/「资金流水」tab
+  ------------------------------------------------------------
+   「资金流水」已从「我的机构」里**拆成独立 tab**：
+     · 原先两者共用 #tab-panel-inst，靠上下两段
+       （.tab-split-top / .tab-split-bottom）分隔；
+     · 现在各自独占一个 tabpanel，横向 tab 位增至 6 个。
 
    高度策略：
-     · 上半段（机构列表）按内容自然高度，机构多了会自身滚动；
-     · 下半段（流水列表）**独立滚动**，新的流水永远可见，
-       不会因为机构变多把流水挤出视口。
+     · 两个面板都自己滚动（.tab-panel 已是 overflow-y:auto），
+       机构多 / 流水多都不会撑破左栏；
+     · 「资金流水」面板给 .cf-list 留出完整高度，
+       新的流水永远可见。
    ============================================================ */
-#tab-panel-inst {
+#tab-panel-inst,
+#tab-panel-cashflow {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}
-
-.tab-split-top {
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding-bottom: var(--sp-1);
-}
-.tab-split-bottom {
-  flex: 1 1 auto;
-  min-height: 96px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  /* 上下两段之间的分隔 —— 用实线而非虚线，暗示「另一块内容」 */
-  border-top: var(--border-w) solid var(--line);
-  margin-top: var(--sp-1);
-  padding-top: var(--sp-1);
 }
 
 /* ---------- 资金流水条目 ---------- */

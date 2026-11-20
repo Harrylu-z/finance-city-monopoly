@@ -1,125 +1,41 @@
 /**
- * 大转盘弹窗 —— 转盘格的交互主体。
+ * 翻牌弹窗 —— 翻牌格（原「转盘格」）的交互主体。
  *
- * ================== 为什么需要它 ==================
- * 原来 16 个功能特殊格把轨道切得太碎。现在它们被合并成 **4 个转盘格**，
- * 踩到格子 → 弹大转盘 → 指针旋转 → 停在某个扇区 → 结算对应效果。
+ * ================== 为什么从转盘改成翻牌 ==================
+ * 机会翻牌有 **8 个候选效果** —— 挤在圆形转盘上时扇区极窄，
+ * 中文与数值读数根本看不清。翻牌模式把候选全部收进**暗牌**：
+ *   · 不需要在小扇区里塞文字 —— 牌面翻开后再展示完整元数据；
+ *   · 「亲手翻开一张」比看指针停格参与感更强；
+ *   · 风险翻牌里 2 张陷阱藏在暗牌里，张力反而更大。
  *
- * ================== 三条关键实现约束（踩过的坑）==================
- *   ① **扇区文字径向摆放**，下半圈翻转 180° —— 否则中文倒置；
- *   ② **指针必须是独立图层**，绝不随转盘旋转（.wheel-pointer 是 SVG 兄弟节点）；
- *   ③ **落点数学必须减去累积角度 current**：
- *        center = pick × slice + slice/2
- *        delta  = ((-center - current) % 360 + 360) % 360
- *        target = current + 360×5 + delta
- *      漏掉 `- current` 会导致连续转动时指针指错扇区。
+ * ================== 随机性与可复现 ==================
+ *   · **洗牌顺序**用对局随机源 `opts.rng`（state.rng）做 Fisher-Yates ——
+ *     同 seed 的对局中，暗牌的排列完全一致（不用 Math.random）；
+ *   · **人类玩家**自由点选一张暗牌（与其它人类决策一样不进随机流）；
+ *   · **AI** 用同一个 rng 随机选一张 —— 保证 AI 行为可复现。
+ *   翻开哪张 = 玩家点的那张；牌面是什么由洗牌顺序决定 —— 视觉与结算一致。
  *
- * ================== 落点一致性保证 ==================
- * 转盘的**视觉落点**与**结算结果**必须完全一致 —— 否则玩家会认为游戏作弊。
- * 因此本模块用**同一个 pick 索引**驱动两件事：
- *   · 视觉：计算 target 旋转角，让 pick 扇区转到指针正下方；
- *   · 逻辑：把 pick 对应的候选效果 id 回传给规则层。
- * `spinWheel()` 返回的 outcomeId 就是规则层实际结算的那个效果。
- *
- * ================== 新语义：连续转盘（v2）==================
- * ① **玩家可连续转多次**：每点一次「转」→ 抽一个效果 → **立即真实结算**
- *    → 转盘重置回可转状态 → 玩家可以继续转。玩家点「关闭」才退出并继续回合。
- *    次数上限 = `maxSpins`（默认 3），UI 上显示剩余次数；
- *    达到上限后「转」按钮禁用并提示「次数已用完，请关闭」。
- * ② **AI 触发时玩家只读**：`readonly: true` → 「转」按钮被移除/禁用，
- *    玩家只能看到 AI 抽中的结果与结算过程。
- * ③ **模态拦截**：弹窗打开期间背景有遮罩（modal-backdrop），挡住棋盘点击，
- *    玩家无法在 AI 转盘期间触发自己的转盘格。
- *
- * ================== P1-14：跳过动画 ==================
- * 3.6 秒的转动动画对**无法干预**的 AI 回合是纯浪费。
- * 因此：
- *   · AI 自动转盘走**快速版**（`SPIN_MS_FAST` = 1.2s）；
- *   · 玩家转盘时提供「跳过动画」按钮，点一下立刻结算。
- *
- * ⚠ 关键不变量：**跳过只改动画时长，不改抽签结果**。
- *   pick 在动画开始前就由 `rng` 定死，跳过只是把等待时间缩短，
- *   落点与结算完全一致 —— 「同 seed 可复现」的承诺不受影响。
+ * ================== 与转盘模式的行为对齐 ==================
+ *   · 每翻一张 **立即真实结算**（onSpin 回调）—— 与转盘的连续 spin 相同；
+ *   · 次数上限 `maxSpins`（默认 3），已翻的牌保持翻开（提供信息张力）；
+ *   · AI 触发时只翻一张、只读展示（readonly），随后由 main.js 收尾；
+ *   · 「没翻就关窗」由 main.js 的 onClose 兜底随机，回合不会卡死。
  */
 
 import { openModal, closeModal } from '../app/dialogs.js';
 
-/** 转盘配色（与 canvas.js 的 WHEEL_CAT 保持一致） */
-const WHEEL_STYLE = {
-  hub:   { color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88', sign: '流转' },
-  risk:  { color: '#c8392b', lt: '#e4604d', dk: '#8d2419', sign: '付出' },
-  chance:{ color: '#4f9d55', lt: '#7ac77f', dk: '#336b38', sign: '收益' },
-  fate:  { color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86', sign: '抽取' },
+/** 翻牌配色（与棋盘格 / tile 纹理的类别色一致） */
+const FATE_STYLE = {
+  risk:   { color: '#c8392b', lt: '#e4604d', dk: '#8d2419', sign: '付出' },
+  chance: { color: '#4f9d55', lt: '#7ac77f', dk: '#336b38', sign: '收益' },
+  fate:   { color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86', sign: '抽取' },
+  hub:    { color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88', sign: '流转' },
 };
 
-/** 转盘总圈数 —— 至少 5 圈，落点才显得「转得久」 */
-const SPIN_TURNS = 5;
-/** 动画时长（毫秒）—— 与 CSS transition 时长保持一致 */
-const SPIN_MS = 3600;
-/**
- * AI 转盘的**快速版**时长（P1-14）—— 玩家跳过动画时用。
- *
- * ⚠ 为什么 AI 要快：
- *   AI 每次踩到转盘格，玩家都要干等 3.6 秒看一个**自己无法干预**的动画。
- *   一局下来几十次 —— 纯浪费时间。
- *   跳过动画**不改变抽签结果**（pick 在动画开始前就定好了），
- *   因此只影响观感，不影响规则与可复现性。
- */
-export const SPIN_MS_FAST = 1200;
-/** 默认最大连续转盘次数 —— 防止玩家无限刷收益，同时满足「连续转好几次」 */
-export const DEFAULT_MAX_SPINS = 3;
-
-/**
- * 构造转盘 SVG。
- *
- * 扇区文字**径向摆放**（沿半径朝外），处于下半圈时翻转 180°，
- * 保证中文永远正着读。
- */
-function wheelSVG(outcomes, style) {
-  const cx = 100, cy = 100, r = 96;
-  const n = outcomes.length;
-  const slice = 360 / n;
-  let s = '';
-
-  // 扇区底色（交替深浅）
-  for (let i = 0; i < n; i++) {
-    const a0 = (i * slice - 90) * Math.PI / 180;
-    const a1 = ((i + 1) * slice - 90) * Math.PI / 180;
-    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
-    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
-    const fill = i % 2 ? style.lt : style.color;
-    s += `<path d="M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)}`
-      + ` A${r},${r} 0 0 1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${fill}"/>`;
-    // 扇区分隔线
-    s += `<line x1="${cx}" y1="${cy}" x2="${x0.toFixed(2)}" y2="${y0.toFixed(2)}"`
-      + ` stroke="#fff" stroke-width="1.5" opacity=".45"/>`;
-  }
-
-  // 文字层：径向摆放，下半圈翻转 180°
-  for (let j = 0; j < n; j++) {
-    const mid = ((j + 0.5) * slice - 90) * Math.PI / 180;
-    const deg = (j + 0.5) * slice;   // 该扇区中心相对顶部的角度
-    const tx = cx + (r * 0.60) * Math.cos(mid);
-    const ty = cy + (r * 0.60) * Math.sin(mid);
-    let rot = deg;
-    if (deg > 90 && deg < 270) rot = deg + 180;   // 下半圈翻转
-    s += `<text x="${tx.toFixed(1)}" y="${(ty + 4).toFixed(1)}" text-anchor="middle"`
-      + ` font-size="11.5" font-weight="800" fill="#fff"`
-      + ` transform="rotate(${rot.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)})">`
-      + `${escapeXml(outcomes[j].name)}</text>`;
-    // 数值读数（靠圆心）
-    const vx = cx + (r * 0.30) * Math.cos(mid);
-    const vy = cy + (r * 0.30) * Math.sin(mid);
-    s += `<text x="${vx.toFixed(1)}" y="${(vy + 3.5).toFixed(1)}" text-anchor="middle"`
-      + ` font-size="10" font-weight="700" fill="rgba(255,255,255,.85)"`
-      + ` transform="rotate(${rot.toFixed(1)} ${vx.toFixed(1)} ${vy.toFixed(1)})">`
-      + `${escapeXml(outcomes[j].big)}</text>`;
-  }
-
-  // 外圈描边
-  s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#0f172a" stroke-width="3"/>`;
-  return s;
-}
+/** 翻转动画时长（毫秒）—— 与 CSS transition 保持一致 */
+const FLIP_MS = 520;
+/** 默认最大连续翻牌次数 —— 与旧转盘的 maxSpins 语义一致 */
+export const DEFAULT_MAX_DRAWS = 3;
 
 /** XML 转义 */
 function escapeXml(s) {
@@ -129,66 +45,37 @@ function escapeXml(s) {
 }
 
 /**
- * 计算落点旋转角。
- *
- * 扇区 pick 的中心在 SVG 角度 (-90 + pick×slice + slice/2) 处（0° = 正右，-90° = 正上）。
- * 转盘顺时针转 θ 后落到 (-90 + pick×slice + slice/2 + θ)。
- * 要正对顶部指针（-90°），需 θ ≡ -(pick×slice + slice/2) (mod 360)。
- *
- * ⚠ θ 是**累积**总角度，所以增量必须减去当前累积值 current。
- *
- * @param {number} pick     选中的扇区索引
- * @param {number} n        扇区总数
- * @param {number} current  当前累积旋转角（度）
- * @returns {number} 新的累积旋转角（度）
+ * Fisher-Yates 洗牌 —— **必须用对局随机源**（state.rng），
+ * 保证同 seed 的暗牌排列完全可复现（分享即复现的承诺）。
  */
-export function spinTarget(pick, n, current) {
-  const slice = 360 / n;
-  const center = pick * slice + slice / 2;
-  const delta = (((-center - current) % 360) + 360) % 360;
-  return current + (360 * SPIN_TURNS) + delta;
+export function shuffleCards(items, rng) {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = rng ? rng.int(0, i) : Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
 
 /**
- * 计算「指针指向的扇区索引」—— 供自检验证落点一致性。
+ * 打开翻牌弹窗。
  *
- * @param {number} rotation 累积旋转角（度）
- * @param {number} n        扇区总数
- * @returns {number} 指针正下方所指的扇区索引
- */
-export function pointerSector(rotation, n) {
-  const slice = 360 / n;
-  // 扇区 pick 的中心角度 = pick×slice + slice/2（相对顶部，顺时针）
-  // 转过 rotation 后落在 rotation + center（mod 360）；
-  // 要与顶部（0°）对齐，需 rotation + center ≡ 0 (mod 360)
-  //
-  // ⚠ 取模前必须先把结果规约到 [0, n) —— 不能用「+1000000 再 % n」
-  //   这种写法，因为 1000000 未必是 n 的整数倍，会把索引整体偏移。
-  const norm = ((rotation % 360) + 360) % 360;
-  const raw = (-norm / slice) - 0.5;
-  const idx = Math.round(raw);
-  return ((idx % n) + n) % n;
-}
-
-/**
- * 打开大转盘弹窗。
- *
- * @param {object} wheel     转盘定义（board.js 的 WHEELS 元素）
+ * @param {object} wheel     翻牌格定义（board.js 的 WHEELS 元素）
  * @param {object} opts
- * @param {function} opts.onSpin  每次转动结束回调 —— 接收 {outcomeId, outcome, pick, rotation, spinIndex}
- * @param {function} opts.onClose 关闭回调（玩家点「关闭」时触发）
- * @param {boolean}  opts.autoSpin 是否自动开转（AI 玩家用）
- * @param {boolean}  opts.readonly 只读模式（AI 触发时玩家不能转）
- * @param {number}   opts.maxSpins 最大连续转盘次数（默认 5）
- * @param {string}   opts.playerName 转动者名字（显示用）
- * @param {object}   opts.rng 对局随机源（state.rng）—— **必须**传入，
- *                     否则转盘结果不可复现（破坏分享还原）
+ * @param {function} opts.onDraw   每次翻开结束回调 —— {outcomeId, outcome, pick, drawIndex}
+ *                            （沿用旧 onSpin 的回调字段名，main.js 无需改动）
+ * @param {function} opts.onClose  关闭回调（「收手离开」或遮罩关闭）
+ * @param {boolean}  opts.autoDraw 是否自动翻一张（AI 玩家用）
+ * @param {boolean}  opts.readonly 只读模式（AI 触发时玩家不能翻）
+ * @param {number}   opts.maxSpins 最大连续翻牌次数（默认 3 —— 兼容旧参数名）
+ * @param {string}   opts.playerName 翻牌者名字（显示用）
+ * @param {object}   opts.rng   对局随机源（state.rng）—— **必须**传入
  */
 export function showWheelDialog(wheel, opts = {}) {
-  // 候选数据的三种可能来源（按优先级）：
+  // 候选数据的三种可能来源（按优先级）—— 与旧版一致：
   //   1. outcomeData —— 完整元数据（name / big / lbl / trap）
-  //   2. outcomes 是**对象数组** —— WHEELS 的原始形态
-  //   3. outcomes 是**纯 id 数组** —— 退化为只有 id
+  //   2. outcomes 是对象数组 —— WHEELS 的原始形态
+  //   3. outcomes 是纯 id 数组 —— 退化为只有 id
   const raw = wheel.outcomeData && wheel.outcomeData.length
     ? wheel.outcomeData
     : (wheel.outcomes || []);
@@ -197,111 +84,50 @@ export function showWheelDialog(wheel, opts = {}) {
       ? o
       : { id: o, name: o, big: '', lbl: '' }
   ));
-  const style = WHEEL_STYLE[wheel.cat] || WHEEL_STYLE.fate;
+  const style = FATE_STYLE[wheel.cat] || FATE_STYLE.fate;
 
   const readonly = !!opts.readonly;
-  const maxSpins = opts.maxSpins != null ? opts.maxSpins : DEFAULT_MAX_SPINS;
+  const maxSpins = opts.maxSpins != null ? opts.maxSpins : DEFAULT_MAX_DRAWS;
   const playerName = opts.playerName || '';
 
   const body = document.createElement('div');
 
-  // ---- 转盘容器 ----
-  const wrap = document.createElement('div');
-  wrap.className = 'wheel-wrap';
-  wrap.style.cssText = 'width:300px;height:300px;margin:0 auto 14px;position:relative;';
-
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 200 200');
-  svg.setAttribute('class', 'wheel-svg');
-  svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;'
-    + 'transform:rotate(0deg);transition:transform 3600ms cubic-bezier(.15,.85,.1,1);';
-  svg.innerHTML = wheelSVG(outcomes, style);
-  wrap.appendChild(svg);
-
-  // ---- 指针（独立图层，绝不随转盘旋转）----
-  const pointer = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  pointer.setAttribute('viewBox', '0 0 200 200');
-  pointer.setAttribute('aria-hidden', 'true');
-  pointer.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;'
-    + 'pointer-events:none;filter:drop-shadow(0 2px 3px rgba(15,23,42,.35));';
-  pointer.innerHTML = '<polygon points="90,1 110,1 100,21" fill="#0f172a"/>'
-    + '<polygon points="94,1 106,1 100,9" fill="#fff" opacity=".25"/>';
-  wrap.appendChild(pointer);
-
-  // ---- 中心轴 ----
-  const hub = document.createElement('div');
-  hub.className = 'wheel-hub';
-  hub.style.cssText = 'position:absolute;left:50%;top:50%;width:74px;height:74px;'
-    + 'margin:-37px 0 0 -37px;border-radius:50%;background:#fff;border:4px solid #0f172a;'
-    + 'color:#0f172a;display:flex;align-items:center;justify-content:center;'
-    + 'font-weight:800;font-size:14px;box-shadow:0 3px 12px rgba(15,23,42,.3);';
-  hub.textContent = 'SPIN';
-  wrap.appendChild(hub);
-
-  body.appendChild(wrap);
-
-  // ---- 结果文字 ----
+  // ---- 提示语 ----
   const result = document.createElement('div');
-  result.className = 'wheel-result';
-  result.style.cssText = 'font-size:15px;font-weight:800;color:var(--c-paper);'
-    + 'min-height:24px;text-align:center;';
-  result.textContent = readonly ? 'AI 正在转动…' : '点击下方按钮开始转动';
+  result.className = 'fate-result';
+  result.textContent = readonly
+    ? `${playerName || 'AI'} 正在翻牌…`
+    : '点击一张暗牌，翻开即结算';
   body.appendChild(result);
 
-  // ---- 剩余次数 ----
+  // ---- 卡牌区 ----
+  // ⚠ 洗牌顺序由对局随机源决定（可复现）；
+  //   翻开哪张由玩家/AI 决定 —— 视觉与结算完全一致。
+  const deck = shuffleCards(outcomes, opts.rng || null);
+
+  const row = document.createElement('div');
+  row.className = `fate-row is-n${outcomes.length}`;
+
+  /** 已翻次数（对齐旧版 spinIndex 计数） */
+  let drawn = 0;
+  /** 翻牌锁 —— 从点击到「揭示停留」结束都不可点下一张 */
+  let flipping = false;
+
+  /** 揭示停留时长 —— 让玩家看清翻到了什么，再交给结算
+   *  （结算可能弹出地铁/事件卡等新弹窗顶掉本窗，停留是唯一的阅读窗口） */
+  const REVEAL_HOLD_MS = 850;
+
   const counter = document.createElement('div');
-  counter.className = 'wheel-counter';
-  counter.style.cssText = 'font-size:12px;color:var(--c-dim);text-align:center;margin-top:4px;';
-  body.appendChild(counter);
+  counter.className = 'fate-counter';
 
-  // ---- 说明文字 ----
-  const desc = document.createElement('div');
-  desc.className = 'wheel-desc';
-  desc.style.cssText = 'font-size:12.5px;color:var(--c-dim);line-height:1.7;margin:8px 0 16px;text-align:center;';
-  desc.innerHTML = escapeXml(wheel.desc || '') + '<br><span style="opacity:.7">'
-    + outcomes.map((o) => `${escapeXml(o.name)}（${escapeXml(o.big)}）`).join(' · ')
-    + '</span>';
-  body.appendChild(desc);
+  const updateCounter = () => {
+    const left = Math.max(0, maxSpins - drawn);
+    counter.textContent = left > 0
+      ? `还可翻 ${left} 张（每翻开一张立即结算）`
+      : '次数已用完 —— 点击「收手离开」继续回合';
+  };
 
-  // ---- 转动按钮（只读模式下**不渲染**，玩家无法点）----
-  let spinBtn = null;
-  if (!readonly) {
-    spinBtn = document.createElement('button');
-    spinBtn.className = 'pixel-btn pixel-btn-primary';
-    spinBtn.style.cssText = 'margin:0 auto 10px;display:block;';
-    spinBtn.textContent = '转 盘';
-    body.appendChild(spinBtn);
-  } else {
-    // AI 触发：显示只读提示，明确告诉玩家「这是 AI 在转」
-    const note = document.createElement('div');
-    note.className = 'wheel-readonly';
-    note.style.cssText = 'margin:0 auto 10px;display:block;text-align:center;font-size:12.5px;'
-      + 'color:var(--c-dim);background:var(--c-panel-dk);border:1px solid var(--line);'
-      + 'border-radius:6px;padding:8px 12px;';
-    note.textContent = playerName ? `${playerName} 正在转动 —— 你只能观看，无法操作` : 'AI 正在转动 —— 你只能观看，无法操作';
-    body.appendChild(note);
-  }
-
-  // ---- 「跳过动画」按钮（P1-14）----
-  //
-  // ⚠ 关键：**跳过只影响动画时长，不影响抽签结果**。
-  //   pick 在动画开始前就已经由 rng 定死了，
-  //   跳过只是把等待时间从 3.6s 缩到 1.2s —— 落点与结算完全一致。
-  //   因此「同 seed 可复现」的承诺不受影响。
-  let skipBtn = null;
-  {
-    skipBtn = document.createElement('button');
-    skipBtn.className = 'pixel-btn wheel-skip';
-    skipBtn.style.cssText = 'margin:0 auto 10px;display:block;';
-    skipBtn.textContent = '跳过动画';
-    skipBtn.disabled = true;   // 未转动时不可用
-    body.appendChild(skipBtn);
-  }
-
-  // 关闭回调：无论走「完成并离开」按钮还是点遮罩，都必须通知 main.js，
-  // 由它决定「已转过→继续回合 / 没转过→兜底随机」。
-  // 之前 onClose 只挂在返回值 close() 上 —— openModal 根本收不到，
-  // 玩家没转就关窗时 busy 永久为 true，回合卡死。
+  // ---- 关闭兜底（与旧版一致：main.js 依据 settled 决定继续或兜底随机）----
   let closed = false;
   const finish = () => {
     if (closed) return;
@@ -309,166 +135,151 @@ export function showWheelDialog(wheel, opts = {}) {
     if (opts.onClose) opts.onClose();
   };
 
+  /** 翻开一张暗牌 —— 动画结束后回调结算 */
+  const draw = (cardEl) => {
+    if (flipping || drawn >= maxSpins) return;
+    if (cardEl.dataset.flipped === '1') return;
+    flipping = true;
+    const pick = Number(cardEl.dataset.pick);
+    const o = deck[pick];
+    cardEl.dataset.flipped = '1';
+    cardEl.classList.add('is-flipped');
+    if (o.trap) cardEl.classList.add('is-trap');
+    cardEl.querySelector('.fcard-front').innerHTML = `
+      <div class="fcard-name">${escapeXml(o.name)}</div>
+      <div class="fcard-big">${escapeXml(o.big)}</div>
+      <div class="fcard-lbl">${escapeXml(o.lbl)}</div>
+      ${o.trap ? '<div class="fcard-trap">⚠ 陷阱</div>' : ''}
+    `;
+    result.innerHTML = `翻开：<b style="color:${style.dk}">${escapeXml(o.name)}</b>`
+      + (o.trap ? ' <span style="color:#dc2626">⚠ 陷阱</span>' : '');
+
+    setTimeout(() => {
+      // 揭示停留 —— 之后才结算（结算可能弹新窗顶掉本窗）
+      setTimeout(() => {
+        flipping = false;
+        drawn += 1;
+        updateCounter();
+        // 次数用完 → 剩余暗牌置灰
+        if (drawn >= maxSpins) {
+          row.classList.add('is-exhausted');
+        }
+        if (opts.onDraw) {
+          opts.onDraw({
+            outcomeId: o.id,
+            outcome: o,
+            pick,
+            drawIndex: drawn,
+          });
+        }
+      }, REVEAL_HOLD_MS);
+    }, FLIP_MS);
+  };
+
+  // ---- 生成暗牌 ----
+  const cardEls = [];
+  deck.forEach((o, pos) => {
+    const card = document.createElement('div');
+    card.className = 'fcard';
+    card.dataset.pick = String(pos);
+    card.dataset.flipped = '0';
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('aria-label', `暗牌 ${pos + 1}`);
+    card.innerHTML = `
+      <div class="fcard-inner">
+        <div class="fcard-face fcard-back" style="
+          background:linear-gradient(160deg, ${style.color}, ${style.dk});
+        ">
+          <div class="fcard-sign">${escapeXml(style.sign)}</div>
+          <div class="fcard-q">?</div>
+        </div>
+        <div class="fcard-face fcard-front" style="
+          background:linear-gradient(160deg, #fff, ${style.lt}55);
+          border-color:${style.dk};
+        "></div>
+      </div>
+    `;
+    const activate = () => {
+      if (readonly) return;
+      draw(card);
+    };
+    card.addEventListener('click', activate);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+    });
+    row.appendChild(card);
+    cardEls.push(card);
+  });
+  body.appendChild(row);
+  updateCounter();
+  body.appendChild(counter);
+
+  // ---- 只读提示（AI 触发）----
+  if (readonly) {
+    const note = document.createElement('div');
+    note.className = 'fate-readonly';
+    note.textContent = playerName
+      ? `${playerName} 正在翻牌 —— 你只能观看，无法操作`
+      : 'AI 正在翻牌 —— 你只能观看，无法操作';
+    body.appendChild(note);
+  }
+
+  // ---- 池底说明（所有候选一览 —— 补足"暗牌看不到内容"的信息量）----
+  const desc = document.createElement('div');
+  desc.className = 'fate-desc';
+  desc.innerHTML = escapeXml(wheel.desc || '') + '<br><span style="opacity:.7">'
+    + '本池候选：' + outcomes.map((o) => `${escapeXml(o.name)}（${escapeXml(o.big)}）`).join(' · ')
+    + '</span>';
+  body.appendChild(desc);
+
+  // ---- 收手按钮 ----
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'pixel-btn pixel-btn-primary';
+  stopBtn.style.cssText = 'margin:0 auto;display:block;';
+  stopBtn.textContent = readonly ? '关闭' : '收手离开';
+  body.appendChild(stopBtn);
+
   const modal = openModal({
-    title: wheel.label || '命运转盘',
+    title: wheel.label || '命运翻牌',
     body,
-    // 只读（AI）模式**不可**点击遮罩关闭 —— 必须等 AI 转完；
-    // 转动动画期间同样禁止关闭 —— 防止关窗后 onSpin 迟到触发二次结算
-    get dismissible() { return !readonly && !spinning; },
+    // 只读（AI）模式不可点遮罩关闭；翻牌动画期间同样禁止关闭
+    get dismissible() { return !readonly && !flipping; },
     onClose: finish,
     actions: [{
-      text: readonly ? '关闭' : '完成并离开',
+      text: stopBtn.textContent,
       primary: !readonly,
-      onClick: finish,   // 返回非 false → openModal 随后自动 closeModal
+      onClick: finish,
     }],
+  });
+  // ⚠ body 内的收手按钮必须**自己关窗** —— openModal 的「actions 按钮 →
+  //   自动 closeModal」流程只覆盖 actions 区的按钮，body 里的按钮点了
+  //   只触发 finish，弹窗会留在屏幕上（旧转盘没有 body 内按钮，没踩过这个坑）。
+  stopBtn.addEventListener('click', () => {
+    closeModal();
+    finish();
   });
 
   // 暴露给自动化测试
   body.dataset.wheelId = wheel.id || '';
   body.dataset.wheelReadonly = readonly ? '1' : '0';
+  body._cardEls = cardEls;
+  body._draw = draw;
 
-  let spinning = false;
-  let spinIndex = 0;      // 已转次数
-  /** 当前转动的结束定时器 —— 「跳过动画」用它提前触发结算 */
-  let spinTimer = 0;
-  /** 当前转动的已完成回调 —— 跳过时直接调用它 */
-  let spinFinish = null;
-
-  /** 更新剩余次数文案 */
-  const updateCounter = () => {
-    if (readonly) {
-      counter.textContent = '';
-      return;
-    }
-    const left = Math.max(0, maxSpins - spinIndex);
-    counter.textContent = left > 0
-      ? `剩余可转 ${left} 次（每次转盘都会立即结算）`
-      : '次数已用完 —— 点击「完成并离开」继续回合';
-  };
-  updateCounter();
-
-  /**
-   * 执行一次转动。
-   *
-   * @param {number} pick 强制指定的扇区（测试用；不传则随机）
-   * @param {boolean} fast 是否用**快速版**动画（AI / 跳过用）
-   */
-  const spin = (pick, fast = false) => {
-    if (spinning) return;
-    if (!readonly && spinIndex >= maxSpins) return;
-    spinning = true;
-    if (spinBtn) {
-      spinBtn.disabled = true;
-      spinBtn.textContent = '转动中…';
-    }
-    if (skipBtn) {
-      skipBtn.disabled = false;
-      skipBtn.textContent = '跳过动画';
-    }
-    hub.textContent = '···';
-
-    const n = outcomes.length;
-    const slice = 360 / n;
-    // ⚠ P1：扇区选取必须用**对局随机源**（state.rng），
-    //   不能用 Math.random()。
-    //   原因：分享链接还原对局时，整局必须由 seed 决定 ——
-    //   Math.random() 会让转盘结果**无法复现**，同一 seed 的两局
-    //   会出现不同的转盘效果，破坏「分享即复现」的承诺，
-    //   也会让自动化回归测试无法确定性地验证落点一致性。
-    //   rng 由调用方（main.js）从 state.rng 传入；缺省时退化为 Math.random。
-    const rng = opts.rng || null;
-    const chosen = (pick == null)
-      ? (rng ? rng.int(0, n - 1) : Math.floor(Math.random() * n))
-      : (pick % n + n) % n;
-    const current = parseFloat(svg.dataset.rot || '0');
-    const target = spinTarget(chosen, n, current);
-    svg.dataset.rot = String(target);
-    svg.style.transform = `rotate(${target}deg)`;
-    result.textContent = '转动中…';
-
-    // ⚠ 动画时长可切换 —— 跳过 / AI 走快速版。
-    //   CSS transition 时长也要跟着改，否则「动画还没转完就结算」会很突兀。
-    const dur = fast ? SPIN_MS_FAST : SPIN_MS;
-    svg.style.transition = `transform ${dur}ms cubic-bezier(.15,.85,.1,1)`;
-
-    /** 结算回调 —— 正常结束与「跳过」共用，保证只结算一次 */
-    const finish = () => {
-      if (spinTimer) { clearTimeout(spinTimer); spinTimer = 0; }
-      spinFinish = null;
-      const o = outcomes[chosen];
-      result.innerHTML = `抽中：<b style="color:${style.dk}">${escapeXml(o.name)}</b>`
-        + (o.trap ? ' <span style="color:#dc2626">⚠ 陷阱</span>' : '')
-        + `<div style="font-size:12.5px;color:var(--c-dim);margin-top:6px;font-weight:600">`
-        + `${escapeXml(o.big)} · ${escapeXml(o.lbl)}</div>`;
-      spinning = false;
-      spinIndex++;
-      if (spinBtn) {
-        // 达到上限 → 禁用按钮，引导玩家关闭
-        const exhausted = spinIndex >= maxSpins;
-        spinBtn.disabled = exhausted;
-        spinBtn.textContent = exhausted ? '次数已用完' : '再 转 一 次';
-      }
-      if (skipBtn) skipBtn.disabled = true;
-      updateCounter();
-      if (opts.onSpin) {
-        opts.onSpin({
-          outcomeId: o.id,
-          outcome: o,
-          pick: chosen,
-          rotation: target,
-          spinIndex,
-        });
-      }
-    };
-    spinFinish = finish;
-    spinTimer = setTimeout(finish, dur);
-  };
-
-  if (spinBtn) {
-    spinBtn.addEventListener('click', () => spin());
+  // ---- AI 自动翻一张（随机选位，rng 保证可复现）----
+  if (opts.autoDraw) {
+    setTimeout(() => {
+      if (closed) return;
+      const rng = opts.rng || null;
+      const pick = rng ? rng.int(0, deck.length - 1) : Math.floor(Math.random() * deck.length);
+      draw(cardEls[pick]);
+    }, 300);
   }
-
-  // ---- 「跳过动画」—— 立即结算（P1-14）----
-  //
-  // ⚠ 只缩短**等待**，不改变抽签结果（pick 已定死），
-  //   因此落点 / 结算 / 可复现性完全不受影响。
-  if (skipBtn) {
-    skipBtn.addEventListener('click', () => {
-      if (!spinning || !spinFinish) return;
-      // 让转盘瞬间转到终点，再立刻结算
-      svg.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1)';
-      spinFinish();
-    });
-  }
-
-  // AI 玩家 —— 自动开转（只读，玩家不能干预）
-  // ⚠ AI 走**快速版**动画（1.2s）—— 玩家无法干预，没必要干等 3.6 秒。
-  if (opts.autoSpin) {
-    setTimeout(() => spin(null, true), 260);
-  }
-
-  // 暴露 spin 以便自动化测试触发
-  body._wheelSpin = spin;
 
   return {
     close: () => { closeModal(); if (opts.onClose) opts.onClose(); },
-    spin,
     modal,
-    /** 当前已转次数（自动化测试用） */
-    get spinCount() { return spinIndex; },
+    /** 当前已翻次数（自动化测试用） */
+    get drawCount() { return drawn; },
   };
-}
-
-/**
- * 便捷函数 —— 打开转盘并在转完后回调。
- *
- * @param {object} wheel 转盘定义
- * @param {function} onDone 回调 (outcomeId, outcome)
- */
-export function spinWheel(wheel, onDone) {
-  return showWheelDialog(wheel, {
-    onSpin: (r) => {
-      if (onDone) onDone(r.outcomeId, r.outcome);
-    },
-  });
 }

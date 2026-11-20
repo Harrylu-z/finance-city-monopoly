@@ -7,12 +7,15 @@ import { getInstitutionSprite } from '../art/buildings.js';
 import { makePlayerSpriteCanvas } from '../art/avatars.js';
 import {
   calculateRent, upgradeCost, mortgageValue, redeemFee, levelLabel,
-  groupBuffTier, globalRegulatorEffects, playerRegulatorEffects, CONFIG, allGroupBuffs,
+  groupBuffTier, groupDepthBuffs, globalRegulatorEffects, playerRegulatorEffects,
+  playerEmpireEffects, buffMultiplierFor, holdingTier, CONFIG, allGroupBuffs,
+  buffEffectMult,
   financialMetrics, loanRepayAmount, loanInterestPerTurn, bondCouponFor,
   outstandingLoan,
 } from '../core/economy.js';
 import { GROUP_META, REGULATORS } from '../core/board.js';
 import { getCareer } from '../core/careers.js';
+import { playerCostMult } from '../core/rules.js';
 
 const GROUP_INDEX = { bank: 0, broker: 1, insurer: 2, asset: 3 };
 
@@ -345,17 +348,29 @@ export function showInstitutionDialog(player, state, onUpgrade, onMortgage, onRe
 
     const meta = document.createElement('div');
     meta.className = 'inst-meta';
+    // 租金展示必须与后台实际收租**同口径**（2026-11 一致性修复）：
+    //   calculateRent × buffMultiplierFor（纵深×精耕×控股×牛市×牌照）× buffEffectMult（限时 buff）
+    //   —— 与 rules.js 交租结算、financialMetrics.rentIncome 完全一致。
     const rent = calculateRent(cell, inst.level, {
       market: state.market, eventMult: state.eventMult,
-      buffMult: groupBuffTier(player, cell.group).mult,
+      buffMult: buffMultiplierFor(player, cell.group, state)
+        * buffEffectMult(player, 'rentMult'),
     });
     const regEff = playerRegulatorEffects(state, player);
-    const upCost = upgradeCost(cell, inst.level, { regulatorCostMult: regEff.upgradeCostMult });
+    // 升级费 = 牌照折扣 × 控股折扣 × 职业被动/路演等限时折扣
+    // —— 与 rules.upgradeInstitution 的实扣公式完全一致（2026-11 一致性修复）
+    const empireEff = playerEmpireEffects(state, player);
+    const upCost = Math.round(upgradeCost(cell, inst.level, {
+      regulatorCostMult: regEff.upgradeCostMult * (empireEff.upgradeCostMult ?? 1),
+    }) * playerCostMult(player, 'upgradeCostMult'));
     if (cell.regulator) {
       meta.textContent = `监管机构 · 不可升级 · ${cell.code}`;
     } else {
       const buff = groupBuffTier(player, cell.group);
-      const buffTxt = buff.tier > 0 ? ` · ${buff.name}×${buff.mult.toFixed(2)}` : '';
+      const depth = groupDepthBuffs(player, cell.group);
+      const buffTxt = (buff.tier > 0 || depth.mult > 1)
+        ? ` · 生态×${Number(((buff.mult * depth.mult)).toFixed(3))}`
+        : '';
       meta.textContent = inst.mortgaged
         ? `管理费 ￥${rent} · 质押额 ￥${inst.mortgageAmount}`
         : `管理费 ￥${rent}${buffTxt} · 升级需 ￥${isFinite(upCost) ? upCost : '已满级'}`;
@@ -895,8 +910,10 @@ export function showLoanDialog(player, tiers, onPick, onCancel, state = null) {
   const body = document.createElement('div');
 
   // 央行牌照：持有人享直营利率折扣 + 每圈多贷一次
+  // 经营生态：系统重要性机构（控股 ≥16 家）利率再打 9 折（与牌照叠乘）
   const regEff = state ? playerRegulatorEffects(state, player) : null;
-  const rateMult = regEff?.loanRateMult ?? 1;
+  const empEff = state ? playerEmpireEffects(state, player) : null;
+  const rateMult = (regEff?.loanRateMult ?? 1) * (empEff?.loanRateMult ?? 1);
   const loanLimitBonus = regEff?.loanLimitBonus ?? 0;
 
   const intro = document.createElement('div');
@@ -1113,8 +1130,11 @@ export function showBuffPanel(player, state) {
   const buffs = allGroupBuffs(player);
   const sec1 = document.createElement('div');
   sec1.className = 'modal-text';
-  sec1.innerHTML = '<span class="hl">集团协同 Buff</span>（持有同类机构数量达阈值触发）';
+  sec1.innerHTML = '<span class="hl">经营生态加成</span>'
+    + '（<b>四层叠乘</b>：集团纵深 × 精耕细作 × 集团特色 × 金融控股）';
   body.appendChild(sec1);
+
+  const fmtMult = (m) => `×${Number(Number(m).toFixed(3))}`;
 
   const list = document.createElement('div');
   list.className = 'inst-list';
@@ -1126,21 +1146,76 @@ export function showBuffPanel(player, state) {
     const nm = document.createElement('div');
     nm.className = 'inst-name';
     nm.textContent = GROUP_META[g].name;
+    // 集团合计 = 纵深（数量档）× 精耕（等级档）
+    const groupMult = (b.mult || 1) * (b.depth?.mult || 1);
     const tg = document.createElement('span');
     tg.className = 'inst-lv';
-    tg.textContent = b.tier > 0 ? b.name : '未激活';
-    tg.style.background = b.tier > 0 ? PALETTE.gold : PALETTE.glass;
+    tg.textContent = groupMult > 1 ? `生态 ${fmtMult(groupMult)}` : '未激活';
+    tg.style.background = groupMult > 1 ? PALETTE.gold : PALETTE.glass;
+    nm.appendChild(tg);
+    info.appendChild(nm);
+    const metaLines = [`持有 ${b.count} 家`];
+    if (b.tier > 0) metaLines.push(`${b.name} ${fmtMult(b.mult)}`);
+    for (const d of (b.depth?.items || [])) metaLines.push(`${d.name} ${fmtMult(d.mult)}`);
+    if (b.tier > 0) {
+      metaLines.push(`下档 ${CONFIG.groupBuffThresholds[b.tier] || '—'} 家`);
+    } else if (b.count > 0) {
+      metaLines.push(`${CONFIG.groupBuffThresholds[0]} 家激活纵深`);
+    }
+    const meta = document.createElement('div');
+    meta.className = 'inst-meta';
+    meta.textContent = metaLines.join(' · ');
+    info.appendChild(meta);
+    // 集团特色
+    if (b.special && b.special.desc) {
+      const sp = document.createElement('div');
+      sp.className = 'inst-meta';
+      sp.innerHTML = b.special.active
+        ? `<span class="hl">${b.special.name} · 已解锁</span> — ${b.special.desc}`
+        : `<span class="dim">${b.special.name}（${CONFIG.groupSpecialUnlock} 家解锁）— ${b.special.desc}</span>`;
+      info.appendChild(sp);
+    }    item.appendChild(info);
+    list.appendChild(item);
+  }
+  body.appendChild(list);
+
+  // ===== 层 4 金融控股（跨集团总持有）=====
+  const holding = holdingTier(player);
+  const secH = document.createElement('div');
+  secH.className = 'modal-text';
+  secH.innerHTML = `<span class="hl">金融控股</span>`
+    + `（总持有 ${holding.count} 家 —— 达到档位给全局效果，与集团加成叠乘）`;
+  body.appendChild(secH);
+  const hList = document.createElement('div');
+  hList.className = 'inst-list';
+  const holdRows = [
+    { th: 1, name: CONFIG.holdingNames[0], req: `${CONFIG.holdingThresholds[0]} 家`, eff: `全局收租 ${fmtMult(CONFIG.holdingRentMultPerTier)}` },
+    { th: 2, name: CONFIG.holdingNames[1], req: `${CONFIG.holdingThresholds[1]} 家`, eff: `收租再叠乘 + 升级费 −${Math.round((1 - CONFIG.holdingUpgradeCostMult) * 100)}%` },
+    { th: 3, name: CONFIG.holdingNames[2], req: `${CONFIG.holdingThresholds[2]} 家`, eff: `收租再叠乘 + 每圈补贴 ￥${CONFIG.holdingRoundBonus} + 贷款利率 ${(CONFIG.holdingLoanRateMult * 10).toFixed(1).replace(/\.0$/, '')} 折` },
+  ];
+  for (const row of holdRows) {
+    const unlocked = holding.tier >= row.th;
+    const item = document.createElement('div');
+    item.className = 'inst-item';
+    const info = document.createElement('div');
+    info.className = 'inst-info';
+    const nm = document.createElement('div');
+    nm.className = 'inst-name';
+    nm.textContent = row.name;
+    const tg = document.createElement('span');
+    tg.className = 'inst-lv';
+    tg.textContent = unlocked ? '已达成' : row.req;
+    tg.style.background = unlocked ? PALETTE.gold : PALETTE.glass;
     nm.appendChild(tg);
     info.appendChild(nm);
     const meta = document.createElement('div');
     meta.className = 'inst-meta';
-    meta.textContent = `持有 ${b.count} 家 · 租金系数 ×${b.mult.toFixed(2)}`
-      + (b.tier > 0 ? ` · 下档 ${CONFIG.groupBuffThresholds[b.tier] || '—'} 家` : ` · ${CONFIG.groupBuffThresholds[0]} 家激活`);
+    meta.textContent = row.eff;
     info.appendChild(meta);
     item.appendChild(info);
-    list.appendChild(item);
+    hList.appendChild(item);
   }
-  body.appendChild(list);
+  body.appendChild(hList);
 
   const sec2 = document.createElement('div');
   sec2.className = 'modal-text';

@@ -316,6 +316,12 @@ export function createPokerGame(opts = {}) {
       // 桌上面值总量
       stack: cash + assetQuota,
       bet: 0,
+      // ⚠ Fix（翻牌后无法加注）：本街下注额 —— 每条街开始时清零。
+      //   `bet` 是**整手累计**（分池 / 结算用），而 toCall / minRaiseTo
+      //   等「街道判定」必须用本街口径。旧实现直接拿累计 bet 参与街道判定，
+      //   翻牌圈 currentBet 复位为 0 后，`minRaiseTo(40) > bet(40)` 恒为假，
+      //   导致翻牌后所有人的「加注」按钮直接消失。
+      streetBet: 0,
       hole: [],
       folded: false,
       allIn: false,
@@ -440,6 +446,7 @@ function commitBet(game, seatIndex, amount) {
   seat.cashPaid += fromCash;
   seat.assetPaid += fromAsset;
   seat.bet += fromCash + fromAsset;
+  seat.streetBet += fromCash + fromAsset;
   game.pot += fromCash + fromAsset;
 
   // 注意：此处**不**直接写 ref.pokerAssetLock。
@@ -539,10 +546,11 @@ export function legalActions(game) {
   const idx = currentActor(game);
   if (idx < 0) return [];
   const seat = game.seats[idx];
-  const toCall = Math.max(0, game.currentBet - seat.bet);
+  // ⚠ 街道判定一律用 streetBet（本街口径），不用累计 bet
+  const toCall = Math.max(0, game.currentBet - seat.streetBet);
   // 现金上限 = 剩余现金 × maxBetRatio（剩余现金为 0 时上限为 0）
   const cashCap = Math.floor(Math.max(0, seat.cashStack) * POKER_CONFIG.maxBetRatio);
-  // 单次动作的总额上限 = 现金上限 + 可用资产额度
+  // 本注可投入的筹码上限 = min(剩余总筹码, 现金上限 + 可用资产额度)
   const maxBet = Math.min(seat.stack, cashCap + seat.assetStack);
   const actions = [];
 
@@ -563,16 +571,16 @@ export function legalActions(game) {
   const canRaise = seat.stack > toCall
     && (game.raisesThisStreet < POKER_CONFIG.maxRaises || toCall === 0);
   if (canRaise) {
-    const minRaiseTo = Math.min(
-      seat.stack,
-      game.currentBet + game.minRaise,
-    );
-    if (minRaiseTo > seat.bet) {
+    // 一次合法最小加注需要投入的筹码 = 跟平当前注 + 一个最小加注额。
+    // ⚠ Fix：旧实现拿累计 bet 参与 `minRaiseTo > bet` 判定，
+    //   翻牌圈 bet 还带着上一街的盲注/跟注额 → 加注选项直接消失。
+    const minChips = (game.currentBet + game.minRaise) - seat.streetBet;
+    if (minChips > 0 && maxBet >= minChips) {
       actions.push({
         type: 'raise',
-        amount: minRaiseTo - seat.bet,
-        min: minRaiseTo - seat.bet,
-        max: Math.max(minRaiseTo - seat.bet, Math.min(seat.stack - toCall, maxBet - toCall)),
+        amount: minChips,
+        min: minChips,
+        max: Math.max(minChips, maxBet),
         label: '加注',
         disabled: false,
       });
@@ -684,10 +692,11 @@ export function aiAction(game, seatIndex, rng) {
   if (raiseAction && !raiseAction.disabled) {
     const raiseChance = strength > 0.75 ? 0.75 : strength > 0.55 ? 0.4 : 0.18;
     if (rng.next() < raiseChance) {
-      const unit = game.minRaise;
-      let amount = unit;
-      if (strength > 0.85) amount = unit * 2;
-      else if (rng.next() < 0.4) amount = unit * 2;
+      // ⚠ Fix：amount = 本次投入的筹码总额（与 legalActions/applyAction 同口径），
+      //   基准取合法最小投入，强牌时加倍。
+      let amount = raiseAction.min;
+      if (strength > 0.85) amount *= 2;
+      else if (rng.next() < 0.4) amount *= 2;
       const maxAllowed = raiseAction.max ?? amount;
       amount = Math.max(raiseAction.min, Math.min(amount, maxAllowed));
       if (amount > 0) return { type: 'raise', amount };
@@ -724,7 +733,8 @@ export function applyAction(game, seatIndex, action) {
   }
 
   const seat = game.seats[seatIndex];
-  const toCall = Math.max(0, game.currentBet - seat.bet);
+  // ⚠ 街道判定用 streetBet（本街口径）
+  const toCall = Math.max(0, game.currentBet - seat.streetBet);
 
   switch (action.type) {
     case 'fold': {
@@ -744,10 +754,19 @@ export function applyAction(game, seatIndex, action) {
       break;
     }
     case 'raise': {
-      const target = game.currentBet + Math.max(game.minRaise, action.amount);
-      const total = target - seat.bet;
-      if (total > seat.stack) return { ok: false, reason: '筹码不足' };
+      // ⚠ Fix（语义统一）：amount = **本次投入的筹码总额**（本注口径），
+      //   与 legalActions / UI 滑杆 / 快捷档位的口径完全一致。
+      //   旧实现把 amount 当「超出 currentBet 的加注幅度」再用
+      //   `target = currentBet + amount` 重算一次 —— 由于 legalActions
+      //   传来的 amount 本身已含「跟平差额」，目标会被二次抬高。
+      const target = seat.streetBet + action.amount;
+      const raiseSize = target - game.currentBet;
       if (target <= game.currentBet) return { ok: false, reason: '加注幅度不足' };
+      // 押上全部剩余筹码 → 允许「不足额加注」（all-in for less）
+      const allInCommit = action.amount >= seat.stack;
+      if (raiseSize < game.minRaise && !allInCommit) {
+        return { ok: false, reason: `加注幅度不足（最小加注 ￥${game.minRaise}）` };
+      }
       // ⚠ P1：加注同样不得绕过 maxBetRatio ——
       //   现金部分上限 = 剩余现金 × maxBetRatio，资产部分按额度可用。
       //   超出上限的加注必须被拒绝（否则 allin 的限制形同虚设 ——
@@ -756,15 +775,15 @@ export function applyAction(game, seatIndex, action) {
         seat.stack,
         Math.floor(Math.max(0, seat.cashStack) * POKER_CONFIG.maxBetRatio) + seat.assetStack,
       );
-      if (total > raiseCap) {
+      if (action.amount > raiseCap) {
         return {
           ok: false,
-          reason: `超出下注上限（本手上限 ￥${raiseCap}）`,
+          reason: `超出下注上限（本注上限 ￥${raiseCap}）`,
         };
       }
-      commitBet(game, seatIndex, total);
+      commitBet(game, seatIndex, action.amount);
       game.currentBet = target;
-      game.minRaise = Math.max(game.minRaise, total);
+      game.minRaise = Math.max(game.minRaise, raiseSize);
       game.raisesThisStreet += 1;
       seat.lastAction = 'raise';
       break;
@@ -798,9 +817,11 @@ export function applyAction(game, seatIndex, action) {
       // ⚠ P1：显式标记 allin（上限全下后可能仍有少量剩余筹码，
       //   但玩家已表态押完，不能再加注 —— 否则行动循环会卡死）。
       markAllIn(game, seatIndex);
-      if (seat.bet > game.currentBet) {
-        const raiseBy = seat.bet - game.currentBet;
-        game.currentBet = seat.bet;
+      // ⚠ Fix：与 currentBet 的比较用本街口径 streetBet（旧代码用累计 bet，
+      //   翻牌圈会把上一街的注额也算进 currentBet）。
+      if (seat.streetBet > game.currentBet) {
+        const raiseBy = seat.streetBet - game.currentBet;
+        game.currentBet = seat.streetBet;
         // ⚠ P1 修复：加注幅度必须**至少等于本街最小加注额**，
         //   之前误写成 `seat.bet - max(0, currentBet - seat.bet)`（恒为 0），
         //   导致 allin 的加注幅度永远不抬高 minRaise，
@@ -860,10 +881,9 @@ function advanceTurn(game) {
       //   全下者（allIn）可能「不足额全下」（all-in for less）——
       //   他们的 bet < currentBet 是**正常状态**（未跟足的部分
       //   由边池规则处理），不能因此判定「还有人没跟平」而卡住街道。
-      //   旧代码用 `contenders.some(x => x.bet < game.currentBet)` 判定 needMore，
-      //   恰好只查可行动者 —— 这里保持一致，但要确保 allIn 座位
-      //   不参与 needMore 判定（否则街道永远不结束 → 死循环）。
-      const needMore = contenders.some((x) => x.bet < game.currentBet);
+      //   ⚠ Fix：比较用 streetBet（本街口径）—— 累计 bet 永远 ≥ 本街注，
+      //   用它判定「是否跟平本街」在翻牌后永远为真，街道会提前结束。
+      const needMore = contenders.some((x) => x.streetBet < game.currentBet);
       const someoneActed = contenders.every((x) => x.lastAction !== null);
       if (!needMore && someoneActed && game.street !== 'preflop') {
         nextStreet(game);
@@ -871,7 +891,7 @@ function advanceTurn(game) {
       }
       if (!needMore && someoneActed && game.street === 'preflop') {
         // preflop 结束条件：所有可行动者都已跟平大盲
-        const everyoneCalled = contenders.every((x) => x.bet >= game.blinds.big || x.allIn);
+        const everyoneCalled = contenders.every((x) => x.streetBet >= game.blinds.big || x.allIn);
         if (everyoneCalled) {
           nextStreet(game);
           return;
@@ -916,8 +936,11 @@ function nextStreet(game) {
     return;
   }
 
-  // 重置本街的「已行动」标记
-  for (const s of game.seats) s.lastAction = null;
+  // 重置本街的「已行动」标记与本街注额（bet 是整手累计，不能清）
+  for (const s of game.seats) {
+    s.lastAction = null;
+    s.streetBet = 0;
+  }
 
   // 翻牌后行动顺序：从**按钮位左手边**第一个可行动者开始
   // （标准规则；heads-up 时按钮位即小盲，其对面大盲先行动）。

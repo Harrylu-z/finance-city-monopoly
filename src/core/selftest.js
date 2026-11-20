@@ -15,6 +15,7 @@ import {
   groupBuffTier, allGroupBuffs, globalRegulatorEffects, playerRegulatorEffects, ownsRegulator,
   loanRepayAmount, bondRedeemValue, buffMultiplierFor, financialMetrics,
   bondCouponFor, buffEffectMult,
+  groupDepthBuffs, groupSpecial, holdingTier, playerEmpireEffects,
 } from './economy.js';
 import {
   createState, computeMove, computeTeleportSteps, rollDice, movePlayer, settleOnCell,
@@ -667,6 +668,227 @@ export function runAll() {
     p.institutions[1].mortgaged = true;
     assert(groupBuffTier(p, 'bank').count === th[2] - 1, '质押机构不应计入 Buff 计数');
     return `3 档阈值 ${CONFIG.groupBuffThresholds.join('/')} 生效，最高 ×${CONFIG.groupBuffRentMult[2]}`;
+  });
+
+  /* ---------- 经营生态加成（四层叠乘） ---------- */
+  check(results, '经营生态：精耕细作按等级叠乘（质押不计入）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const bankCells = GROUP_CELLS.bank.filter((i) => !BOARD_CELLS[i].regulator);
+    const cfg = CONFIG.groupDepthRentMult;
+
+    // 0 家 —— 无精耕
+    let d = groupDepthBuffs(p, 'bank');
+    assert(d.mult === 1 && d.items.length === 0, '无机构不应有精耕加成');
+
+    // 3 家支行级 → 品牌矩阵 ×1.06
+    for (let i = 0; i < CONFIG.groupDepthBrandCount; i++) {
+      p.institutions.push({ cellIndex: bankCells[i], level: CONFIG.groupDepthBrandLevel, mortgaged: false, mortgageAmount: 0 });
+    }
+    d = groupDepthBuffs(p, 'bank');
+    assert(d.items.length === 1 && d.items[0].id === 'brand', '3 家支行级应只有品牌矩阵');
+    assert(Math.abs(d.mult - cfg.brand) < 1e-9, `品牌矩阵系数应为 ${cfg.brand}`);
+
+    // + 总部级 → 金字招牌叠加（×1.06 × 1.10）
+    p.institutions[0].level = CONFIG.groupDepthFlagshipLevel;
+    d = groupDepthBuffs(p, 'bank');
+    assert(d.items.length === 2, '总部级应叠加金字招牌');
+    assert(Math.abs(d.mult - cfg.brand * cfg.flagship) < 1e-9, '金字招牌应与品牌矩阵叠乘');
+
+    // + 地标级 → 城市地标叠加（×1.06 × 1.10 × 1.15）
+    p.institutions[1].level = CONFIG.groupDepthLandmarkLevel;
+    d = groupDepthBuffs(p, 'bank');
+    assert(d.items.length === 3, '地标级应叠加城市地标');
+    assert(Math.abs(d.mult - cfg.brand * cfg.flagship * cfg.landmark) < 1e-9,
+      `三层精耕应全叠乘，实际 ${d.mult}`);
+
+    // 质押的不计入精耕
+    p.institutions[1].mortgaged = true;
+    d = groupDepthBuffs(p, 'bank');
+    assert(d.items.length === 1, '质押的机构不应计入精耕');
+    // 解押复原
+    p.institutions[1].mortgaged = false;
+    d = groupDepthBuffs(p, 'bank');
+    assert(d.items.length === 3, '解押后精耕应恢复');
+    return `品牌矩阵 ×${cfg.brand} / 金字招牌 ×${cfg.flagship} / 城市地标 ×${cfg.landmark} 全叠乘`;
+  });
+
+  check(results, '经营生态：四大集团特色效果各自生效', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+
+    // ---- 券商「自营弹性」：牛市收租额外 ×1.15 ----
+    const brokerCells = GROUP_CELLS.broker.filter((i) => !BOARD_CELLS[i].regulator);
+    for (let i = 0; i < CONFIG.groupSpecialUnlock; i++) {
+      p.institutions.push({ cellIndex: brokerCells[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    assert(groupSpecial(p, 'broker').active, '券商 3 家应解锁自营弹性');
+    const plain = buffMultiplierFor(p, 'broker', state);
+    const savedMarket = state.market;
+    state.market = 'bull';
+    const bull = buffMultiplierFor(p, 'broker', state);
+    state.market = savedMarket;
+    assert(Math.abs(bull / plain - CONFIG.groupSpecialBrokerBullMult) < 1e-9,
+      `牛市券商收租应 ×${CONFIG.groupSpecialBrokerBullMult}，实际 ${bull / plain}`);
+    // 券商特色不应影响其他集团（牛市里银行的乘数不变）
+    state.market = 'bull';
+    const bankBull = buffMultiplierFor(p, 'bank', state);
+    state.market = savedMarket;
+    const bankPlain = buffMultiplierFor(p, 'bank', state);
+    assert(Math.abs(bankBull - bankPlain) < 1e-9, '券商牛市特色不应影响银行集团');
+
+    // ---- 保险「承保对冲」：罚金减免加法叠加（职业 0.45 + 生态 0.25 = 0.70）----
+    const insurerCells = GROUP_CELLS.insurer.filter((i) => !BOARD_CELLS[i].regulator);
+    for (let i = 0; i < CONFIG.groupSpecialUnlock; i++) {
+      p.institutions.push({ cellIndex: insurerCells[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    assert(groupSpecial(p, 'insurer').active, '保险 3 家应解锁承保对冲');
+    assert(Math.abs(playerEmpireEffects(state, p).trapRelief - CONFIG.groupSpecialInsurerTrapRelief) < 1e-9,
+      '生态罚金减免应为 0.25');
+    p.careerId = 'risk';
+    p.career = 'risk';
+    const card = { id: 't', title: '测试罚单', text: '测试', effect: { cash: -200 } };
+    const trapRes = applyTrapCard(state, p, card);
+    assert(trapRes.relief > CONFIG.groupSpecialInsurerTrapRelief, '生态减免应与职业减免叠加');
+    assert(Math.abs(trapRes.relief - 0.70) < 1e-9,
+      `职业 0.45 + 生态 0.25 应叠加为 0.70，实际 ${trapRes.relief}`);
+    assert(trapRes.cash === -60, `罚金 -200 × 0.3 应为 -60，实际 ${trapRes.cash}`);
+    p.careerId = null;
+    p.career = null;
+
+    // ---- 资管「规模经济」：该集团维持费 −20%（券商/保险原价，资管 8 折）----
+    const assetCells = GROUP_CELLS.asset.filter((i) => !BOARD_CELLS[i].regulator);
+    for (let i = 0; i < CONFIG.groupSpecialUnlock; i++) {
+      p.institutions.push({ cellIndex: assetCells[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    assert(groupSpecial(p, 'asset').active, '资管 3 家应解锁规模经济');
+    const maintPer = CONFIG.maintenanceCostPerLevel[0];
+    const expectedDue = Math.round(
+      CONFIG.groupSpecialUnlock * maintPer                                             // 券商 3 家原价
+      + CONFIG.groupSpecialUnlock * maintPer                                           // 保险 3 家原价
+      + CONFIG.groupSpecialUnlock * maintPer * CONFIG.groupSpecialAssetMaintenanceMult // 资管 3 家 8 折
+    );
+    p.cash = 10000;
+    const beforeCash = p.cash;
+    chargeMaintenanceCosts(state, p);
+    const paid = beforeCash - p.cash;
+    assert(paid === expectedDue,
+      `9 家机构（资管 8 折）维持费应 ￥${expectedDue}，实际扣了 ￥${paid}`);
+
+    // ---- 银行「吸储网络」：生态参数正确（发放点在经过起点，UI 层）----
+    const bankCells = GROUP_CELLS.bank.filter((i) => !BOARD_CELLS[i].regulator);
+    for (let i = 0; i < CONFIG.groupSpecialUnlock; i++) {
+      p.institutions.push({ cellIndex: bankCells[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    const emp = playerEmpireEffects(state, p);
+    assert(emp.bankInterest.active, '银行 3 家应解锁吸储网络');
+    assert(emp.bankInterest.rate === CONFIG.groupSpecialBankInterestRate
+      && emp.bankInterest.cap === CONFIG.groupSpecialBankInterestCap,
+      '吸储网络利率/上限参数不正确');
+    return `牛市 ×${CONFIG.groupSpecialBrokerBullMult} · 罚金叠加 0.70 · 资管维持费 8 折 · 吸储 ${(CONFIG.groupSpecialBankInterestRate * 100).toFixed(0)}%（上限 ￥${CONFIG.groupSpecialBankInterestCap}）`;
+  });
+
+  check(results, '经营生态：金融控股逐档叠乘 + 升级费生效', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const cells = [];
+    for (const g of ['bank', 'broker', 'insurer', 'asset']) {
+      for (const i of GROUP_CELLS[g]) {
+        if (!BOARD_CELLS[i].regulator) cells.push(i);
+      }
+    }
+    const push = (n) => {
+      for (let i = 0; i < n; i++) {
+        p.institutions.push({
+          cellIndex: cells[p.institutions.length % cells.length],
+          level: 0, mortgaged: false, mortgageAmount: 0,
+        });
+      }
+    };
+
+    let h = holdingTier(p);
+    assert(h.tier === 0 && h.rentMult === 1, '0 家不应有控股加成');
+
+    push(CONFIG.holdingThresholds[0]);
+    h = holdingTier(p);
+    assert(h.tier === 1 && h.names[0] === CONFIG.holdingNames[0], `≥${CONFIG.holdingThresholds[0]} 家应为综合经营`);
+    assert(Math.abs(h.rentMult - CONFIG.holdingRentMultPerTier) < 1e-9, '1 档收租 ×1.05');
+
+    push(CONFIG.holdingThresholds[1] - CONFIG.holdingThresholds[0]);
+    h = holdingTier(p);
+    assert(h.tier === 2, `≥${CONFIG.holdingThresholds[1]} 家应为第 2 档`);
+    assert(Math.abs(h.rentMult - CONFIG.holdingRentMultPerTier ** 2) < 1e-9, '2 档收租应叠乘 ×1.1025');
+    assert(Math.abs(h.upgradeCostMult - CONFIG.holdingUpgradeCostMult) < 1e-9, '2 档应有升级费折扣');
+    assert(h.roundBonus === 0, '2 档不应有每圈补贴');
+
+    push(CONFIG.holdingThresholds[2] - CONFIG.holdingThresholds[1]);
+    h = holdingTier(p);
+    assert(h.tier === 3, `≥${CONFIG.holdingThresholds[2]} 家应为第 3 档`);
+    assert(Math.abs(h.rentMult - CONFIG.holdingRentMultPerTier ** 3) < 1e-9, '3 档收租应叠乘 ×1.157625');
+    assert(h.roundBonus === CONFIG.holdingRoundBonus, '3 档应有每圈补贴');
+    assert(Math.abs(h.loanRateMult - CONFIG.holdingLoanRateMult) < 1e-9, '3 档应有贷款利率折扣');
+
+    // 全局收租乘数确实进入 buffMultiplierFor ——
+    // 用一个只持有 6 家券商的干净玩家（bank 计数为 0，无纵深/精耕干扰）
+    const q = state.players[1];
+    q.careerId = 'ib';
+    q.career = 'ib';
+    const brokerClean = GROUP_CELLS.broker.filter((i) => !BOARD_CELLS[i].regulator);
+    for (let i = 0; i < CONFIG.holdingThresholds[0]; i++) {
+      q.institutions.push({ cellIndex: brokerClean[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    const qEmp = playerEmpireEffects(state, q);
+    assert(qEmp.holding.tier === 1, '干净玩家 6 家应为控股第 1 档');
+    assert(Math.abs(buffMultiplierFor(q, 'bank', state) - qEmp.rentMult) < 1e-9,
+      '控股收租乘数应体现在 buffMultiplierFor');
+
+    // 升级费：控股 ≥10 家的折扣叠加进 upgradeInstitution 的成本口径
+    const target = p.institutions[0];
+    const cell = BOARD_CELLS[target.cellIndex];
+    target.level = 0;
+    p.upgradePermits[target.cellIndex] = true;
+    p.cash = 100000;
+    const upRes = upgradeInstitution(state, p, target.cellIndex);
+    assert(upRes.ok, `升级失败：${upRes.reason}`);
+    const plainState = makeTestState();
+    const plainP = plainState.players[0];
+    plainP.institutions.push({ cellIndex: target.cellIndex, level: 0, mortgaged: false, mortgageAmount: 0 });
+    plainP.upgradePermits[target.cellIndex] = true;
+    plainP.cash = 100000;
+    const plainUp = upgradeInstitution(plainState, plainP, target.cellIndex);
+    assert(Math.abs(upRes.cost - Math.round(plainUp.cost * CONFIG.holdingUpgradeCostMult)) < 2,
+      `控股升级费应 ×${CONFIG.holdingUpgradeCostMult}：${upRes.cost} vs ${plainUp.cost}`);
+    return `6/10/16 家三档 · 收租 ${CONFIG.holdingRentMultPerTier}^n 叠乘 · 升级费 −${Math.round((1 - CONFIG.holdingUpgradeCostMult) * 100)}%`;
+  });
+
+  check(results, '经营生态：四层乘算链（纵深 × 精耕 × 控股 × 监管）', () => {
+    const state = makeTestState();
+    const p = state.players[0];
+    const bankCells = GROUP_CELLS.bank.filter((i) => !BOARD_CELLS[i].regulator);
+    const brokerCells = GROUP_CELLS.broker.filter((i) => !BOARD_CELLS[i].regulator);
+    // 银行 6 家（纵深满档 ×1.6）+ 等级铺出三层精耕
+    for (let i = 0; i < 6; i++) {
+      p.institutions.push({
+        cellIndex: bankCells[i],
+        level: i === 0 ? CONFIG.groupDepthLandmarkLevel
+          : i === 1 ? CONFIG.groupDepthFlagshipLevel
+          : CONFIG.groupDepthBrandLevel,
+        mortgaged: false, mortgageAmount: 0,
+      });
+    }
+    // 券商 4 家 → 总持有 10 家 → 控股第 2 档
+    for (let i = 0; i < 4; i++) {
+      p.institutions.push({ cellIndex: brokerCells[i], level: 0, mortgaged: false, mortgageAmount: 0 });
+    }
+    const expect = CONFIG.groupBuffRentMult[2]
+      * CONFIG.groupDepthRentMult.brand
+      * CONFIG.groupDepthRentMult.flagship
+      * CONFIG.groupDepthRentMult.landmark
+      * CONFIG.holdingRentMultPerTier ** 2;
+    const actual = buffMultiplierFor(p, 'bank', state);
+    assert(Math.abs(actual - expect) < 1e-9,
+      `四层乘算应为 ${expect.toFixed(4)}，实际 ${actual.toFixed(4)}`);
+    return `纵深 ×1.6 × 精耕 ×${(CONFIG.groupDepthRentMult.brand * CONFIG.groupDepthRentMult.flagship * CONFIG.groupDepthRentMult.landmark).toFixed(3)} × 控股 ×${(CONFIG.holdingRentMultPerTier ** 2).toFixed(4)} = ×${actual.toFixed(3)}`;
   });
 
   /* ---------- 经济平衡：靠收租能赢 ---------- */

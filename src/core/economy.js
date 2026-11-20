@@ -98,26 +98,20 @@ export const CONFIG = {
    *   · 24 家机构 5 级价格合计 ￥213,127、5 级租金合计 ￥22,184
    *     （约为旧「全升级口径」的 149% / 146%）
    *   · 平均起步价（level 0）￥598、平均地标级（level 4）￥6,225
-   *     —— 比旧版「买下即 tier」的平均买入价 ￥3,299 低 82%，
-   *     这是刻意的：买地门槛降低，让玩家能先铺盘再逐级升级。
-   *   · 若沿用 ￥2,800 初始现金 → 可买 **5~6 家 1 星机构**，
-   *     一圈（34 格 ≈ 5 回合/人）就能铺满整个银行段，节奏偏快。
    *
-   * 因此把初始现金下调到「≈ 3~4 家 1 星机构」的水平：
-   *   tight    ￥2,000 —— 开局可买 4~5 家 1 星，需靠租金滚起来
-   *   standard ￥2,400 —— 开局可买 4~5 家 1 星（1 星起步价 ￥260~429）
-   *   loose    ￥3,200 —— 开局可买 1 家 2 星 + 4 家 1 星
+   * ================= 2026-11 调整：统一 ￥5000 =================
+   * 旧版分 tight/standard/loose 三档（2000/2400/3200），意在压低
+   * 开局铺盘速度；实际体验反馈「起步资金太少」，现统一上调至
+   * ￥5000 —— 约可买 8~10 家 1 星机构，开局即可铺开半个集团段，
+   * 贷款 / 债券等融资工具的相对价值也更突出。
    *
-   * 预期回合数：34 格一圈，平均每回合前进 7 格（2 骰 × 均值 3.5），
-   * 单人约 **5 回合 / 圈**；4 人局一圈 ≈ 20 个总回合。
-   * 一次完整对局（20~30 圈）≈ 400~600 个总回合，
-   * 玩家在这段时间里能买下 12~16 家机构并把 4~6 家升到 2~3 级 ——
-   * 与「24 家机构 / 4 家 3 星核心资产」的棋盘规模匹配。
+   * 兼容说明：setup 里的旧存档 cash 字段（tight/standard/loose）
+   * 仍然可解析，但三档取值已统一为 5000，不再产生差异。
    */
   cashLevels: {
-    tight: 2000,
-    standard: 2400,
-    loose: 3200,
+    tight: 5000,
+    standard: 5000,
+    loose: 5000,
   },
 
   // 破产判定阈值
@@ -160,6 +154,42 @@ export const CONFIG = {
   groupBuffRentMult: [1.15, 1.35, 1.6],
   // 各档位名称
   groupBuffNames: ['区域协同', '集团化经营', '生态圈龙头'],
+
+  // ================================================================
+  // 经营生态加成（2026-11 新增）—— 四层**叠乘**的持有增益体系
+  // ================================================================
+  // 旧体系只有「同集团数量 → 租金乘数」一层，单调。
+  // 新体系分四层，全部可叠加（乘算）：
+  //   层 1 集团纵深（数量档）—— 保留原三档（本节上方）；
+  //   层 2 精耕细作（等级档）—— 同集团内**高等级**机构给额外租金乘数；
+  //   层 3 集团特色（风味 buff）—— 每集团一个非租金特色效果；
+  //   层 4 金融控股（总持有档）—— 跨集团总机构数给全局效果。
+  //
+  // ⚠ 制衡：单一集团持仓 ≥4 家会触发「集中度整改」事件（罚款 + 去杠杆），
+  //   深度堆叠并非无代价（见 rules.js settleSpecial case 'risk'）。
+
+  // ---- 层 2 精耕细作（按等级，同集团收租乘数，逐项叠乘）----
+  groupDepthBrandCount: 3,     // 品牌矩阵：同集团 ≥3 家达到支行级(level≥1)
+  groupDepthBrandLevel: 1,     // 品牌矩阵的等级门槛
+  groupDepthFlagshipLevel: 3,  // 金字招牌：拥有总部级(≥3)
+  groupDepthLandmarkLevel: 4,  // 城市地标：拥有地标级(4)
+  groupDepthRentMult: { brand: 1.06, flagship: 1.10, landmark: 1.15 },
+
+  // ---- 层 3 集团特色（同集团 ≥3 家解锁一个风味效果）----
+  groupSpecialUnlock: 3,
+  groupSpecialBankInterestRate: 0.02,     // 吸储网络：每圈现金利息 2%
+  groupSpecialBankInterestCap: 200,       // 吸储网络：单圈利息上限
+  groupSpecialBrokerBullMult: 1.15,       // 自营弹性：牛市该集团收租额外乘数
+  groupSpecialInsurerTrapRelief: 0.25,    // 承保对冲：罚金减免（加法叠加，见 applyTrapCard）
+  groupSpecialAssetMaintenanceMult: 0.80, // 规模经济：该集团维持费折扣
+
+  // ---- 层 4 金融控股（跨集团总持有数，逐档叠乘）----
+  holdingThresholds: [6, 10, 16],
+  holdingNames: ['综合经营', '金融控股集团', '系统重要性机构'],
+  holdingRentMultPerTier: 1.05,  // 每达一档全局收租 ×1.05（叠乘：3 档 ≈ ×1.158）
+  holdingUpgradeCostMult: 0.90,  // ≥10 家：机构升级费折扣
+  holdingRoundBonus: 120,        // ≥16 家：每圈流动性补贴（经过起点时发放）
+  holdingLoanRateMult: 0.90,     // ≥16 家：央行贷款利率折扣
 
   // ===== 维持成本（每圈按持有机构收取）=====
   // ⚠ 这是「破产机制可触发」与「不存在必赢策略」的关键一环。
@@ -399,6 +429,7 @@ export function financialMetrics(player, state) {
 
   const market = state ? state.market : 'normal';
   const regEff = playerRegulatorEffects(state || { players: [] }, player);
+  const empire = playerEmpireEffects(state, player);
 
   for (const inst of (player.institutions || [])) {
     const cell = BOARD_CELLS[inst.cellIndex];
@@ -411,7 +442,10 @@ export function financialMetrics(player, state) {
     if (inst.level > maxLevel) maxLevel = inst.level;
     // 维持成本：所有机构（含已质押）都要付 —— 机构还在你名下就要养
     // 持有人享金稳会 5 折（监管牌照本身免维持费，见 maintenanceCost）
-    maintenance += maintenanceCost(cell, inst.level) * (regEff.maintenanceMult ?? 1);
+    // 资管特色「规模经济」：该集团维持费再打折（经营生态加成，按集团）
+    maintenance += maintenanceCost(cell, inst.level)
+      * (regEff.maintenanceMult ?? 1)
+      * (empire.maintenanceByGroup[cell.group] ?? 1);
 
     if (cell.regulator) {
       regulatorCount += 1;
@@ -424,10 +458,10 @@ export function financialMetrics(player, state) {
       mortgagedValue += assetValue(cell, inst.level, true);
     } else {
       activeCount += 1;
-      // 管理费收入按当前市场周期 + 集团 Buff + 限时状态 + 监管牌照（持有人独享）计算
-      const buff = groupBuffTier(player, cell.group).mult
-        * buffEffectMult(player, 'rentMult')
-        * (regEff.rentMult ?? 1);
+      // 管理费收入按当前市场周期 + 经营生态（纵深×精耕×控股×牛市）+ 限时状态计算
+      // ⚠ buffMultiplierFor 已包含监管牌照 rentMult，此处不可重复乘
+      const buff = buffMultiplierFor(player, cell.group, state)
+        * buffEffectMult(player, 'rentMult');
       rentIncome += calculateRent(cell, inst.level, {
         market,
         eventMult: state ? state.eventMult : 1,
@@ -622,21 +656,204 @@ export function groupBuffTier(player, groupId) {
   };
 }
 
-/** 玩家所有集团的 Buff 汇总 */
+/* ===================================================================
+ * 经营生态加成（四层叠乘）
+ *
+ *   层 1 集团纵深 —— groupBuffTier（数量档，保留）
+ *   层 2 精耕细作 —— groupDepthBuffs（等级档，新增）
+ *   层 3 集团特色 —— groupSpecial（风味效果，新增）
+ *   层 4 金融控股 —— holdingTier（总持有档，新增）
+ *
+ * 租金入口统一走 buffMultiplierFor()：纵深 × 精耕 × 控股 × 券商牛市 × 监管。
+ * 特色效果（利息 / 维持费 / 罚金减免 / 升级费 / 贷款利率）由各自的
+ * 结算点读取 playerEmpireEffects()。
+ * =================================================================== */
+
+/** 四大集团的特色效果定义（≥ groupSpecialUnlock 家解锁） */
+export const GROUP_SPECIALS = {
+  bank: {
+    name: '吸储网络',
+    desc: '每圈经过起点时按现金 2% 收取利息（单圈上限 ￥200）',
+  },
+  broker: {
+    name: '自营弹性',
+    desc: '牛市期间该集团收租额外 ×1.15（熊市不享受，也不倒扣）',
+  },
+  insurer: {
+    name: '承保对冲',
+    desc: '监管陷阱罚金减免 +25%（可与职业/牌照减免叠加，总减免上限 80%）',
+  },
+  asset: {
+    name: '规模经济',
+    desc: '该集团机构每圈维持费 −20%',
+  },
+};
+
+/**
+ * 层 2 精耕细作 —— 同集团内**高等级**机构带来的额外租金乘数（逐项叠乘）。
+ *
+ *   · 品牌矩阵 —— 同集团 ≥3 家达到支行级(level≥1)   ×1.06
+ *   · 金字招牌 —— 同集团拥有总部级(level≥3)          ×1.10
+ *   · 城市地标 —— 同集团拥有地标级(level 4)          ×1.15
+ *
+ * 三项独立判定、可同时生效（6 家全地标 → ×1.06×1.10×1.15 ≈ ×1.34）。
+ * @returns {{items:Array<{id,name,desc,mult}>, mult:number}}
+ */
+export function groupDepthBuffs(player, groupId) {
+  const insts = (player.institutions || []).filter((i) => {
+    const c = BOARD_CELLS[i.cellIndex];
+    return c && c.group === groupId && !c.regulator && !i.mortgaged;
+  });
+  const items = [];
+  let mult = 1;
+  const branched = insts.filter((i) => i.level >= CONFIG.groupDepthBrandLevel).length;
+  if (branched >= CONFIG.groupDepthBrandCount) {
+    const m = CONFIG.groupDepthRentMult.brand;
+    items.push({ id: 'brand', name: '品牌矩阵', desc: `${branched} 家达到支行级以上`, mult: m });
+    mult *= m;
+  }
+  if (insts.some((i) => i.level >= CONFIG.groupDepthFlagshipLevel)) {
+    const m = CONFIG.groupDepthRentMult.flagship;
+    items.push({ id: 'flagship', name: '金字招牌', desc: '拥有总部级机构', mult: m });
+    mult *= m;
+  }
+  if (insts.some((i) => i.level >= CONFIG.groupDepthLandmarkLevel)) {
+    const m = CONFIG.groupDepthRentMult.landmark;
+    items.push({ id: 'landmark', name: '城市地标', desc: '拥有地标级机构', mult: m });
+    mult *= m;
+  }
+  return { items, mult };
+}
+
+/**
+ * 层 3 集团特色 —— 同集团 ≥3 家解锁一个**非租金**风味效果。
+ * @returns {{active:boolean, unlocked:boolean, name:string|null, desc:string|null, count:number}}
+ */
+export function groupSpecial(player, groupId) {
+  const meta = GROUP_SPECIALS[groupId] || null;
+  const count = (player.institutions || [])
+    .filter((i) => {
+      const c = BOARD_CELLS[i.cellIndex];
+      return c && c.group === groupId && !c.regulator && !i.mortgaged;
+    }).length;
+  const active = !!meta && count >= CONFIG.groupSpecialUnlock;
+  return {
+    active,
+    unlocked: active,
+    // name 无论是否解锁都返回（供总览面板展示特色名）；解锁状态看 active/unlocked
+    name: meta ? meta.name : null,
+    desc: meta ? meta.desc : null,
+    count,
+  };
+}
+
+/**
+ * 层 4 金融控股 —— 跨集团**总持有机构数**（非监管、未质押）达阈值给全局效果。
+ *
+ *   6 家  「综合经营」         全局收租 ×1.05
+ *   10 家 「金融控股集团」     收租再 ×1.05（累计 ×1.1025）+ 升级费 −10%
+ *   16 家 「系统重要性机构」   收租再 ×1.05（累计 ×1.158）+ 每圈补贴 ￥120 + 贷款利率 9 折
+ *
+ * @returns {{tier:number, count:number, names:string[], rentMult:number,
+ *            upgradeCostMult:number, roundBonus:number, loanRateMult:number}}
+ */
+export function holdingTier(player) {
+  const count = (player.institutions || [])
+    .filter((i) => {
+      const c = BOARD_CELLS[i.cellIndex];
+      return c && !c.regulator && !i.mortgaged;
+    }).length;
+  let tier = 0;
+  CONFIG.holdingThresholds.forEach((th, i) => { if (count >= th) tier = i + 1; });
+
+  let rentMult = 1;
+  for (let t = 1; t <= tier; t++) rentMult *= CONFIG.holdingRentMultPerTier;
+
+  const names = tier > 0 ? CONFIG.holdingNames.slice(0, tier) : [];
+  return {
+    tier,
+    count,
+    names,
+    rentMult,
+    upgradeCostMult: tier >= 2 ? CONFIG.holdingUpgradeCostMult : 1,
+    roundBonus: tier >= 3 ? CONFIG.holdingRoundBonus : 0,
+    loanRateMult: tier >= 3 ? CONFIG.holdingLoanRateMult : 1,
+  };
+}
+
+/** 玩家所有集团的 Buff 汇总（纵深 + 精耕 + 特色，供 HUD / 详情面板展示） */
 export function allGroupBuffs(player) {
   const out = {};
   for (const g of ['bank', 'broker', 'insurer', 'asset']) {
-    out[g] = groupBuffTier(player, g);
+    const tier = groupBuffTier(player, g);
+    out[g] = {
+      ...tier,
+      depth: groupDepthBuffs(player, g),
+      special: groupSpecial(player, g),
+    };
   }
   return out;
 }
 
 /**
+ * 玩家的「经营生态」全局效果汇总（层 3 特色 + 层 4 控股）。
+ *
+ * 与 playerRegulatorEffects（监管牌照效果）平行的体系；
+ * 各结算点（维持费 / 升级费 / 罚金 / 贷款利率 / 每圈补贴）按需读取。
+ * 租金侧统一由 buffMultiplierFor 组装。
+ */
+export function playerEmpireEffects(state, player) {
+  const holding = holdingTier(player);
+  const bankSpecial = groupSpecial(player, 'bank');
+  const brokerSpecial = groupSpecial(player, 'broker');
+  const insurerSpecial = groupSpecial(player, 'insurer');
+  const assetSpecial = groupSpecial(player, 'asset');
+  void state; // 预留：未来可能按行情/圈数微调生态效果
+  return {
+    holding,
+    // 全局收租乘数（控股档）
+    rentMult: holding.rentMult,
+    // 升级费折扣（控股 ≥10 家）
+    upgradeCostMult: holding.upgradeCostMult,
+    // 每圈流动性补贴（控股 ≥16 家）
+    roundBonus: holding.roundBonus,
+    // 央行贷款利率折扣（控股 ≥16 家）
+    loanRateMult: holding.loanRateMult,
+    // 监管罚金减免（保险特色「承保对冲」；与其他来源加法叠加，见 applyTrapCard）
+    trapRelief: insurerSpecial.active ? CONFIG.groupSpecialInsurerTrapRelief : 0,
+    // 券商特色「自营弹性」：牛市额外收租乘数（仅 broker 组，由 buffMultiplierFor 消费）
+    brokerBullRentMult: brokerSpecial.active ? CONFIG.groupSpecialBrokerBullMult : 1,
+    // 银行特色「吸储网络」：每圈现金利息（经过起点时发放）
+    bankInterest: bankSpecial.active
+      ? {
+        active: true,
+        rate: CONFIG.groupSpecialBankInterestRate,
+        cap: CONFIG.groupSpecialBankInterestCap,
+      }
+      : { active: false, rate: 0, cap: 0 },
+    // 资管特色「规模经济」：按集团的维持费折扣（{group: mult}）
+    maintenanceByGroup: assetSpecial.active
+      ? { asset: CONFIG.groupSpecialAssetMaintenanceMult }
+      : {},
+  };
+}
+
+/**
  * 玩家在指定集团上应享受的租金系数（含持有人独享的监管效果）。
+ *
+ * ⚠ 2026-11：从「单一集团档位」升级为**四层叠乘**：
+ *   集团纵深（数量档）× 精耕细作（等级档）× 金融控股（总持有档）
+ *   × 券商「自营弹性」（牛市额外）× 监管牌照（持有人独享）。
  * 持有金融监管总局：自身收租 ×1.25；未持有但他人持有：自身收租 ×0.9。
  */
 export function buffMultiplierFor(player, groupId, state) {
   let mult = groupBuffTier(player, groupId).mult;
+  mult *= groupDepthBuffs(player, groupId).mult;
+  const emp = playerEmpireEffects(state, player);
+  mult *= emp.rentMult;
+  if (groupId === 'broker' && state && state.market === 'bull') {
+    mult *= emp.brokerBullRentMult;
+  }
   const reg = playerRegulatorEffects(state, player);
   if (reg.rentMult) mult *= reg.rentMult;
   return mult;

@@ -40,9 +40,9 @@ export const CAREERS = [
     passive: {
       id: 'underwriting',
       name: '承销定价',
-      desc: '收购机构时价格 -8%（发行费折让）',
+      desc: '收购机构时价格 -12%（发行费折让）',
       hook: 'buyCostMult',
-      effect: { buyCostMult: 0.92 },
+      effect: { buyCostMult: 0.88 },
     },
   },
   {
@@ -54,9 +54,9 @@ export const CAREERS = [
     passive: {
       id: 'risk-buffer',
       name: '风险缓冲',
-      desc: '触发监管陷阱时罚金 -30%',
+      desc: '触发监管陷阱时罚金 -45%',
       hook: 'trapRelief',
-      effect: { trapRelief: 0.30 },
+      effect: { trapRelief: 0.45 },
     },
   },
   {
@@ -68,9 +68,9 @@ export const CAREERS = [
     passive: {
       id: 'actuarial',
       name: '精算费率',
-      desc: '自己收取的管理费 +12%',
+      desc: '自己收取的管理费 +15%',
       hook: 'rentMult',
-      effect: { rentMult: 1.12 },
+      effect: { rentMult: 1.15 },
     },
   },
   {
@@ -82,9 +82,9 @@ export const CAREERS = [
     passive: {
       id: 'model-edge',
       name: '模型优势',
-      desc: '德州扑克中判定牌力时，坏牌判定更保守（更容易跟牌）',
+      desc: '德州扑克中坏牌判定更保守（更容易跟牌）；数据定价模型使管理费 +6%',
       hook: 'pokerFoldBias',
-      effect: { pokerFoldBias: 0.30 },
+      effect: { pokerFoldBias: 0.30, rentMult: 1.06 },
     },
   },
   {
@@ -96,9 +96,9 @@ export const CAREERS = [
     passive: {
       id: 'long-term',
       name: '长期持仓',
-      desc: '机构升级费用 -6%',
+      desc: '机构升级费用 -10%',
       hook: 'upgradeCostMult',
-      effect: { upgradeCostMult: 0.94 },
+      effect: { upgradeCostMult: 0.90 },
     },
   },
   {
@@ -110,9 +110,9 @@ export const CAREERS = [
     passive: {
       id: 'market-timing',
       name: '择时交易',
-      desc: '每圈首次踩到牛市/熊市切换格时额外获得 ￥120 价差收益',
+      desc: '每圈首次踩到牛市/熊市切换格时额外获得 ￥220 价差收益',
       hook: 'marketBonus',
-      effect: { marketBonus: 120 },
+      effect: { marketBonus: 220 },
     },
   },
   {

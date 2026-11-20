@@ -16,6 +16,7 @@ import {
   assetValue, totalAssets, institutionValue, isBankrupt, liquidate, purchasePrice, levelLabel,
   globalRegulatorEffects, playerRegulatorEffects, groupBuffTier, buffMultiplierFor, loanRepayAmount,
   loanInterestPerTurn, loanOutstandingAmount,
+  playerEmpireEffects,
   outstandingLoan, bondRedeemValue, bondMinSubscribers, bondCouponFor,
   buffEffectMult, maintenanceCost, totalMaintenanceCost,
 } from './economy.js';
@@ -1209,9 +1210,10 @@ export function applyEventCard(state, player, card) {
 
 /**
  * 应用陷阱卡效果（监管抽查 / 风险警示）。
- * 罚金减免来源（取最大，不叠加）：
- *   1. 持有「金融稳定委员会」的玩家 —— 减免 50%
- *   2. 「风控总监」职业 —— 减免 30%
+ * 罚金减免来源（2026-11：三来源**加法叠加**，总减免封顶 80%）：
+ *   1. 持有「金融稳定委员会」—— 全免（relief = 1，不受封顶影响）
+ *   2. 「风控总监」职业被动
+ *   3. 保险集团特色「承保对冲」（经营生态层 3）
  *
  * ⚠ P1：`scope === 'self'` 的租金系数不再是**永久**写进
  *   `player.selfRentMult`（那是乘算且永不恢复 —— 一次监管抽查
@@ -1228,10 +1230,16 @@ export function applyTrapCard(state, player, card) {
   const regEff = playerRegulatorEffects(state, player);
   const regRelief = regEff.trapRelief || 0;
   const victimMult = regEff.trapMult ?? 1;
-  // 风控总监职业被动：温和的 30% 罚金缓冲
+  // 风控总监职业被动：温和的罚金缓冲
   const careerRelief = careerEffectValue(player, 'trapRelief');
-  const relief = Math.max(regRelief, careerRelief);
-  const fromCareer = careerRelief > regRelief;
+  // ⚠ 经营生态（2026-11）：保险集团特色「承保对冲」的罚金减免**加法叠加**——
+  //   reg(牌照) + career(职业) + empire(生态) 三来源相加，总减免封顶 80%；
+  //   金稳会「全免」(relief = 1) 仍然一票全免，不被封顶削弱。
+  const empireRelief = playerEmpireEffects(state, player).trapRelief || 0;
+  const relief = regRelief >= 1
+    ? 1
+    : Math.min(0.8, regRelief + careerRelief + empireRelief);
+  const stackedRelief = [regRelief, careerRelief, empireRelief].filter((r) => r > 0);
   if (cash < 0) {
     cash = Math.round(cash * (1 - relief) * victimMult);
   }
@@ -1250,7 +1258,8 @@ export function applyTrapCard(state, player, card) {
   log(state, 'bad',
     `${player.name} 触发「${card.title}」：${card.text}`
     + (relief > 0 && cash < 0
-      ? (fromCareer ? '（风控总监职业已减免 30% 罚金）' : '（金稳会已减免部分罚金）')
+      ? `（减免 ${Math.round(relief * 100)}% 罚金`
+        + (stackedRelief.length > 1 ? ' · 多重减免叠加）' : '）')
       : ''),
     '监管');
   return { cash, relief };
@@ -1373,12 +1382,14 @@ export function takeCentralLoan(state, player, tierId) {
   const tier = CONFIG.loanTiers.find((t) => t.id === tierId);
   if (!tier) return { ok: false, reason: '未知的贷款档位' };
   // 央行牌照：持有人每圈可多贷一次（loanLimitBonus）+ 直营利率折扣
+  // 经营生态：系统重要性机构（控股 ≥16 家）贷款利率再打 9 折（与牌照叠乘）
   const regEff = playerRegulatorEffects(state, player);
+  const empire = playerEmpireEffects(state, player);
   const loanLimit = CONFIG.maxLoansPerRound + (regEff.loanLimitBonus || 0);
   if (player.loanCountThisRound >= loanLimit) {
     return { ok: false, reason: '本圈已申请过贷款' };
   }
-  const rateMult = regEff.loanRateMult ?? 1;
+  const rateMult = (regEff.loanRateMult ?? 1) * (empire.loanRateMult ?? 1);
   const interestPerTurn = loanInterestPerTurn(tier, rateMult);
   const repay = loanRepayAmount(tier.id, rateMult);
   const loan = {
@@ -1787,8 +1798,12 @@ export function upgradeInstitution(state, player, cellIndex, opts = {}) {
   }
 
   const regEff = playerRegulatorEffects(state, player);
-  const baseCost = upgradeCost(cell, inst.level, { regulatorCostMult: regEff.upgradeCostMult });
-  // 路演等限时状态 + 基金经理职业（-6%）可降低扩表成本
+  // 经营生态：金融控股 ≥10 家的升级费折扣，与牌照折扣**叠乘**
+  const empire = playerEmpireEffects(state, player);
+  const baseCost = upgradeCost(cell, inst.level, {
+    regulatorCostMult: regEff.upgradeCostMult * (empire.upgradeCostMult ?? 1),
+  });
+  // 路演等限时状态 + 基金经理职业 + 控股折扣可降低扩表成本
   const cost = Math.round(baseCost * playerCostMult(player, 'upgradeCostMult'));
   if (player.cash < cost) return { ok: false, reason: '现金不足', cost };
 
@@ -1995,10 +2010,12 @@ export function chargeMaintenanceCosts(state, target = null) {
     let due = 0;
     // 金稳会牌照：维持成本 5 折（风险处置基金补贴）
     const maintMult = playerRegulatorEffects(state, p).maintenanceMult ?? 1;
+    // 经营生态：资管集团特色「规模经济」—— 该集团机构维持费再打折（按集团逐家乘）
+    const empireMaint = playerEmpireEffects(state, p).maintenanceByGroup || {};
     for (const inst of insts) {
       const cell = BOARD_CELLS[inst.cellIndex];
       if (!cell) continue;
-      due += maintenanceCost(cell, inst.level);
+      due += maintenanceCost(cell, inst.level) * (empireMaint[cell.group] ?? 1);
     }
     if (due <= 0) continue;
     due = Math.round(due * maintMult);

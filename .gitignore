@@ -32,3 +32,6 @@ design-proposals/tiles-modern/
 
 # 其他编辑器/工具的本地产物
 .trae-html-share-packages/
+
+# WorkBuddy 本地助手数据
+.workbuddy/

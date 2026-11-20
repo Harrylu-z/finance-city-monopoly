@@ -310,48 +310,53 @@ export const SPECIAL = {
 };
 
 /**
- * ==================== 三大转盘 ====================
+ * ==================== 三大翻牌池 ====================
  *
  * 原来 13 个功能特殊格把轨道切得太碎 —— 现在把它们按语义打包成
- * **4 个转盘格**：踩到格子 → 弹大转盘 → 指针旋转 → 停在某个扇区 →
+ * **3 个翻牌格**：踩到格子 → 弹出暗牌 → 亲手翻开一张 → 揭示效果 →
  * 走该效果**原有的结算逻辑**。
+ *
+ * 为什么从「转盘」改成「翻牌」（2026-11）：
+ *   机会池有 8 个候选，挤在圆转盘上扇区极窄、文字看不清；
+ *   翻牌把候选全部收进暗牌，牌面翻开后再展示完整元数据，
+ *   参与感与可读性都更好（洗牌仍用对局随机源，同 seed 可复现）。
  *
  * 每个候选效果带自己的：显示名 / SVG 图标 id / 关键数值读数（big）/
  * 说明文字（lbl）/ 是否陷阱（trap）——
- * 这样转盘扇区和棋盘上的转盘格都能用真实图标与数值表达，而不是抽象文字。
+ * 翻开后的牌面与棋盘格详情都用真实图标与数值表达。
  */
 export const WHEELS = [
   {
-    id: 'risk', label: '风险转盘', cat: 'cost', color: '#c8392b', lt: '#e4604d',
+    id: 'risk', label: '风险翻牌', cat: 'cost', color: '#c8392b', lt: '#e4604d',
     dk: '#8d2419', sign: '付出', icon: 'risk',
-    desc: '三种「代价类」效果随机抽取一个，其中两格是陷阱',
+    desc: '三张暗牌随机翻开一张，其中两张是陷阱',
     outcomes: [
-      { id: 'tax', name: '印花税', icon: 'tax', big: '￥40', lbl: '每份 · 封顶360' },
+      { id: 'tax', name: '印花税', icon: 'tax', big: '￥120+', lbl: '每份￥40 · 封顶360' },
       { id: 'audit', name: '监管抽查', icon: 'audit', big: '处罚', lbl: '罚款/没收', trap: true },
       { id: 'risk', name: '风险警示', icon: 'risk', big: '整改', lbl: '去杠杆 2 回合', trap: true },
     ],
   },
   {
-    id: 'chance', label: '机会转盘', cat: 'gain', color: '#4f9d55', lt: '#7ac77f',
+    id: 'chance', label: '机会翻牌', cat: 'gain', color: '#4f9d55', lt: '#7ac77f',
     dk: '#336b38', sign: '收益', icon: 'chance',
-    desc: '八种效果随机抽取一个：增益、收益与流转',
+    desc: '八张暗牌随机翻开一张：增益、收益与流转',
     outcomes: [
       { id: 'charity', name: '公益捐赠', icon: 'charity', big: '-￥120', lbl: '管理费 +12%' },
       { id: 'roadshow', name: '投资者路演', icon: 'roadshow', big: '+￥80', lbl: '成本 -15%' },
-      { id: 'rating', name: '评级调整', icon: 'rating', big: '±15%', lbl: '管理费 3 回合' },
+      { id: 'rating', name: '评级调整', icon: 'rating', big: '+15/-10%', lbl: '管理费 3 回合' },
       { id: 'commodity', name: '大宗交易', icon: 'commodity', big: '折溢价', lbl: '套保 2 回合' },
       { id: 'refinance', name: '债券发行', icon: 'refinance', big: '债券', lbl: '票息浮动' },
       // 以下三个原属「枢纽转盘」—— 枢纽格随棋盘压缩到 34 格后被取消，
-      // 三个移动类效果并入机会转盘，功能不丢失。
+      // 三个移动类效果并入机会翻牌，功能不丢失。
       { id: 'clearing', name: '清算所', icon: 'clearing', big: '直达', lbl: '结算机构' },
       { id: 'metro', name: '地铁枢纽', icon: 'metro', big: '1/2/3', lbl: '前进格数' },
       { id: 'crossborder', name: '跨境互联', icon: 'crossborder', big: '随机', lbl: '飞往机构' },
     ],
   },
   {
-    id: 'fate', label: '命运转盘', cat: 'random', color: '#8b5cc7', lt: '#b189e0',
+    id: 'fate', label: '命运翻牌', cat: 'random', color: '#8b5cc7', lt: '#b189e0',
     dk: '#5c3a86', sign: '抽取', icon: 'fate',
-    desc: '两种「全局类」效果随机抽取一个：影响的不只是你',
+    desc: '两张暗牌随机翻开一张：影响的不只是你',
     outcomes: [
       { id: 'event', name: '财经快讯', icon: 'event', big: '抽 1', lbl: '财经事件卡' },
       { id: 'market', name: '牛熊切换', icon: 'market', big: '牛↔熊', lbl: '全局租金' },

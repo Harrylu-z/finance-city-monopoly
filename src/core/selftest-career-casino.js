@@ -128,11 +128,12 @@ export function runCareerChecks() {
 
   check(results, '职业乘数读取（缺省返回 1）', () => {
     assert(careerEffectMult({}, 'buyCostMult') === 1, '无职业应返回 1');
-    assert(careerEffectMult({ career: 'ib' }, 'buyCostMult') === 0.92, '投行家应为 0.92');
-    assert(careerEffectMult({ career: 'fund' }, 'upgradeCostMult') === 0.94, '基金经理应为 0.94');
-    assert(careerEffectMult({ career: 'actuary' }, 'rentMult') === 1.12, '精算师应为 1.12');
-    assert(careerEffectMult({ career: 'risk' }, 'trapRelief') === 0.30, '风控总监应为 0.30');
-    return 'buyCostMult 0.92 / upgradeCostMult 0.94 / rentMult 1.12 / trapRelief 0.30';
+    assert(careerEffectMult({ career: 'ib' }, 'buyCostMult') === 0.88, '投行家应为 0.88');
+    assert(careerEffectMult({ career: 'fund' }, 'upgradeCostMult') === 0.90, '基金经理应为 0.90');
+    assert(careerEffectMult({ career: 'actuary' }, 'rentMult') === 1.15, '精算师应为 1.15');
+    assert(careerEffectMult({ career: 'risk' }, 'trapRelief') === 0.45, '风控总监应为 0.45');
+    assert(careerEffectMult({ career: 'quant' }, 'rentMult') === 1.06, '量化研究员定价加成应为 1.06');
+    return 'buyCostMult 0.88 / upgradeCostMult 0.90 / rentMult 1.15 / trapRelief 0.45 / quant 定价 1.06';
   });
 
   check(results, '未知职业 id 安全降级', () => {
@@ -145,7 +146,7 @@ export function runCareerChecks() {
 
   /* ---------- 被动实际生效 ---------- */
 
-  check(results, '被动 · 投行家收购价 -8%', () => {
+  check(results, '被动 · 投行家收购价 -12%', () => {
     // ⚠ 34 格版：tier 恒为 0 —— 改用「星级」挑一个 1 星标的（门槛最低）。
     const cellIdx = BOARD_CELLS.findIndex(
       (c) => c.type === 'institution' && !c.regulator && c.star === 1,
@@ -166,13 +167,13 @@ export function runCareerChecks() {
     const offer = settleOnCell(state, p, cellIdx)
       .find((r) => r.kind === 'purchase-offer');
     assert(offer, '实验组未产生收购要约');
-    assert(offer.price === Math.round(plainOffer.price * 0.92),
-      `收购价 ${offer.price} ≠ ${plainOffer.price}×0.92`);
+    assert(offer.price === Math.round(plainOffer.price * 0.88),
+      `收购价 ${offer.price} ≠ ${plainOffer.price}×0.88`);
     assert(offer.price < plainOffer.price, '投行家未享受折价');
-    return `￥${offer.price}（对照 ￥${plainOffer.price} × 0.92）`;
+    return `￥${offer.price}（对照 ￥${plainOffer.price} × 0.88）`;
   });
 
-  check(results, '被动 · 基金经理升级费 -6%', () => {
+  check(results, '被动 · 基金经理升级费 -10%', () => {
     const state = makeCasinoState();
     const p = state.players[0];
     p.career = 'fund';
@@ -198,24 +199,24 @@ export function runCareerChecks() {
     q.cash = 20000;
     const res2 = upgradeInstitution(plain, q, cellIdx);
     assert(res2.ok, '对照组升级失败');
-    assert(res.cost === Math.round(res2.cost * 0.94),
-      `升级费 ${res.cost} ≠ ${res2.cost}×0.94`);
-    return `￥${res.cost}（对照 ￥${res2.cost} × 0.94）`;
+    assert(res.cost === Math.round(res2.cost * 0.90),
+      `升级费 ${res.cost} ≠ ${res2.cost}×0.90`);
+    return `￥${res.cost}（对照 ￥${res2.cost} × 0.90）`;
   });
 
-  check(results, '被动 · 风控总监罚金 -30%', () => {
+  check(results, '被动 · 风控总监罚金 -45%', () => {
     const state = makeCasinoState();
     const p = state.players[1];
     p.career = 'risk';
     p.careerId = 'risk';
     const card = { id: 't', title: '测试罚单', text: '测试', effect: { cash: -200 } };
     const res = applyTrapCard(state, p, card);
-    assert(res.cash === -140, `罚金 ${res.cash} ≠ -140（-200×0.7）`);
-    assert(p.cash === CONFIG.cashLevels.standard - 140, '现金结算错误');
-    return `罚金 -200 → ${res.cash}（减免 30%）`;
+    assert(res.cash === -110, `罚金 ${res.cash} ≠ -110（-200×0.55）`);
+    assert(p.cash === CONFIG.cashLevels.standard - 110, '现金结算错误');
+    return `罚金 -200 → ${res.cash}（减免 45%）`;
   });
 
-  check(results, '被动 · 精算师租金 +12%', () => {
+  check(results, '被动 · 精算师租金 +15%', () => {
     const state = makeCasinoState();
     const owner = state.players[2];
     owner.career = 'actuary';
@@ -237,10 +238,10 @@ export function runCareerChecks() {
     const base = Math.round(cell.rent[2]
       * CONFIG.levelRentMult[2]
       * CONFIG.groupRentMult[cell.group]);
-    assert(rentRes.rent === Math.round(base * 1.12),
-      `租金 ${rentRes.rent} ≠ ${Math.round(base * 1.12)}`);
+    assert(rentRes.rent === Math.round(base * 1.15),
+      `租金 ${rentRes.rent} ≠ ${Math.round(base * 1.15)}`);
     assert(before - payer.cash === rentRes.rent, '扣款额与租金不一致');
-    return `租金 ￥${rentRes.rent}（基础 ￥${cell.rent[2]} × 等级 ${CONFIG.levelRentMult[2]} × 集团 ${CONFIG.groupRentMult[cell.group]} = ￥${base}，再 × 职业 1.12）`;
+    return `租金 ￥${rentRes.rent}（基础 ￥${cell.rent[2]} × 等级 ${CONFIG.levelRentMult[2]} × 集团 ${CONFIG.groupRentMult[cell.group]} = ￥${base}，再 × 职业 1.15）`;
   });
 
   check(results, '被动 · 交易员择时价差收益', () => {
@@ -259,13 +260,13 @@ export function runCareerChecks() {
     const res = settleOnCell(state, p, cellIdx);
     const bonus = res.find((r) => r.kind === 'bonus');
     assert(bonus, '未产生价差收益');
-    assert(bonus.amount === 120, `金额 ${bonus.amount} ≠ 120`);
-    assert(p.cash === before + 120, '现金未增加 ￥120');
+    assert(bonus.amount === 220, `金额 ${bonus.amount} ≠ 220`);
+    assert(p.cash === before + 220, '现金未增加 ￥220');
     // 同圈再踩一次不应重复发放
     state.pending = { kind: 'wheel', wheelPick: 'market', playerId: p.id };
     const res2 = settleOnCell(state, p, cellIdx);
     assert(!res2.find((r) => r.kind === 'bonus'), '同圈重复发放了价差收益');
-    return '￥120 / 圈，且同圈不重复';
+    return '￥220 / 圈，且同圈不重复';
   });
 
   check(results, 'AI 职业分配稳定且不重复', () => {
@@ -602,6 +603,53 @@ export function runCasinoChecks() {
     const cashAfter = game.seats[0].stack;
     assert(cashAfter >= 0, '非法动作后筹码不得为负');
     return `${rejected.length} 种非法金额全部被拒绝 · 筹码保持 ￥${cashAfter}`;
+  });
+
+  check(results, '翻牌后可以加注（回归：streetBet 与累计 bet 解耦）', () => {
+    const game = createPokerGame({
+      players: [
+        { id: 0, name: 'A', cash: 1000 },
+        { id: 1, name: 'B', cash: 1000 },
+        { id: 2, name: 'C', cash: 1000 },
+      ],
+      seed: 'flop-raise',
+    });
+    // —— 翻牌前：所有人只跟平 / 过牌，推进到翻牌圈 ——
+    let guard = 0;
+    while (game.street === 'preflop' && guard++ < 60) {
+      const idx = currentActor(game);
+      if (idx < 0) break;
+      const acts = legalActions(game);
+      const pick = acts.find((a) => a.type === 'call') || acts.find((a) => a.type === 'check');
+      const r = applyAction(game, idx, pick || { type: 'fold' });
+      assert(r.ok, `翻牌前动作失败：${r.reason || '?'}`);
+    }
+    assert(game.street === 'flop', `未进入翻牌圈（当前 ${game.street}）`);
+    // —— 翻牌圈：第一个行动者必须拿到「加注」选项（旧版会消失）——
+    const idx = currentActor(game);
+    assert(idx >= 0, '翻牌圈无可行动者');
+    const acts = legalActions(game);
+    const raiseAct = acts.find((a) => a.type === 'raise');
+    assert(raiseAct, '翻牌后没有加注选项（回归失败：minRaiseTo 误用累计 bet）');
+    assert(raiseAct.min > 0 && raiseAct.max >= raiseAct.min, '加注区间非法');
+    // —— 执行最小加注：必须成功且抬高 currentBet ——
+    const seat = game.seats[idx];
+    const r = applyAction(game, idx, { type: 'raise', amount: raiseAct.min });
+    assert(r.ok, `翻牌圈加注被拒绝：${r.reason}`);
+    assert(game.currentBet === seat.streetBet, 'currentBet 未同步到本街注额');
+    assert(game.currentBet > 0, 'currentBet 未被加注抬高');
+    // —— 其余玩家跟平后，街道应正常推进到转牌（不卡死）——
+    guard = 0;
+    while (game.street === 'flop' && guard++ < 60) {
+      const i = currentActor(game);
+      if (i < 0) break;
+      const a = legalActions(game);
+      const pick = a.find((x) => x.type === 'call') || a.find((x) => x.type === 'check');
+      const rr = applyAction(game, i, pick || { type: 'fold' });
+      assert(rr.ok, `翻牌圈跟平失败：${rr.reason}`);
+    }
+    assert(game.street === 'turn', `翻牌圈未推进到转牌（当前 ${game.street}）`);
+    return `翻牌圈最小加注 ￥${raiseAct.min} 成功 · 街道正常推进到转牌`;
   });
 
   check(results, '结算守恒：全桌现金净额之和为 0（不凭空造钱）', () => {
@@ -1004,16 +1052,16 @@ export function runCasinoChecks() {
     const before = p.cash;
     const r1 = grantMarketTimingBonus(state, p);
     assert(r1, '行情切换时应发放择时价差收益');
-    assert(p.cash === before + 120, `应加 ￥120，实际 ${p.cash - before}`);
+    assert(p.cash === before + 220, `应加 ￥220，实际 ${p.cash - before}`);
     // 同一圈内不得重复发放
     const r2 = grantMarketTimingBonus(state, p);
     assert(!r2, '同一圈内不得重复发放择时奖励');
-    assert(p.cash === before + 120, '重复调用不得改变现金');
+    assert(p.cash === before + 220, '重复调用不得改变现金');
     // 圈号推进后允许再次发放
     p.laps = (p.laps || 0) + 1;
     const r3 = grantMarketTimingBonus(state, p);
     assert(r3, '圈号推进后应允许再次发放');
-    assert(p.cash === before + 240, `应累计 ￥240，实际 ${p.cash - before}`);
+    assert(p.cash === before + 440, `应累计 ￥440，实际 ${p.cash - before}`);
     // 非交易员不得发放
     const state2 = makeCasinoState();
     const p2 = state2.players[0];
@@ -1023,7 +1071,7 @@ export function runCasinoChecks() {
     const r4 = grantMarketTimingBonus(state2, p2);
     assert(!r4, '非交易员不应发放择时奖励');
     assert(p2.cash === b2, '非交易员现金不得变动');
-    return '交易员行情切换 +￥120 · 每圈一次 · 非交易员不发';
+    return '交易员行情切换 +￥220 · 每圈一次 · 非交易员不发';
   });
 
   return results;

@@ -6,7 +6,8 @@ import { PLAYER_COLORS, PALETTE } from '../core/palette.js';
 import { getAvatarIcon } from '../art/avatars.js';
 import {
   totalAssets, financialMetrics, levelLabel, allGroupBuffs,
-  groupBuffTier, outstandingLoan, bondRedeemValue,
+  groupBuffTier, outstandingLoan, bondRedeemValue, holdingTier,
+  calculateRent, buffMultiplierFor, buffEffectMult,
 } from '../core/economy.js';
 import { institutionCount } from '../core/rules.js';
 import { GROUP_META } from '../core/board.js';
@@ -405,13 +406,14 @@ export function drawKline(canvas, state, elapsed) {
 /* ===================================================================
  * 左侧 Tab 面板 —— 玩家关键信息
  *
- * 五个 tab：我的机构 / Buff / 贷款 / 债券 / 净值
+ * 六个 tab：我的机构 / Buff / 贷款 / 债券 / 净值 / 资金流水
  * 数据全部取自 `state`（与 openPlayerDetail / 排行面板同一数据源）：
  *   · 我的机构 —— state.board[cellIndex] + player.institutions
  *   · Buff      —— player.buffs + allGroupBuffs(player)（集团牌照加成）
  *   · 贷款      —— player.loans（央行贷款）
  *   · 债券      —— player.bonds（发行）+ player.subscribedBonds（持有）
  *   · 净值      —— financialMetrics(player, state)
+ *   · 资金流水 —— player.cashFlow / player.cashFlowNet（**独立 tab**）
  * =================================================================== */
 
 /** 数字格式化（千分位） */
@@ -459,32 +461,44 @@ function tabEmpty(text) {
 }
 
 /**
- * 渲染「我的机构」tab —— 上半段：持有机构 / 等级 / 管理费。
+ * 渲染「我的机构」tab —— 持有机构 / 等级 / 管理费。
  *
- * ⚠️ 本函数**只负责上半段**。下半段的「资金流水」由 renderTabCashFlow()
- * 单独渲染 —— 两者共用同一个 tabpanel 容器，靠上下两段结构分隔
- * （见 .tab-split-top / .tab-split-bottom）。
+ * ⚠️ 本 tab **只负责机构信息**。「资金流水」已拆成独立 tab，
+ *    由 renderTabCashFlow() 渲染到 #tab-panel-cashflow。
  *
- * @param {HTMLElement} top  上半段容器（由调用方创建，避免与下半段互相清空）
+ * @param {HTMLElement} el  我的机构 tabpanel 元素
  */
-export function renderTabInstitutions(top, player, state) {
-  top.replaceChildren();
-  if (!player) { top.appendChild(tabEmpty('暂无数据')); return; }
+export function renderTabInstitutions(el, player, state) {
+  el.replaceChildren();
+  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
 
   const insts = (player.institutions || []).slice()
     .sort((a, b) => a.cellIndex - b.cellIndex);
 
   if (!insts.length) {
-    top.appendChild(tabEmpty('尚未持有任何机构\n买下即成为网点级资产'));
+    el.appendChild(tabEmpty('尚未持有任何机构\n买下即成为网点级资产'));
   } else {
+    // ⚠ 租金展示必须与后台实际收租**同口径**（2026-11 一致性修复）：
+    //   calculateRent（基础 × 等级系数 × 行情 × 事件）
+    //   × buffMultiplierFor（纵深×精耕×控股×牛市特色×监管牌照）
+    //   × buffEffectMult('rentMult')（限时 buff：评级/公益/去杠杆/套保…）
+    //   —— 与 rules.js 交租结算、financialMetrics.rentIncome 完全一致。
+    //   旧实现直接显示裸 cell.rent[level]，与实际到手的租金严重不符。
+    const buffMultFor = (group) => buffMultiplierFor(player, group, state)
+      * buffEffectMult(player, 'rentMult');
+    const effectiveRent = (cell, lv) => calculateRent(cell, lv, {
+      market: state.market,
+      eventMult: state.eventMult ?? 1,
+      buffMult: buffMultFor(cell.group),
+    });
+
     const totalRent = insts.reduce((s, i) => {
       const cell = state.board[i.cellIndex];
       if (!cell || i.mortgaged) return s;
-      const rent = Array.isArray(cell.rent) ? (cell.rent[i.level] ?? cell.rent[0] ?? 0) : (cell.rent || 0);
-      return s + rent;
+      return s + effectiveRent(cell, i.level);
     }, 0);
 
-    top.appendChild(tabSection('持有机构', `${insts.length} 家`));
+    el.appendChild(tabSection('持有机构', `${insts.length} 家`));
 
     for (const inst of insts) {
       const cell = state.board[inst.cellIndex];
@@ -516,36 +530,37 @@ export function renderTabInstitutions(top, player, state) {
         flag.title = '已质押 —— 暂停产生管理费';
         row.appendChild(flag);
       } else {
-        const rent = Array.isArray(cell.rent)
-          ? (cell.rent[inst.level] ?? cell.rent[0] ?? 0)
-          : (cell.rent || 0);
+        const rent = effectiveRent(cell, inst.level);
         const rv = document.createElement('span');
         rv.className = 'tab-inst-rent';
         rv.textContent = `￥${fmtNum(rent)}`;
-        rv.title = `每回合管理费 ￥${fmtNum(rent)}`;
+        rv.title = `当前每圈管理费 ￥${fmtNum(rent)}（含行情 / 集团生态 / 限时状态加成）`;
         row.appendChild(rv);
       }
 
-      top.appendChild(row);
+      el.appendChild(row);
     }
 
-    top.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
+    el.appendChild(tabSection('每圈管理费收入', `￥${fmtNum(totalRent)}`));
   }
 }
 
 /**
- * 渲染「我的机构」tab 下半段 —— **本玩家**的资金流水。
+ * 渲染「资金流水」tab —— **本玩家**的资金流水。
  *
  * 只展示玩家自己的账本（player.cashFlow），不含 AI 的流水。
  * 条目包含：回合数 / 金额（+ 收入 − 支出）/ 事由 / 分类标签。
  * 新的在最上面，最多展示 CASHFLOW_SHOW_MAX 条，超出部分可滚动查看。
  *
- * @param {HTMLElement} bottom 下半段容器（由调用方创建）
+ * ⚠️ 本 tab 已经是**独立面板**（#tab-panel-cashflow），
+ *    不再与「我的机构」共用容器、也不再有上下拆分结构。
+ *
+ * @param {HTMLElement} el 资金流水 tabpanel 元素
  */
 const CASHFLOW_SHOW_MAX = 30;
 
-export function renderTabCashFlow(bottom, player, state) {
-  bottom.replaceChildren();
+export function renderTabCashFlow(el, player, state) {
+  el.replaceChildren();
   if (!player) return;
 
   const flows = (player.cashFlow || []).slice(-CASHFLOW_SHOW_MAX).reverse();
@@ -554,19 +569,19 @@ export function renderTabCashFlow(bottom, player, state) {
   // ⚠️ 用 player.cashFlowNet（独立累加），不能从流水条目反推 ——
   //    条目列表只保留最近 N 条，早期条目已被丢弃。
   const net = player.cashFlowNet || 0;
-  bottom.appendChild(tabSection('资金流水', flows.length ? `${flows.length} 条` : '无'));
-  bottom.appendChild(tabRow(
+  el.appendChild(tabSection('资金流水', flows.length ? `${flows.length} 条` : '无'));
+  el.appendChild(tabRow(
     '累计净额',
     `${net >= 0 ? '+' : '−'}￥${fmtNum(Math.abs(net))}`,
     net > 0 ? 'is-green' : (net < 0 ? 'is-red' : 'is-dim'),
   ));
 
   if (!flows.length) {
-    bottom.appendChild(tabEmpty('暂无资金流水\n交租、买入、收租等收支都会记在这里'));
+    el.appendChild(tabEmpty('暂无资金流水\n交租、买入、收租等收支都会记在这里'));
     return;
   }
 
-  // 流水列表 —— 单独滚动，避免把上半段的机构列表顶出视野
+  // 流水列表 —— 独立滚动（新 tab 有完整高度，不用再给机构列表让位）
   const list = document.createElement('div');
   list.className = 'cf-list';
 
@@ -594,7 +609,7 @@ export function renderTabCashFlow(bottom, player, state) {
     list.appendChild(row);
   }
 
-  bottom.appendChild(list);
+  el.appendChild(list);
 }
 
 /**
@@ -642,21 +657,71 @@ export function renderTabBuffs(el, player, state) {
     }
   }
 
-  // ===== 集团牌照加成（持有同集团机构数越多，租金越高）=====
+  // ===== 经营生态加成（四层叠乘：纵深 × 精耕 × 特色 × 控股）=====
   const gb = allGroupBuffs(player);
-  const keys = Object.keys(gb);
-  const anyTier = keys.some((k) => (gb[k].tier || 0) > 0);
-  el.appendChild(tabSection('集团牌照加成', anyTier ? '' : '未触发'));
-  if (!anyTier) {
-    el.appendChild(tabEmpty('持有同集团机构可提升该集团管理费'));
+  /** 乘数展示：去掉多余的尾零（×1.15 / ×1.335） */
+  const fmtMult = (m) => `×${Number(Number(m).toFixed(3))}`;
+  const anyActive = Object.keys(gb).some((k) => {
+    const g = gb[k];
+    return (g.tier || 0) > 0 || (g.depth?.mult || 1) > 1 || g.special?.active;
+  });
+
+  // 「生态总览」入口 —— 派发 DOM 事件，由 main.js 打开 showBuffPanel
+  // （hud.js 不直接 import dialogs.js，保持展示层单向依赖）
+  const overviewBtn = document.createElement('button');
+  overviewBtn.className = 'tab-eco-btn';
+  overviewBtn.type = 'button';
+  overviewBtn.textContent = '查看生态总览 ≫';
+  overviewBtn.title = '打开经营生态四层加成总览';
+  overviewBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('open-buff-panel'));
+  });
+
+  el.appendChild(tabSection('经营生态加成', anyActive ? '' : '未触发'));
+  el.appendChild(overviewBtn);
+  if (!anyActive) {
+    el.appendChild(tabEmpty('同类机构 ≥2 家 → 集团纵深\n升级机构 → 精耕加成\n总控股 ≥6 家 → 金融控股\n全部叠乘'));
   } else {
-    for (const k of keys) {
+    for (const k of Object.keys(gb)) {
       const g = gb[k];
-      if (!g || (g.tier || 0) <= 0) continue;
       const meta = GROUP_META[k];
       const label = (meta && meta.name) || k;
-      const mult = g.mult != null ? `×${g.mult}` : `T${g.tier}`;
-      el.appendChild(tabRow(`${label} · ${g.count || 0} 家`, mult, 'is-green'));
+      if ((g.count || 0) <= 0) continue;
+      // 该集团租金合计 = 纵深（数量档）× 精耕（等级档）
+      const groupMult = (g.mult || 1) * (g.depth?.mult || 1);
+      const bits = [];
+      if (g.tier > 0) bits.push(g.name);
+      for (const d of (g.depth?.items || [])) bits.push(d.name);
+      el.appendChild(tabRow(
+        `${label} · ${g.count} 家`,
+        fmtMult(groupMult),
+        groupMult > 1 ? 'is-green' : 'is-dim',
+      ));
+      if (bits.length) {
+        el.appendChild(tabRow(`└ ${bits.join(' / ')}`, '', 'is-dim'));
+      }
+      if (g.special?.active) {
+        el.appendChild(tabRow(`└ ${g.special.name}`, '已解锁', 'is-green'));
+      }
+    }
+    // 层 4 金融控股（跨集团总持有）
+    const holding = holdingTier(player);
+    if (holding.tier > 0) {
+      el.appendChild(tabSection('金融控股', `${holding.count} 家`));
+      el.appendChild(tabRow(
+        holding.names.join(' / '),
+        `收租 ${fmtMult(holding.rentMult)}`,
+        'is-green',
+      ));
+      if (holding.upgradeCostMult < 1) {
+        el.appendChild(tabRow('└ 升级费', `−${Math.round((1 - holding.upgradeCostMult) * 100)}%`, 'is-green'));
+      }
+      if (holding.roundBonus > 0) {
+        el.appendChild(tabRow('└ 每圈补贴', `￥${holding.roundBonus}`, 'is-green'));
+      }
+      if (holding.loanRateMult < 1) {
+        el.appendChild(tabRow('└ 贷款利率', `${(holding.loanRateMult * 10).toFixed(1).replace(/\.0$/, '')} 折`, 'is-green'));
+      }
     }
   }}
 
@@ -790,28 +855,18 @@ export function renderTabNetWorth(el, player, state) {
 
 /**
  * 渲染全部 tab 面板。
- * @param {object} els  {inst, buff, loan, bond, net} 各 tabpanel 元素
+ * @param {object} els  {inst, buff, loan, bond, net, cashflow} 各 tabpanel 元素
  */
 export function renderTabPanels(els, player, state) {
   if (!els || !player || !state) return;
 
-  // ===== 「我的机构」tab：上下拆分 =====
-  //   上半段 = 持有机构（机构名 / 等级 / 每圈管理费）
-  //   下半段 = 资金流水（**本玩家**的收支流水，新的在上）
-  // 拆成两段而不是两个 tab，是为了不占用宝贵的横向 tab 位（现在有 5 个 tab）。
-  const inst = els.inst;
-  inst.replaceChildren();
-  const top = document.createElement('div');
-  top.className = 'tab-split-top';
-  const bottom = document.createElement('div');
-  bottom.className = 'tab-split-bottom';
-  inst.appendChild(top);
-  inst.appendChild(bottom);
-  renderTabInstitutions(top, player, state);
-  renderTabCashFlow(bottom, player, state);
-
+  // ===== 各 tab 独立渲染 =====
+  //   「我的机构」= 持有机构（机构名 / 等级 / 每圈管理费）
+  //   「资金流水」= **本玩家**的收支流水（新的在上）—— 独立 tab，不再挤在机构 tab 里
+  renderTabInstitutions(els.inst, player, state);
   renderTabBuffs(els.buff, player, state);
   renderTabLoans(els.loan, player, state);
   renderTabBonds(els.bond, player, state);
   renderTabNetWorth(els.net, player, state);
+  renderTabCashFlow(els.cashflow, player, state);
 }

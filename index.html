@@ -124,6 +124,8 @@
                     aria-controls="tab-panel-bond" aria-selected="false" data-tab="bond" tabindex="-1">债券</button>
             <button class="tab-btn" role="tab" id="tab-btn-net"
                     aria-controls="tab-panel-net" aria-selected="false" data-tab="net" tabindex="-1">净值</button>
+            <button class="tab-btn" role="tab" id="tab-btn-cashflow"
+                    aria-controls="tab-panel-cashflow" aria-selected="false" data-tab="cashflow" tabindex="-1">资金流水</button>
           </div>
           <div class="tab-panels">
             <div id="tab-panel-inst" class="tab-panel" role="tabpanel"
@@ -136,6 +138,9 @@
                  aria-labelledby="tab-btn-bond" tabindex="0" hidden></div>
             <div id="tab-panel-net" class="tab-panel" role="tabpanel"
                  aria-labelledby="tab-btn-net" tabindex="0" hidden></div>
+            <!-- 「资金流水」独立 tab —— 不再与「我的机构」挤在同一个 tabpanel 里 -->
+            <div id="tab-panel-cashflow" class="tab-panel" role="tabpanel"
+                 aria-labelledby="tab-btn-cashflow" tabindex="0" hidden></div>
           </div>
         </div>
 

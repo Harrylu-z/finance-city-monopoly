@@ -7,6 +7,7 @@ import {
   CONFIG, calculateRent, upgradeCost, mortgageValue, redeemFee,
   totalAssets, levelLabel, allGroupBuffs, globalRegulatorEffects, playerRegulatorEffects,
   groupBuffTier, outstandingLoan, bondRedeemValue, bondCouponFor, financialMetrics,
+  playerEmpireEffects,
 } from '../core/economy.js';
 import {
   createState, log, currentPlayer, computeMove, computeTeleportSteps,
@@ -209,9 +210,9 @@ class Game {
       // 左上：当前玩家紧凑单条
       'active-player-card', 'active-avatar', 'active-player-name',
       'active-player-cash', 'active-player-sub', 'active-status',
-      // 左侧：Tab 面板（我的机构 / Buff / 贷款 / 债券 / 净值）
+      // 左侧：Tab 面板（我的机构 / Buff / 贷款 / 债券 / 净值 / 资金流水）
       'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-loan',
-      'tab-panel-bond', 'tab-panel-net',
+      'tab-panel-bond', 'tab-panel-net', 'tab-panel-cashflow',
       // 右上：回合徽章 + 按钮
       'hud-round', 'hud-market', 'btn-rank', 'btn-settings',
       // 顶部全宽回合归属条（P1-1）
@@ -305,10 +306,10 @@ class Game {
       { id: '3', label: '3 颗' },
     ], (v) => { this.setup.diceCount = parseInt(v, 10); });
 
+    // 起始资金 2026-11 起统一为 ￥5000，不再分档 ——
+    // 保留单选项以兼容旧存档的 setup.cash 字段（tight/standard/loose 均映射 5000）。
     this.buildSegments('cash-picker', [
-      { id: 'tight', label: '紧巴 ￥2000' },
-      { id: 'standard', label: '标准 ￥2800' },
-      { id: 'loose', label: '宽裕 ￥3600' },
+      { id: 'standard', label: '统一 ￥5000' },
     ], (v) => { this.setup.cash = v; });
 
     this.buildSegments('market-picker', [
@@ -734,6 +735,11 @@ class Game {
     // blur() 防止按钮保持焦点后，空格/回车快捷键误触上次点击的按钮
     this.el['btn-roll'].addEventListener('click', () => { this.el['btn-roll'].blur(); this.handleRoll(); });
     this.el['btn-assets'].addEventListener('click', () => { this.el['btn-assets'].blur(); this.handleShowAssets(); });
+    // Buff tab 的「查看生态总览」按钮（hud.js 派发的 DOM 事件）→ 打开四层加成总览
+    document.addEventListener('open-buff-panel', () => {
+      const me = this.humanPlayer();
+      if (me && !me.bankrupt) showBuffPanel(me, this.state);
+    });
     this.el['btn-mortgage'].addEventListener('click', () => { this.el['btn-mortgage'].blur(); this.handleShowAssets(); });
     this.el['btn-endturn'].addEventListener('click', () => { this.el['btn-endturn'].blur(); this.handleEndTurn(); });
 
@@ -1399,6 +1405,12 @@ class Game {
   afterMove(player, passedStart) {
     const state = this.state;
 
+    // ===== 「经过起点 = 只处理贷款」闸门 =====
+    // 每次移动结算前复位；只有走下面的起点分支才会置 true。
+    // 置位后，贷款选择（或放弃）完成即自动结束回合，
+    // 不再进入 await-decision 的自由经营阶段（见 continueAfterSettlement）。
+    this._startPassLock = false;
+
     // ===== 起点经过判定 =====
     // 规则：只要「经过」起点格就能拿补贴 + 可选贷款，不必恰好停在起点。
     //   · 落在起点格            → landedOnStart
@@ -1413,6 +1425,7 @@ class Game {
       //   旧写法只在 passedStart 时复位，「恰好落在起点」的路径不复位，
       //   导致该玩家此后永远拿不到补贴。
       //   现在由 player.laps 推进自然解锁下一圈，三条触发路径语义一致。
+      this._startPassLock = true;
       const startCell = state.board[0];
       const results = [];
 
@@ -1429,6 +1442,25 @@ class Game {
         results.push({ kind: 'pbc-bonus', amount: regBonus, cell: startCell });
       }
 
+      // 2.5) 经营生态：系统重要性机构补贴（控股 ≥16 家）+ 银行「吸储网络」利息
+      //      ⚠ 统一在 afterMove 发放（两条经过起点路径的唯一汇合点），
+      //        落点恰好是起点时由下方 filter 剔除 settleOnCell 的重复发放。
+      const empire = playerEmpireEffects(state, player);
+      if (empire.roundBonus > 0) {
+        recordCash(state, player, empire.roundBonus, '系统重要性机构流动性补贴', '控股');
+        results.push({ kind: 'empire-bonus', amount: empire.roundBonus, cell: startCell });
+      }
+      if (empire.bankInterest.active) {
+        const interest = Math.min(
+          empire.bankInterest.cap,
+          Math.floor(Math.max(0, player.cash) * empire.bankInterest.rate),
+        );
+        if (interest > 0) {
+          recordCash(state, player, interest, '吸储利息', '银行');
+          results.push({ kind: 'bank-interest', amount: interest, cell: startCell });
+        }
+      }
+
       // 3) 贷款机会（央行牌照持有人每圈可多贷一次）
       const loanLimit = CONFIG.maxLoansPerRound + (regEff.loanLimitBonus || 0);
       if (player.loanCountThisRound < loanLimit) {
@@ -1436,10 +1468,11 @@ class Game {
       }
 
       // 4) 落点若是起点格，仍需走正常结算（起点自身是特殊格）
-      //    注意 settleOnCell 内部也会产出 loan-offer，这里要剔除以免弹两次
+      //    注意 settleOnCell 内部也会产出 loan-offer / pbc-bonus，
+      //    这里剔除以免弹两次 / 双重发放补贴
       if (landedOnStart) {
         const cellResults = settleOnCell(state, player, player.position);
-        results.push(...cellResults.filter((r) => r.kind !== 'loan-offer'));
+        results.push(...cellResults.filter((r) => r.kind !== 'loan-offer' && r.kind !== 'pbc-bonus'));
       }
 
       this.handleSettlement(player, results);
@@ -1531,21 +1564,21 @@ class Game {
     const state = this.state;
     const wheel = WHEEL_BY_ID[cell.special.wheelId];
     if (!wheel) {
-      // 转盘定义缺失（数据异常）—— 降级为普通结算，不阻断回合
+      // 翻牌定义缺失（数据异常）—— 降级为普通结算，不阻断回合
       const results = settleOnCell(state, player, player.position);
       this.handleSettlement(player, results);
       return;
     }
 
     const isAI = !!player.isAI;
-    // 本次转盘是否已经结算过（供 onClose 判断要不要兜底随机）
+    // 本次翻牌是否已经结算过（供 onClose 判断要不要兜底随机）
     let settled = false;
 
-    // ===== AI 触发转盘：玩家不能操作任何转盘 =====
-    // ① 转盘格只允许「当前回合玩家」触发 —— AI 回合期间玩家点自己的转盘格
-    //    不会再次开转盘（见下方 triggerWheelCell 守卫）。
+    // ===== AI 触发翻牌：玩家不能操作 =====
+    // ① 翻牌格只允许「当前回合玩家」触发 —— AI 回合期间玩家点自己的翻牌格
+    //    不会再次开窗（见下方 triggerWheelCell 守卫）。
     // ② 弹窗期间模态遮罩拦截棋盘点击。
-    // ③ readonly 让玩家的「转」按钮不渲染。
+    // ③ readonly 让玩家的暗牌不可点。
     this.busy = true;
 
     const doSettle = (outcomeId, outcomeName) => {
@@ -1553,21 +1586,21 @@ class Game {
       // 记录抽中的效果 → 规则层据此结算
       state.pending = { kind: 'wheel', wheelPick: outcomeId, playerId: player.id };
       log(state, player.isAI ? 'ai' : 'self',
-        `${player.name} 转动${wheel.label}，抽中「${outcomeName}」`, '转盘');
+        `${player.name} 翻开${wheel.label}，抽中「${outcomeName}」`, '翻牌');
       const results = settleOnCell(state, player, player.position);
       state.pending = null;
       this.handleSettlement(player, results);
     };
 
     const wheelModal = showWheelDialog(wheel, {
-      autoSpin: isAI,
+      autoDraw: isAI,
       readonly: isAI,
       playerName: player.name,
-      // ⚠ P1：转盘抽签必须走对局随机源 —— 保证同 seed 可复现
+      // ⚠ P1：暗牌洗牌 / AI 选牌必须走对局随机源 —— 保证同 seed 可复现
       rng: state.rng,
-      onSpin: (r) => {
+      onDraw: (r) => {
         if (isAI) {
-          // AI 只读转盘：让结果停留片刻再自动收起并继续回合，
+          // AI 只读翻牌：让结果停留片刻再自动收起并继续回合，
           // 之前弹窗滞留在屏幕上、游戏在背后悄悄继续。
           delay(1400, () => {
             doSettle(r.outcomeId, r.outcome.name);
@@ -1576,11 +1609,11 @@ class Game {
           });
           return;
         }
-        // 每次转动都**立即真实结算** —— 玩家可以接着再转
+        // 每翻开一张都**立即真实结算** —— 玩家可以接着再翻
         doSettle(r.outcomeId, r.outcome.name);
       },
       onClose: () => {
-        // 玩家点「完成并离开」—— 若一次都没转过，兜底随机一个效果，保证回合能继续
+        // 玩家点「收手离开」—— 若一次都没翻过，兜底随机一个效果，保证回合能继续
         if (settled) {
           this.busy = true;
           this.continueAfterSettlement(player);
@@ -1810,6 +1843,20 @@ class Game {
         }
         case 'pbc-bonus': {
           log(state, 'good', `中国人民银行流动性投放 +￥${r.amount}`, '央行');
+          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), FX.jadeLt);
+          break;
+        }
+        case 'empire-bonus': {
+          // 经营生态：系统重要性机构（控股 ≥16 家）每圈流动性补贴
+          log(state, 'good', `系统重要性机构流动性补贴 +￥${r.amount}`, '控股');
+          this.sfx.buy();
+          this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), PALETTE.gold);
+          break;
+        }
+        case 'bank-interest': {
+          // 经营生态：银行「吸储网络」—— 每圈现金生息
+          log(state, 'good', `吸储网络生息 +￥${r.amount}（现金 ×${(CONFIG.groupSpecialBankInterestRate * 100).toFixed(0)}%）`, '银行');
+          this.sfx.buy();
           this.floatText(`+￥${r.amount}`, this.cellCenter(player.position), FX.jadeLt);
           break;
         }
@@ -2103,6 +2150,26 @@ class Game {
 
   continueAfterSettlement(player) {
     if (!player.isAI) {
+      // ===== 经过起点：本回合只处理「是否贷款」=====
+      // 需求（2026-11）：玩家路过起点时，无法再进行别的操作，
+      // 只能选择是否贷款 —— 贷款选择（或「暂不借款」）完成即
+      // 自动结束回合，不再进入 await-decision 自由经营阶段
+      //（质押 / 升级 / 资产管理等操作下一回合再进行）。
+      if (this._startPassLock) {
+        this._startPassLock = false;
+        this.state.phase = 'settling';
+        log(this.state, 'sys', `${player.name} 路过起点，本回合仅处理央行贷款事宜，回合结束`, '起点');
+        // 现金为负仍要先追保（贷款不能覆盖保证金缺口）
+        this.ensureSolvency(player, () => {
+          this.syncLog();
+          this.updateHUD();
+          delay(600, () => {
+            this.busy = false;
+            this.advanceTurn();
+          });
+        });
+        return;
+      }
       this.state.phase = 'await-decision';
       // 玩家这一回合的播报要立刻落到列表里 ——
       // 例如「放弃收购机构格」这类只走 resolvePurchase() 的分支
@@ -2715,6 +2782,7 @@ class Game {
         loan: this.el['tab-panel-loan'],
         bond: this.el['tab-panel-bond'],
         net: this.el['tab-panel-net'],
+        cashflow: this.el['tab-panel-cashflow'],
       }, me, state);
     }
 
