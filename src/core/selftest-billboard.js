@@ -86,16 +86,25 @@ function rawTransform(el) {
  *   会同时更新 class / transform / tileLayer 深度排序。
  */
 function set3D(on) {
-  const btn = document.getElementById('btn-3d');
+  // ⚠ #btn-3d 现在是真等距 3D 总开关 —— 旧倾斜管线改走 Stage3D 控制器直调，
+  //   不再经过按钮（否则会进 Iso3D 误报失败）。
+  const game = window.__game;
   const stage = document.getElementById('board-stage');
-  if (!btn || !stage) return false;
-  const is3D = stage.classList.contains('is-3d');
-  if (is3D !== on) {
-    btn.click();
-    // ⚠ 必须等过渡动画结束 —— .board-pan 有 `transition: transform .35s`，
-    //   过渡期间 getComputedStyle 返回的是**动画中间值**（从 identity 开始），
-    //   读到的是 0° 而不是目标角度。等动画自然结束后再断言。
+  if (!stage) return false;
+  if (game && game.stage3d && typeof game.stage3d.set3D === 'function') {
+    game.stage3d.set3D(!!on);
     settle();
+  } else {
+    const btn = document.getElementById('btn-3d');
+    if (!btn) return false;
+    const is3D = stage.classList.contains('is-3d');
+    if (is3D !== on) {
+      btn.click();
+      // ⚠ 必须等过渡动画结束 —— .board-pan 有 `transition: transform .35s`，
+      //   过渡期间 getComputedStyle 返回的是**动画中间值**（从 identity 开始），
+      //   读到的是 0° 而不是目标角度。等动画自然结束后再断言。
+      settle();
+    }
   }
   const now3D = stage.classList.contains('is-3d');
   if (now3D !== on) {

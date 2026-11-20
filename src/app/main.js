@@ -520,16 +520,13 @@ class Game {
 
     this.background = new Background(window.innerWidth, window.innerHeight);
 
-    // ===== 3D 舞台（视角切换 + 拖拽平移）=====
-    // 必须在 renderer 建好之后创建 —— 它要读写 #board-stage / #board-pan，
-    // 且平移只改 transform，不碰 Canvas 的 backing store。
-    //
-    // ⚠ 切换视角后必须让地块层重排深度 —— 3D 模式下靠 z-index 表达
-    //   「离观察者更近」，平面模式不需要。
+    // ===== 3D 舞台（旧管线视角倾斜 + 拖拽平移）=====
+    // ⚠ #btn-3d 不再直连 Stage3D —— 它现在是「真等距 3D / 平面」的总开关。
+    //   Stage3D 的透视倾斜作为降级保留（初始化失败时仍可用），平时保持平面。
     this.stage3d = new Stage3D(
       this.el['board-stage'],
       this.el['board-pan'],
-      this.el['btn-3d'],
+      null,
       {
         onChange: ({ is3D }) => {
           if (this.tileLayer) this.tileLayer.set3D(is3D);
@@ -541,10 +538,10 @@ class Game {
         },
       },
     );
+    this.bindIsoToggle();
 
-    // ===== 真等距 3D 棋盘（?board=3d）=====
-    // ⚠ 异步初始化（three.js 从 CDN 动态 import）——
-    //   加载失败时**自动退回旧管线**，绝不把游戏卡死。
+    // ===== 真等距 3D 棋盘 =====
+    // ⚠ 本地 vendor/three.module.js 优先，unpkg 兜底；加载失败自动退回旧管线。
     if (this.useIso3D) {
       this.initIsoBoard();
     }
@@ -606,17 +603,23 @@ class Game {
       this.isoBoard = board;
       this.bindIsoButtons();
       if (this.state) board.sync(this.state);
+      this.updateIsoToggle();
+      this.toast('已切换 3D 等距视角', 't-gold');
+      this.sfx.click();
     } catch (err) {
       console.error('[iso3d] 初始化失败，退回旧管线：', err);
       this.useIso3D = false;
       document.body.classList.remove('board-3d');
       if (wrap) wrap.hidden = true;
+      this.updateIsoToggle();
       this.toast('3D 棋盘加载失败，已切回平面视图', 't-bad');
     }
   }
 
-  /** 左右旋转按钮 —— 与手势共用 snapTo 入口 */
+  /** 左右旋转按钮 —— 与手势共用 snapTo 入口（只绑定一次） */
   bindIsoButtons() {
+    if (this._isoButtonsBound) return;
+    this._isoButtonsBound = true;
     const l = this.el['iso-rot-l'];
     const r = this.el['iso-rot-r'];
     if (l) {
@@ -630,6 +633,66 @@ class Game {
         if (this.isoBoard) this.isoBoard.snapTo(this.isoBoard.quarter - 1);
         this.sfx.click();
       });
+    }
+  }
+
+  /** 右上角 ◱ 按钮 —— 真等距 3D / 平面总开关 */
+  bindIsoToggle() {
+    const btn = this.el['btn-3d'];
+    if (!btn || this._isoToggleBound) return;
+    this._isoToggleBound = true;
+    btn.addEventListener('click', () => {
+      btn.blur();
+      this.toggleIso3D();
+    });
+    this.updateIsoToggle();
+  }
+
+  /** 刷新 ◱ 按钮状态 */
+  updateIsoToggle() {
+    const btn = this.el['btn-3d'];
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', this.useIso3D ? 'true' : 'false');
+    btn.classList.toggle('is-off', !this.useIso3D);
+    btn.title = this.useIso3D ? '切换回平面视角' : '切换 3D 立体视角（纪念碑谷式等距）';
+  }
+
+  /** 切换真等距 3D —— 开：复用已建场景（秒开）；关：停渲染循环省性能 */
+  async toggleIso3D() {
+    if (!this.state) {
+      this.toast('请先开局再切换视角', 't-bad');
+      return;
+    }
+    if (!this.useIso3D) {
+      // 开 3D：场景已建好 → 直接复用；否则异步建
+      this.useIso3D = true;
+      document.body.classList.add('board-3d');
+      this.updateIsoToggle();
+      if (this.isoBoard && this.isoBoard.builder) {
+        const wrap = this.el['board-iso'];
+        if (wrap) wrap.hidden = false;
+        this.isoBoard.resume();
+        this.isoBoard.resize(
+          Math.max(160, wrap ? wrap.clientWidth : 800),
+          Math.max(160, wrap ? wrap.clientHeight : 600),
+        );
+        if (this.state) this.isoBoard.sync(this.state);
+        this.sfx.click();
+        this.toast('已切换 3D 等距视角', 't-gold');
+      } else {
+        this.toast('正在加载 3D 棋盘…', 't-gold');
+        await this.initIsoBoard();
+      }
+    } else {
+      // 关 3D：停循环 + 藏舞台，旧管线接管
+      this.useIso3D = false;
+      document.body.classList.remove('board-3d');
+      if (this.el['board-iso']) this.el['board-iso'].hidden = true;
+      if (this.isoBoard) this.isoBoard.stop();
+      // 切回平面后重算一次旧管线尺寸，避免画布被挤
+      this.onResize();
+      this.updateIsoToggle();
+      this.sfx.click();
     }
   }
 

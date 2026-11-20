@@ -478,6 +478,14 @@ export class Iso3DBoard {
     this.ready = false;
   }
 
+  /** 恢复渲染循环（toggle 复用已建好的场景，不重建） */
+  resume() {
+    if (this.ready) return;
+    this.ready = true;
+    this._lastT = performance.now();
+    this._loop();
+  }
+
   /** 尺寸变化 */
   resize(w, h) {
     if (this.scene) this.scene.resize(w, h);
@@ -572,7 +580,8 @@ const MOVING_IDS_HOLDER = (() => {
  * three.js 动态加载（CDN）
  * =========================================================== */
 
-/** CDN 地址 —— 优先用 importmap 之外的直连 ESM 构建 */
+/** CDN 地址 —— 本地 vendor 优先（离线可用），unpkg 作为兜底 */
+const THREE_LOCAL = new URL('../../vendor/three.module.js', import.meta.url).href;
 const THREE_CDN = 'https://unpkg.com/three@0.160.0/build/three.module.js';
 
 let _threePromise = null;
@@ -584,10 +593,11 @@ let _threePromise = null;
  */
 export function loadThree() {
   if (_threePromise) return _threePromise;
-  _threePromise = import(/* @vite-ignore */ THREE_CDN)
+  // 本地 vendor 优先（离线/局域网可用），失败再回退 unpkg CDN
+  _threePromise = import(/* @vite-ignore */ THREE_LOCAL).catch(() => import(/* @vite-ignore */ THREE_CDN))
     .catch((err) => {
       _threePromise = null;
-      throw new Error(`three.js 加载失败（${THREE_CDN}）：${err && err.message ? err.message : err}`);
+      throw new Error(`three.js 加载失败（${THREE_LOCAL} / ${THREE_CDN}）：${err && err.message ? err.message : err}`);
     });
   return _threePromise;
 }

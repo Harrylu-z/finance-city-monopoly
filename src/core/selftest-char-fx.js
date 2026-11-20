@@ -61,11 +61,17 @@ export function runAll() {
     return c.rows;
   }
 
+  const game0 = window.__game;
   const was3D = stage.classList.contains('is-3d');
 
   // 统一在**平面模式**下做前半段断言（3D 会切换透视，影响屏幕尺寸）
+  // ⚠ #btn-3d 已是真等距 3D 总开关 —— 旧倾斜改走 Stage3D 直调。
+  const tilt3D = (on) => {
+    if (game0 && game0.stage3d && typeof game0.stage3d.set3D === 'function') game0.stage3d.set3D(!!on);
+    else btn.click();
+  };
   if (was3D) {
-    btn.click();
+    tilt3D(false);
     settle();
   }
 
@@ -164,7 +170,7 @@ export function runAll() {
     `particles=${fx.particles.length}`);
 
   // ---------- 8. 切到 3D：透视把落地环压扁 ----------
-  btn.click();
+  tilt3D(true);
   settle();
 
   const canvas = document.getElementById('board-canvas');
@@ -210,7 +216,7 @@ export function runAll() {
   layer3d.clear();
 
   // ---------- 9. 平面模式不受影响 ----------
-  btn.click();
+  tilt3D(false);
   settle();
   c.check('切回平面模式正常',
     !stage.classList.contains('is-3d'),

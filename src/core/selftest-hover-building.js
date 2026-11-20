@@ -91,8 +91,13 @@ export function runAll() {
     '平面模式不应出现悬浮建筑');
 
   // ---------- 2. 切到 3D ----------
+  // ⚠ #btn-3d 现在是真等距 3D 总开关 —— 旧倾斜管线改走 Stage3D 直调。
+  const game = window.__game;
   const was3D = stage.classList.contains('is-3d');
-  if (!was3D) btn.click();
+  if (!was3D) {
+    if (game && game.stage3d && typeof game.stage3d.set3D === 'function') game.stage3d.set3D(true);
+    else btn.click();
+  }
   settle();
   c.check('3D 模式已启用',
     stage.classList.contains('is-3d'),
@@ -217,7 +222,8 @@ export function runAll() {
 
   // ---------- 11. 恢复原状 ----------
   if (!was3D) {
-    btn.click();
+    if (game && game.stage3d && typeof game.stage3d.set3D === 'function') game.stage3d.set3D(false);
+    else btn.click();
     settle();
   }
   hoverCell(-1);
