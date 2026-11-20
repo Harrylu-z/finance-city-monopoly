@@ -478,6 +478,88 @@ canvas, .pixel-panel, .pixel-btn, img {
   width: 100%; height: 100%;
   display: block;
 }
+
+/* ===========================================================
+ * 真等距 3D 舞台（?board=3d）
+ * ===========================================================
+ * 与旧管线**完全隔离**：
+ *   · #board-iso 覆盖在 #board-stage 之上，z-index 更高；
+ *   · 启用时由 JS 给 body 加 .board-3d → 旧管线隐藏；
+ *   · 未启用时 #board-iso 带 [hidden]，旧管线照常。
+ * =========================================================== */
+.board-iso {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.board-iso[hidden] { display: none; }
+
+.board-iso-canvas {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  display: block;
+}
+
+/* 启用 3D 时隐藏旧管线（Canvas 底板 + DOM 地块层） */
+body.board-3d #board-stage { display: none; }
+
+/* ---- 3D 底部详情条 ---- */
+.iso-detail {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 24px));
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(30, 36, 54, .93);
+  border: 1px solid rgba(232, 169, 60, .38);
+  color: var(--paper);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm, 12px);
+  line-height: 1.5;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .42);
+  pointer-events: auto;
+  z-index: 8;
+}
+.iso-detail[hidden] { display: none; }
+.iso-detail .iso-d-name {
+  font-weight: 700;
+  font-size: var(--fs-md, 14px);
+  color: var(--gold);
+  margin-bottom: 2px;
+}
+.iso-detail .iso-d-row { color: var(--paper); opacity: .92; }
+.iso-detail .iso-d-meta { color: var(--dim); opacity: .9; }
+
+/* ---- 左右旋转按钮 ---- */
+.iso-rotate {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 6px;
+  z-index: 8;
+}
+.iso-rot-btn {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(232, 169, 60, .38);
+  background: rgba(30, 36, 54, .92);
+  color: var(--gold);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .15s ease, background .15s ease;
+}
+.iso-rot-btn:hover { background: rgba(46, 55, 82, .96); transform: translateY(-1px); }
+.iso-rot-btn:active { transform: translateY(0); }
+
 .fx-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: visible; }
 
 /* 浮动飘字 —— 现代柔和投影 */

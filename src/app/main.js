@@ -27,6 +27,10 @@ import { TileLayer } from '../render/tiles.js';
 import { Background } from '../render/background.js';
 import { Effects, MoveAnimator } from '../render/effects.js';
 import { Stage3D } from '../render/stage3d.js';
+// ===== 真等距 3D 管线（?board=3d）=====
+// ⚠ **默认不启用** —— 只有 URL 带 `?board=3d` 时才接管渲染。
+//   旧管线（Canvas 2D + DOM 地块）保持默认可用，3D 是渐进增强。
+import { Iso3DBoard } from '../render3d/iso-board.js';
 import { HoverBuildingLayer } from '../render/hoverBuilding.js';
 import { LandingFxLayer } from '../render/landingFx.js';
 import { Sfx } from '../audio/sfx.js';
@@ -125,6 +129,9 @@ class Game {
     this.effects = new Effects();
     this.mover = new MoveAnimator();
     this.sfx = new Sfx();
+    // 真等距 3D 棋盘（?board=3d）—— 默认 null（旧管线）
+    this.isoBoard = null;
+    this.useIso3D = false;
     this.el = {};
     this.running = false;
     this.busy = false;
@@ -137,6 +144,10 @@ class Game {
 
   init() {
     this.cacheElements();
+    // ===== 真等距 3D 开关（?board=3d）=====
+    // ⚠ **默认走旧管线** —— 3D 是渐进增强，随时可以退回。
+    this.useIso3D = readBoardParam() === '3d';
+    if (this.useIso3D) document.body.classList.add('board-3d');
     this.setupSetupScreen();
     this.setupGameEvents();
     this.handleShareLink();
@@ -187,6 +198,8 @@ class Game {
       'dice-picker', 'cash-picker', 'market-picker',
       'ai-preview', 'chk-sound', 'chk-anim', 'chk-tutorial', 'btn-start',
       'board-canvas', 'board-wrap', 'board-tiles', 'stage-bg', 'fx-layer',
+      // 真等距 3D 舞台（?board=3d）
+      'board-iso', 'board-iso-canvas', 'iso-detail', 'iso-rot-l', 'iso-rot-r',
       // 3D 舞台骨架（视角切换 + 拖拽平移）
       'board-stage', 'board-pan', 'btn-3d',
       // hover 立体建筑层（PR-D）
@@ -493,7 +506,7 @@ class Game {
     // ===== hover 立体建筑层（PR-D）=====
     // 与地块层平级 —— 不挂在 .mt-cell 里，这样建筑可以自由地
     // 抬到棋盘之上，且不受地块的 z-index 深度排序干扰。
-    this.hoverBuildings = new HoverBuildingLayer(
+    this.hoverBuildings = this.useIso3D ? null : new HoverBuildingLayer(
       this.el['board-tiles'],
       this.el['hover-buildings'],
       this.renderer,
@@ -529,6 +542,13 @@ class Game {
       },
     );
 
+    // ===== 真等距 3D 棋盘（?board=3d）=====
+    // ⚠ 异步初始化（three.js 从 CDN 动态 import）——
+    //   加载失败时**自动退回旧管线**，绝不把游戏卡死。
+    if (this.useIso3D) {
+      this.initIsoBoard();
+    }
+
     this.onResize();
     // 布局稳定后再量一次（隐藏→显示后容器尺寸才最终确定）
     requestAnimationFrame(() => this.onResize());
@@ -560,6 +580,82 @@ class Game {
     } else {
       this.beginPlayerTurn();
     }
+  }
+
+  /* ==========================================================
+   * 真等距 3D 管线（?board=3d）
+   * ==========================================================
+   *
+   * ⚠ **渐进增强**：3D 初始化失败（CDN 不可达 / WebGL 不支持）时
+   *   自动退回旧管线（Canvas 2D + DOM 地块），游戏照常可玩。
+   */
+  async initIsoBoard() {
+    const wrap = this.el['board-iso'];
+    const canvas = this.el['board-iso-canvas'];
+    if (!wrap || !canvas) return;
+
+    wrap.hidden = false;
+    const w = Math.max(160, wrap.clientWidth || this.el['board-wrap']?.clientWidth || 800);
+    const h = Math.max(160, wrap.clientHeight || this.el['board-wrap']?.clientHeight || 600);
+
+    try {
+      const board = new Iso3DBoard(canvas, {
+        onSelect: (index, e) => this.showIsoCellDetail(index, e),
+      });
+      await board.init(w, h);
+      this.isoBoard = board;
+      this.bindIsoButtons();
+      if (this.state) board.sync(this.state);
+    } catch (err) {
+      console.error('[iso3d] 初始化失败，退回旧管线：', err);
+      this.useIso3D = false;
+      document.body.classList.remove('board-3d');
+      if (wrap) wrap.hidden = true;
+      this.toast('3D 棋盘加载失败，已切回平面视图', 't-bad');
+    }
+  }
+
+  /** 左右旋转按钮 —— 与手势共用 snapTo 入口 */
+  bindIsoButtons() {
+    const l = this.el['iso-rot-l'];
+    const r = this.el['iso-rot-r'];
+    if (l) {
+      l.addEventListener('click', () => {
+        if (this.isoBoard) this.isoBoard.snapTo(this.isoBoard.quarter + 1);
+        this.sfx.click();
+      });
+    }
+    if (r) {
+      r.addEventListener('click', () => {
+        if (this.isoBoard) this.isoBoard.snapTo(this.isoBoard.quarter - 1);
+        this.sfx.click();
+      });
+    }
+  }
+
+  /** 3D 模式的地块详情条（底部） */
+  showIsoCellDetail(index, e) {
+    const box = this.el['iso-detail'];
+    const state = this.state;
+    if (!box || !state) return;
+    const cell = BOARD_CELLS[index];
+    if (!cell) { box.hidden = true; return; }
+
+    const inst = this.renderer ? this.renderer.getInstitutionState(state, index) : null;
+    const parts = [];
+    if (cell.type === 'institution') {
+      const level = inst ? inst.level : cell.tier;
+      const price = cell.price[Math.min(4, level)] ?? cell.price[0];
+      parts.push(`<div class="iso-d-name">${escapeHtml(cell.name)}</div>`);
+      parts.push(`<div class="iso-d-row">买入价 ￥${price} · ${inst ? '管理费 ￥' + (cell.rent[Math.min(4, level)] ?? cell.rent[0]) : '未持有'}</div>`);
+      parts.push(`<div class="iso-d-meta">${escapeHtml(cell.code || '')} · 等级 ${level}/${cell.maxLevel}${cell.regulator ? ' · 监管机构（不可升级）' : ''}${inst ? ' · 归属：' + escapeHtml(inst.player.name) : ''}${inst && inst.mortgaged ? ' · 已质押' : ''}</div>`);
+    } else {
+      const sp = cell.special || {};
+      parts.push(`<div class="iso-d-name">${escapeHtml(sp.name || cell.name)}</div>`);
+      parts.push(`<div class="iso-d-meta">${escapeHtml(sp.desc || sp.short || '')}</div>`);
+    }
+    box.innerHTML = parts.join('');
+    box.hidden = false;
   }
 
   difficultyName(d) {
@@ -1173,6 +1269,25 @@ class Game {
     // 此时播落地音 + 生成落地特效 —— 音画严格同步。
     let stepTick = 0;
 
+    // ⚠ 真等距 3D 模式：走 3D 管线的逐格 hop
+    //   （抛物线高 0.35 砖 + 落地 squash 0.85，见 render3d/iso-board.js）。
+    //   旧管线的 MoveAnimator 在此路径**不启动**。
+    if (this.useIso3D && this.isoBoard && this.isoBoard.ready) {
+      this.isoBoard.moveAlong(player.id, path, {
+        onLand: (stepIdx) => {
+          this.sfx.step();
+          stepTick++;
+        },
+        onDone: () => {
+          const passedStart = computeMove(from, steps, BOARD_SIZE).passedStart;
+          player.position = path[path.length - 1];
+          player.lastAction = { ...(player.lastAction || {}), passedStart };
+          this.afterMove(player, passedStart);
+        },
+      });
+      return;
+    }
+
     this.mover.start({
       playerId: player.id,
       from,
@@ -1543,6 +1658,20 @@ class Game {
           const c = this.cellCenter(player.position);
           this.effects.confetti(c.x, c.y);
           const steps = computeTeleportSteps(player.position, r.target, BOARD_SIZE);
+          // ⚠ 真等距 3D：传送改为**沉降 → 升起**（不是逐格跳）。
+          //   规则层的落点与结算完全不变 —— 这里只换渲染表现。
+          if (this.useIso3D && this.isoBoard && this.isoBoard.ready) {
+            this.busy = true;
+            this.isoBoard.moveAlong(player.id, [r.target], {
+              teleport: true,
+              onDone: () => {
+                player.position = r.target;
+                const res2 = settleOnCell(state, player, player.position);
+                this.handleSettlement(player, res2);
+              },
+            });
+            return;
+          }
           this.moveAndSettle(player, steps);
           return;
         }
@@ -2314,10 +2443,16 @@ class Game {
       }
       : null;
 
-    this.renderer.draw(state, { elapsed: now, time: now, moveAnim, effects: this.effects });
+    // ⚠ 真等距 3D 模式：**跳过旧管线的 Canvas / DOM 绘制** ——
+    //   3D 管线自己有一圈 rAF 渲染循环（iso-board.js）。
+    if (!this.useIso3D) {
+      this.renderer.draw(state, { elapsed: now, time: now, moveAnim, effects: this.effects });
+    } else if (this.isoBoard && this.isoBoard.ready) {
+      this.isoBoard.sync(state);
+    }
 
     // 地块 DOM 状态同步（内部做 key 比对，状态没变就不碰 DOM）
-    if (this.tileLayer) this.tileLayer.sync(state);
+    if (!this.useIso3D && this.tileLayer) this.tileLayer.sync(state);
     // PR-D：建筑的等级 / 持有人配色依赖状态 —— 同步刷新
     if (this.hoverBuildings) this.hoverBuildings.sync(state);
     // PR-E：清理已播完的落地特效 DOM
@@ -2384,6 +2519,13 @@ class Game {
     this.renderer.resize(bw, bh, dpr);
     // resize 之后再设预留：setBottomReserve 会重算布局，需要正确的 w/h
     this.renderer.setBottomReserve(reserve);
+    // 真等距 3D：正交相机视锥随尺寸重算
+    if (this.isoBoard && this.isoBoard.ready) {
+      const iso = this.el['board-iso'];
+      const iw = Math.max(160, iso ? iso.clientWidth : bw);
+      const ih = Math.max(160, iso ? iso.clientHeight : bh);
+      this.isoBoard.resize(iw, ih);
+    }
     // 地块 DOM 层同步布局：cellRect → 百分比（canvas 尺寸已定，cellRect 才是最终值）
     if (this.tileLayer) this.tileLayer.layout();
     // PR-D：建筑位置是像素写死的 —— 必须跟着重排
@@ -2704,6 +2846,24 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * 读取 URL 上的棋盘渲染参数 —— `?board=3d` 启用真等距 3D 管线。
+ *
+ * ⚠ **默认（无参数 / 其它值）走旧管线** —— 3D 是渐进增强。
+ *
+ * @returns {string|null} '3d' 或 null
+ */
+export function readBoardParam(search) {
+  const src = search != null ? search : (typeof location !== 'undefined' ? location.search : '');
+  try {
+    const sp = new URLSearchParams(src || '');
+    const v = sp.get('board');
+    return v ? String(v).toLowerCase() : null;
+  } catch {
+    return null;
+  }
 }
 
 const game = new Game();

@@ -207,6 +207,25 @@
             <div id="cell-detail" class="cell-detail" hidden></div>
           </div>
         </div>
+
+        <!--
+          ===== 真等距 3D 舞台（?board=3d）=====
+          Three.js 正交相机 + 35.264° 极角 + 45°+k×90° 方位角。
+
+          ⚠ 默认**不启用** —— 只有 URL 带 `?board=3d` 时才显示并接管渲染。
+             旧管线（Canvas 2D + DOM 地块）保持默认可用，
+             新管线是「渐进增强」，随时可以退回。
+        -->
+        <div id="board-iso" class="board-iso" hidden>
+          <canvas id="board-iso-canvas" class="board-iso-canvas" aria-label="真等距 3D 棋盘"></canvas>
+          <!-- 3D 模式的底部详情条（点击地块后显示） -->
+          <div id="iso-detail" class="iso-detail" hidden></div>
+          <!-- 左右旋转按钮（与手势共用 snapTo 入口） -->
+          <div id="iso-rotate" class="iso-rotate">
+            <button id="iso-rot-l" class="iso-rot-btn" type="button" title="逆时针旋转 90°" aria-label="逆时针旋转 90°">⟲</button>
+            <button id="iso-rot-r" class="iso-rot-btn" type="button" title="顺时针旋转 90°" aria-label="顺时针旋转 90°">⟳</button>
+          </div>
+        </div>
       </div>
 
       <!-- ===== 底部中央：主行动按钮 + 常用操作（常驻，不再收进抽屉） ===== -->

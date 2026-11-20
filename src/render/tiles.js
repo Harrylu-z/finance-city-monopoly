@@ -23,81 +23,28 @@
  */
 
 import { BOARD_CELLS, BOARD_SIZE, LEVELS, TRACK_POINTS, BOARD_GRID } from '../core/board.js';
-import { PLAYER_COLORS, GROUP_COLORS } from '../core/palette.js';
+import { PLAYER_COLORS } from '../core/palette.js';
+// 卡面**数据层**统一到 `render3d/tile-face.js` ——
+// DOM / Canvas / 3D 纹理三条渲染管线共用同一份读数计算，杜绝数值漂移。
+import {
+  specialCat, groupOf, ownerLabel, tileState, tileFace, shade,
+  SPECIAL_CATS, SPECIAL_CAT_OF, SPECIAL_EFFECT, REGULATORS, REG_SIGN,
+} from '../render3d/tile-face.js';
 
 /* ===========================================================
- * 特殊格分类 —— 16 个特殊格归为 5 类（色相即语义）
+ * 特殊格分类 / 监管视觉 / 读数计算 —— **已抽到 `render3d/tile-face.js`**
+ * ===========================================================
+ * ⚠ 为什么要抽走：
+ *   地块信息（名称 / 等级 / 买入价 / 管理费 / 持有人 / 质押 …）此前
+ *   在 DOM 管线（tiles.js）与 Canvas 管线（canvas.js）里**各写了一份**，
+ *   数字容易漂移。现在统一到 `render3d/tile-face.js`，
+ *   DOM / Canvas / 3D 纹理三条渲染管线共用同一份读数计算。
+ *
+ *   本模块保留自己的 HTML / SVG **绘制**代码（DOM 专属），
+ *   但所有**数值**都从 tile-face.js 取。
  * =========================================================== */
-const SPECIAL_CATS = {
-  hub:    { label: '枢纽', color: '#2f9fc4', lt: '#63c6e6', sign: '流转' },
-  random: { label: '随机', color: '#8b5cc7', lt: '#b189e0', sign: '抽取' },
-  cost:   { label: '成本', color: '#c8392b', lt: '#e4604d', sign: '付出' },
-  gain:   { label: '增益', color: '#4f9d55', lt: '#7ac77f', sign: '收益' },
-  cycle:  { label: '周期', color: '#e8a93c', lt: '#ffc861', sign: '全局' },
-};
-
-const SPECIAL_CAT_OF = {
-  start: 'hub', clearing: 'hub', crossborder: 'hub', metro: 'hub',
-  event: 'random', casino: 'random',
-  tax: 'cost', audit: 'cost', risk: 'cost',
-  charity: 'gain', roadshow: 'gain', rating: 'gain', commodity: 'gain', refinance: 'gain',
-  market: 'cycle',
-};
-
-/** 特殊格关键数值读数（与 design-proposals/tiles-modern/modern-tiles.js 一致） */
-const SPECIAL_EFFECT = {
-  start:       { big: '+￥200', lbl: '每圈补贴' },
-  clearing:    { big: '直达',   lbl: '结算机构' },
-  crossborder: { big: '随机',   lbl: '飞往机构' },
-  metro:       { big: '1/2/3', lbl: '前进格数' },
-  tax:         { big: '￥40',   lbl: '每份 · 封顶360' },
-  charity:     { big: '-￥120', lbl: '管理费 +12%' },
-  event:       { big: '抽 1',   lbl: '财经事件卡' },
-  market:      { big: '牛↔熊', lbl: '全局租金' },
-  audit:       { big: '处罚',   lbl: '罚款/没收' },
-  risk:        { big: '整改',   lbl: '去杠杆 2 回合' },
-  refinance:   { big: '债券',   lbl: '票息浮动' },
-  rating:      { big: '±15%',  lbl: '管理费 3 回合' },
-  commodity:   { big: '折溢价', lbl: '套保 2 回合' },
-  roadshow:    { big: '+￥80',  lbl: '成本 -15%' },
-  casino:      { big: '德扑',   lbl: '全员参与' },
-};
-
-/* ===========================================================
- * 四大监管机构 —— 各自独立的视觉身份
- * =========================================================== */
-const REGULATORS = {
-  pbc: {
-    short: '央行', name: '中国人民银行',
-    color: '#c0392b', lt: '#e4604d', dk: '#8d2419',
-    role: '货币政策', effectName: '流动性投放',
-    big: '+￥80', unit: '每圈', badge: 'coin', sign: 'benefit',
-  },
-  csrc: {
-    short: '证监会', name: '中国证监会',
-    color: '#2f9fc4', lt: '#63c6e6', dk: '#1c6b88',
-    role: '发行审核', effectName: '注册制便利',
-    big: '-12%', unit: '升级费', badge: 'shield', sign: 'relief',
-  },
-  nfra: {
-    short: '银保监', name: '金融监管总局',
-    color: '#4f9d55', lt: '#7ac77f', dk: '#336b38',
-    role: '审慎监管', effectName: '审慎约束',
-    big: '-8%', unit: '租金', badge: 'scale', sign: 'restraint',
-  },
-  fsc: {
-    short: '金稳会', name: '金融稳定委员会',
-    color: '#8b5cc7', lt: '#b189e0', dk: '#5c3a86',
-    role: '风险处置', effectName: '风险缓冲',
-    big: '-50%', unit: '罚金', badge: 'castle', sign: 'shield',
-  },
-};
-
-const REG_SIGN = {
-  benefit:   { label: '增益', color: '#4f9d55' },
-  relief:    { label: '减负', color: '#2f9fc4' },
-  restraint: { label: '约束', color: '#e8a93c' },
-  shield:    { label: '减害', color: '#8b5cc7' },
+export {
+  SPECIAL_CATS, SPECIAL_CAT_OF, SPECIAL_EFFECT, REGULATORS, REG_SIGN,
 };
 
 /* ===========================================================
@@ -108,21 +55,8 @@ const esc = (s) => String(s == null ? '' : s)
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 const yuan = (n) => (n == null ? '—' : '￥' + num(n));
 
-/** 颜色明暗调整 —— amt > 0 变亮，amt < 0 变暗 */
-function shade(hex, amt) {
-  const h = String(hex || '').replace('#', '');
-  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
-  if (full.length !== 6) return hex;
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  const f = (v) => {
-    const t = amt > 0 ? 255 : 0;
-    const p = Math.abs(amt);
-    return Math.round((t - v) * p + v);
-  };
-  return '#' + [f(r), f(g), f(b)].map((v) => v.toString(16).padStart(2, '0')).join('');
-}
+/* 颜色明暗调整 / 持有人显示 / 集团配色 / 特殊格分类 ——
+ * 已统一到 `render3d/tile-face.js`（3D 与 DOM 管线共用）。 */
 
 /**
  * 名称排版 —— **绝不出现省略号**。
@@ -139,44 +73,10 @@ function nameHTML(name, cls) {
 }
 
 /**
- * 持有人显示 —— **玩家真名**（玩家设定的昵称 / player.name）。
- *
- * 历史包袱：卡片上曾显示设计稿简化名（「霓青持有」「橙方持有」），
- * 那只是颜色代号，玩家认不出自己的地盘。现在统一显示真名。
- *
- * ⚠ 截断策略：**JS 侧按格宽自适应**（不用 CSS 省略号）。
- *   原因：`text-overflow: ellipsis` 会让 `scrollWidth > clientWidth`，
- *   溢出检测按这个判据判定 —— 省略号本身就会被误报成「溢出」。
- *   所以这里在渲染时就把名字裁到能放下的长度：
- *     · 昵称上限 10 字（index.html 的 maxlength），AI 名也差不多；
- *     · 6 字以内原样显示；超过则裁到 5 字 + 「…」。
- *   `title` 属性保留完整真名，悬停可见。
- */
-function ownerLabel(player) {
-  const raw = String((player && player.name) || '').trim();
-  if (!raw) return '—';
-  // 6 字封顶 —— 地块卡面最窄处（92px）只能放 6~7 个中文字
-  return raw.length > 6 ? raw.slice(0, 5) + '…' : raw;
-}
 
 /** 集团配色（未持有时楼体是集团色，已持有才换成玩家色） */
-function groupOf(cell) {
-  if (cell.regulator) {
-    const r = REGULATORS[cell.regulatorId];
-    return r ? { base: r.color, lt: r.lt, dk: r.dk, name: '监管' } : { base: '#5b6478', lt: '#8790a5', dk: '#3b4254', name: '功能' };
-  }
-  if (cell.group && GROUP_COLORS[cell.group]) {
-    const g = GROUP_COLORS[cell.group];
-    return { base: g.base, lt: g.lt, dk: g.dk, name: g.name };
-  }
-  return { base: '#5b6478', lt: '#8790a5', dk: '#3b4254', name: '功能' };
-}
 
 /** 特殊格分类 */
-function specialCat(cell) {
-  const id = cell.special ? cell.special.id : '';
-  return SPECIAL_CATS[SPECIAL_CAT_OF[id] || 'random'];
-}
 
 /* ===========================================================
  * 建筑立面 —— 扁平矢量 SVG（未持有 = 蓝图态）
@@ -693,34 +593,15 @@ export class TileLayer {
 
   _render(state) {
     const cur = state.players && state.players[state.currentPlayerIndex];
-    const isTurn = !!(cur && !cur.isAI && !cur.bankrupt);
 
     for (let i = 0; i < BOARD_SIZE; i++) {
       const cell = BOARD_CELLS[i];
       const node = this.nodes[i];
       if (!node) continue;
 
-      const inst = this._findInst(state, i);
-      const owner = inst ? inst.player : null;
-      const lv = inst ? inst.level : (cell.tier || 0);
-
-      // 可收购判定：当前玩家 + 现金足够 + 该格未持有 + 是机构格
-      let affordable = false;
-      if (isTurn && !inst && cell.type === 'institution') {
-        const price = cell.regulator
-          ? (Array.isArray(cell.price) ? cell.price[0] : cell.price)
-          : (Array.isArray(cell.price) ? (cell.price[cell.tier || 0] ?? cell.price[0]) : cell.price);
-        affordable = cur.cash >= price;
-      }
-
-      const st = {
-        level: lv,
-        owner: owner ? owner.colorIndex : null,
-        // 持有人**真名**（玩家昵称 / AI 名），不再用「霓青」这类颜色代号
-        ownerName: owner ? ownerLabel(owner) : '',
-        mortgaged: !!(inst && inst.mortgaged),
-        affordable,
-      };
+      // ⚠ 状态与读数**统一取自 `render3d/tile-face.js`** ——
+      //   DOM 管线与 3D 纹理管线共用同一份推导，杜绝两条管线数值漂移。
+      const st = tileState(state, i);
 
       const html = tileHTML(cell, st);
       // 只在内容真的变了时才重写 innerHTML
