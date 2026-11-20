@@ -111,7 +111,7 @@
           <div id="active-status" class="active-status" hidden></div>
         </div>
 
-        <!-- ② Tab 面板：玩家关键信息（4 tab：机构+流水 / Buff / 融资 / 净值） -->
+        <!-- ② Tab 面板：玩家关键信息（3 tab：机构+流水 / Buff / 融资） -->
         <div id="hud-tabs" class="hud-tabs">
           <div id="tab-list" class="tab-list" role="tablist" aria-label="玩家信息">
             <button class="tab-btn" role="tab" id="tab-btn-inst"
@@ -120,8 +120,6 @@
                     aria-controls="tab-panel-buff" aria-selected="false" data-tab="buff" tabindex="-1">Buff</button>
             <button class="tab-btn" role="tab" id="tab-btn-finance"
                     aria-controls="tab-panel-finance" aria-selected="false" data-tab="finance" tabindex="-1">融资</button>
-            <button class="tab-btn" role="tab" id="tab-btn-net"
-                    aria-controls="tab-panel-net" aria-selected="false" data-tab="net" tabindex="-1">净值</button>
           </div>
           <div class="tab-panels">
             <!-- 「我的机构」+「资金流水」合一：机构列表在上、流水在下 -->
@@ -129,11 +127,9 @@
                  aria-labelledby="tab-btn-inst" tabindex="0"></div>
             <div id="tab-panel-buff" class="tab-panel" role="tabpanel"
                  aria-labelledby="tab-btn-buff" tabindex="0" hidden></div>
-            <!-- 「融资」= 贷款 + 债券合一 -->
+            <!-- 「融资」= 贷款 + 债券 + 质押/牌照（净值汇总由右侧财务对比表承担） -->
             <div id="tab-panel-finance" class="tab-panel" role="tabpanel"
                  aria-labelledby="tab-btn-finance" tabindex="0" hidden></div>
-            <div id="tab-panel-net" class="tab-panel" role="tabpanel"
-                 aria-labelledby="tab-btn-net" tabindex="0" hidden></div>
           </div>
         </div>
 

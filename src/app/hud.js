@@ -404,13 +404,15 @@ export function drawKline(canvas, state, elapsed) {
 }
 
 /* ===================================================================
- * 左侧 Tab 面板 —— 玩家关键信息（4 tab，内容互不重复）
+ * 左侧 Tab 面板 —— 玩家关键信息（3 tab，内容互不重复）
  *
  * 数据全部取自 `state`（与 openPlayerDetail / 排行面板同一数据源）：
  *   · 我的机构 —— 机构列表 + 每圈管理费 + 资金流水（player.cashFlow）
  *   · Buff      —— player.buffs + allGroupBuffs(player)（经营生态加成）
- *   · 融资      —— player.loans（央行贷款）+ player.bonds / subscribedBonds（债券）
- *   · 净值      —— financialMetrics(player, state)（汇总与杠杆，不重复融资明细）
+ *   · 融资      —— player.loans / bonds / subscribedBonds + 质押融资 + 监管牌照
+ *
+ * ⚠ 原「净值」tab 已删除：资产 / 净资产 / 负债率等汇总由右侧
+ *   「财务对比表」与玩家卡片常驻展示，点击排行榜玩家可看完整下钻明细。
  * =================================================================== */
 
 /** 数字格式化（千分位） */
@@ -826,7 +828,14 @@ function renderBondsInto(el, player, state) {
 }
 
 /**
- * 渲染「融资」tab —— 贷款 + 债券合一。
+ * 渲染「融资」tab —— 贷款 + 债券 + 质押融资 + 监管牌照。
+ *
+ * ⚠ 唯一性（2026-11）：持有机构相关信息**只出现在「我的机构」tab** ——
+ *   本 tab 只放融资工具（贷款 / 债券 / 质押 / 牌照），不展示机构列表或租金。
+ *   原「净值」tab 已删除 —— 资产 / 净资产 / 负债率等汇总由
+ *   右侧「财务对比表」与玩家卡片常驻展示，排行榜下钻弹窗提供完整明细，
+ *   不再占用左侧 tab 位。
+ *
  * @param {HTMLElement} el 融资 tabpanel 元素
  */
 export function renderTabFinance(el, player, state) {
@@ -834,62 +843,31 @@ export function renderTabFinance(el, player, state) {
   if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
   renderLoansInto(el, player);
   renderBondsInto(el, player, state);
-}
 
-/**
- * 渲染「净值」tab —— 资产净值 / 负债杠杆 / 质押融资 / 经营概览。
- *
- * ⚠ 唯一性（2026-11）：与「融资」tab 的分工是**汇总 vs 明细** ——
- *   · 净值只显示**总负债**汇总与杠杆比率；
- *   · 未偿贷款 / 应付债券的明细数字移到「融资」tab（贷款合计 / 债券募资额），
- *     不在此重复；
- *   · 「每圈管理费」移到「我的机构」tab（那里有逐家租金与合计）。
- */
-export function renderTabNetWorth(el, player, state) {
-  el.replaceChildren();
-  if (!player) { el.appendChild(tabEmpty('暂无数据')); return; }
-
+  // ===== 质押融资（从已删除的「净值」tab 并入 —— 质押是融资工具之一）=====
   const m = financialMetrics(player, state);
-
-  el.appendChild(tabSection('资产净值'));
-  el.appendChild(tabRow('总资产', `￥${fmtNum(Math.max(0, m.assets))}`, 'is-gold'));
-  el.appendChild(tabRow('净资产', `￥${fmtNum(m.netWorth)}`,
-    m.netWorth < 0 ? 'is-red' : 'is-gold'));
-  el.appendChild(tabRow('现金', `￥${fmtNum(m.cash)}`, m.cash < 0 ? 'is-red' : ''));
-  el.appendChild(tabRow('机构市值', `￥${fmtNum(m.grossValue - m.mortgagedValue)}`));
-
-  el.appendChild(tabSection('负债与杠杆'));
-  el.appendChild(tabRow('总负债', `￥${fmtNum(m.debt)}`, m.debt > 0 ? 'is-red' : 'is-dim'));
-  el.appendChild(tabRow('负债率', `${m.debtRatio}%`,
-    m.debtRatio >= 100 ? 'is-red' : ''));
-  el.appendChild(tabRow('权益比率', `${m.equityRatio}%`, 'is-green'));
-
-  // 质押融资额度 —— 已质押机构还能再融多少
   const pledged = m.mortgagedAmount || 0;
   el.appendChild(tabSection('质押融资'));
   el.appendChild(tabRow('已质押金额', `￥${fmtNum(pledged)}`));
-  const insts = (player.institutions || []).filter((i) => i.mortgaged);
-  el.appendChild(tabRow('质押机构数', `${insts.length} 家`));
+  const mortgaged = (player.institutions || []).filter((i) => i.mortgaged);
+  el.appendChild(tabRow('质押机构数', `${mortgaged.length} 家`));
 
-  el.appendChild(tabSection('经营概览'));
-  el.appendChild(tabRow('在营机构', `${m.activeCount} 家`));
-  el.appendChild(tabRow('监管牌照', `${m.regulatorCount} 张`));
+  // ===== 监管牌照（持有人独享效果的资产，归入融资 tab）=====
+  el.appendChild(tabSection('监管牌照', `${m.regulatorCount} 张`));
 }
 
 /**
  * 渲染全部 tab 面板。
- * @param {object} els  {inst, buff, finance, net} 各 tabpanel 元素
+ * @param {object} els  {inst, buff, finance} 各 tabpanel 元素
  */
 export function renderTabPanels(els, player, state) {
   if (!els || !player || !state) return;
 
   // ===== 各 tab 独立渲染（内容互不重复）=====
-  //   「我的机构」= 持有机构 + 每圈管理费 + 资金流水
+  //   「我的机构」= 持有机构 + 每圈管理费 + 资金流水（机构相关信息只在此 tab）
   //   「Buff」    = 限时状态 + 经营生态加成
-  //   「融资」    = 央行贷款明细 + 债券（发行/持有）
-  //   「净值」    = 资产/负债汇总与杠杆、质押融资、经营概览
+  //   「融资」    = 央行贷款明细 + 债券（发行/持有）+ 质押融资 + 监管牌照
   renderTabInstitutions(els.inst, player, state);
   renderTabBuffs(els.buff, player, state);
   renderTabFinance(els.finance, player, state);
-  renderTabNetWorth(els.net, player, state);
 }

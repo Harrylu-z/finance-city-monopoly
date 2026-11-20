@@ -210,9 +210,8 @@ class Game {
       // 左上：当前玩家紧凑单条
       'active-player-card', 'active-avatar', 'active-player-name',
       'active-player-cash', 'active-player-sub', 'active-status',
-      // 左侧：Tab 面板（我的机构+流水 / Buff / 融资 / 净值）
+      // 左侧：Tab 面板（我的机构+流水 / Buff / 融资）
       'tab-list', 'tab-panel-inst', 'tab-panel-buff', 'tab-panel-finance',
-      'tab-panel-net',
       // 右上：回合徽章 + 按钮
       'hud-round', 'hud-market', 'btn-rank', 'btn-settings',
       // 顶部全宽回合归属条（P1-1）
@@ -2780,7 +2779,6 @@ class Game {
         inst: this.el['tab-panel-inst'],
         buff: this.el['tab-panel-buff'],
         finance: this.el['tab-panel-finance'],
-        net: this.el['tab-panel-net'],
       }, me, state);
     }
 
